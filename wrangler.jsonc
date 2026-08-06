@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "main": ".open-next/worker.js",
+  "name": "komobasket",
+  "compatibility_date": "2026-04-15",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "komobasket"
+    }
+  ],
+  "images": {
+    "binding": "IMAGES"
+  },
+  "d1_databases": [
+    {
+      "binding": "NEWS_DB",
+      "database_name": "komobasket-news",
+      "database_id": "d7947fb0-124a-4bc0-bdff-a7e1e9664a70"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NEWS_IMAGES",
+      "bucket_name": "komobasket-news-assets"
+    }
+  ],
+  "vars": {
+    "ADMIN_EMAIL": "komobasketleague@gmail.com"
+  }
+}

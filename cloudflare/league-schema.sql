@@ -1,0 +1,113 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS league_seasons (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, slug TEXT NOT NULL UNIQUE,
+  starts_on TEXT, ends_on TEXT, status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','active','completed')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS league_competitions (
+  id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, slug TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'league'
+    CHECK (type IN ('league','cup','tournament')),
+  description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','active','completed')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(season_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS league_teams (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, city TEXT NOT NULL DEFAULT 'Κομοτηνή',
+  logo_url TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS league_season_teams (
+  id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
+  team_id TEXT NOT NULL REFERENCES league_teams(id), display_name TEXT NOT NULL, logo_url TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(season_id, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS league_competition_teams (
+  id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
+  season_team_id TEXT NOT NULL REFERENCES league_season_teams(id) ON DELETE CASCADE,
+  seed INTEGER, status TEXT NOT NULL DEFAULT 'active', UNIQUE(competition_id, season_team_id)
+);
+
+CREATE TABLE IF NOT EXISTS league_players (
+  id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, normalized_name TEXT NOT NULL,
+  birth_date TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_league_players_normalized ON league_players(normalized_name);
+
+CREATE TABLE IF NOT EXISTS league_player_aliases (
+  id TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES league_players(id) ON DELETE CASCADE,
+  alias TEXT NOT NULL, normalized_alias TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual',
+  confidence REAL NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(player_id, normalized_alias)
+);
+CREATE INDEX IF NOT EXISTS idx_player_aliases_normalized ON league_player_aliases(normalized_alias);
+
+CREATE TABLE IF NOT EXISTS league_legacy_player_refs (
+  legacy_slug TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES league_players(id) ON DELETE CASCADE,
+  season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
+  source TEXT NOT NULL DEFAULT 'historical-import', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_player_refs_player ON league_legacy_player_refs(player_id);
+
+CREATE TABLE IF NOT EXISTS league_roster_memberships (
+  id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
+  competition_id TEXT REFERENCES league_competitions(id) ON DELETE SET NULL,
+  player_id TEXT NOT NULL REFERENCES league_players(id), team_id TEXT NOT NULL REFERENCES league_teams(id),
+  shirt_number INTEGER, joined_on TEXT, left_on TEXT, status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active','departed','transferred')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_rosters_player ON league_roster_memberships(player_id, season_id);
+CREATE INDEX IF NOT EXISTS idx_rosters_team ON league_roster_memberships(team_id, season_id);
+
+CREATE TABLE IF NOT EXISTS league_player_movements (
+  id TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES league_players(id), season_id TEXT NOT NULL REFERENCES league_seasons(id),
+  from_team_id TEXT REFERENCES league_teams(id), to_team_id TEXT REFERENCES league_teams(id),
+  movement_type TEXT NOT NULL CHECK (movement_type IN ('registration','transfer','departure','return')),
+  effective_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS league_phases (
+  id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, slug TEXT NOT NULL, phase_type TEXT NOT NULL DEFAULT 'regular', order_index INTEGER NOT NULL DEFAULT 0,
+  settings_json TEXT NOT NULL DEFAULT '{}', UNIQUE(competition_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS league_games (
+  id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
+  phase_id TEXT REFERENCES league_phases(id) ON DELETE SET NULL, round_label TEXT NOT NULL DEFAULT '',
+  scheduled_at TEXT, venue TEXT NOT NULL DEFAULT '', home_team_id TEXT NOT NULL REFERENCES league_teams(id),
+  away_team_id TEXT NOT NULL REFERENCES league_teams(id), home_score INTEGER, away_score INTEGER,
+  status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','completed','postponed','cancelled')),
+  external_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_games_schedule ON league_games(scheduled_at, status);
+
+CREATE TABLE IF NOT EXISTS league_player_game_stats (
+  id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES league_games(id) ON DELETE CASCADE,
+  player_id TEXT NOT NULL REFERENCES league_players(id), team_id TEXT NOT NULL REFERENCES league_teams(id),
+  points INTEGER NOT NULL DEFAULT 0, rebounds INTEGER NOT NULL DEFAULT 0, assists INTEGER NOT NULL DEFAULT 0,
+  steals INTEGER NOT NULL DEFAULT 0, blocks INTEGER NOT NULL DEFAULT 0, threes INTEGER NOT NULL DEFAULT 0,
+  fouls INTEGER NOT NULL DEFAULT 0, minutes INTEGER NOT NULL DEFAULT 0, is_mvp INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(game_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS league_player_merge_log (
+  id TEXT PRIMARY KEY, kept_player_id TEXT NOT NULL REFERENCES league_players(id), merged_player_id TEXT NOT NULL,
+  merged_name TEXT NOT NULL, reason TEXT NOT NULL, confidence REAL NOT NULL, snapshot_json TEXT NOT NULL,
+  undone_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS league_audit_log (
+  id TEXT PRIMARY KEY, actor_email TEXT NOT NULL DEFAULT '', action TEXT NOT NULL, entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

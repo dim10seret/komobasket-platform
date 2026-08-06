@@ -1,0 +1,17 @@
+{
+  // Add these entries to the production wrangler.jsonc after creating
+  // the D1 database and R2 bucket in the KomoBasket Cloudflare account.
+  "d1_databases": [
+    {
+      "binding": "NEWS_DB",
+      "database_name": "komobasket-news",
+      "database_id": "COPY_THE_REAL_D1_DATABASE_ID_HERE"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NEWS_IMAGES",
+      "bucket_name": "komobasket-news-images"
+    }
+  ]
+}
