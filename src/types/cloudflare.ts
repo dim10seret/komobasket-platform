@@ -43,4 +43,9 @@ export type KomoBasketCloudflareEnv = {
   NEWS_DB?: D1DatabaseBinding;
   NEWS_IMAGES?: R2BucketBinding;
   ADMIN_EMAIL?: string;
+
+  FACEBOOK_PAGE_ID?: string;
+  FACEBOOK_ACCESS_TOKEN?: string;
+  FACEBOOK_GRAPH_VERSION?: string;
+  KOMOBASKET_PUBLIC_URL?: string;
 };

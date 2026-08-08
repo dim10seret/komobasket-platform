@@ -34,6 +34,13 @@
     }
   ],
   "vars": {
-    "ADMIN_EMAIL": "komobasketleague@gmail.com"
+    "ADMIN_EMAIL": "komobasketleague@gmail.com",
+    "FACEBOOK_PAGE_ID": "103249881114737",
+    "FACEBOOK_GRAPH_VERSION": "v26.0",
+    "KOMOBASKET_PUBLIC_URL": "https://komobasket.gr"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
   }
 }

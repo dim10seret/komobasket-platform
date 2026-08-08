@@ -1,4 +1,5 @@
 import "server-only";
+import { publishNewsArticleToFacebook } from "@/services/facebook.service";
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -104,9 +105,9 @@ async function readLocalArticles(): Promise<NewsArticle[]> {
     const parsed = JSON.parse(content) as NewsArticle[];
     return Array.isArray(parsed)
       ? parsed.map((article) => ({
-          ...article,
-          attachments: article.attachments ?? [],
-        }))
+        ...article,
+        attachments: article.attachments ?? [],
+      }))
       : [];
   } catch {
     return [];
@@ -295,6 +296,9 @@ export async function createNewsArticle(
         authorEmail,
       )
       .run();
+    if (article.status === "published") {
+      await publishNewsArticleToFacebook(article);
+    }
     return article;
   }
 
@@ -360,6 +364,13 @@ export async function updateNewsArticle(id: string, patch: NewsArticlePatch) {
         id,
       )
       .run();
+    const wasJustPublished =
+      current.status !== "published" &&
+      updated.status === "published";
+
+    if (wasJustPublished) {
+      await publishNewsArticleToFacebook(updated);
+    }
     return updated;
   }
 
