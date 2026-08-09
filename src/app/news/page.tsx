@@ -19,7 +19,11 @@ export default async function NewsPage() {
             <p className="text-sm font-bold uppercase tracking-[0.2em] text-orange-600">
               KomoBasket · Ενημέρωση
             </p>
-            <h1 className="mt-3 text-5xl font-black text-zinc-900">Νέα</h1>
+
+            <h1 className="mt-3 text-5xl font-black text-zinc-900">
+              Νέα
+            </h1>
+
             <p className="mt-4 max-w-2xl text-lg leading-8 text-zinc-600">
               Ανακοινώσεις, νέα των διοργανώσεων και όλες οι ιστορίες του
               KomoBasket.
@@ -28,10 +32,15 @@ export default async function NewsPage() {
 
           {articles.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-zinc-300 bg-white px-8 py-20 text-center">
-              <Newspaper className="mx-auto text-orange-500" size={44} />
+              <Newspaper
+                className="mx-auto text-orange-500"
+                size={44}
+              />
+
               <h2 className="mt-5 text-2xl font-black text-zinc-900">
                 Δεν υπάρχουν ακόμη ανακοινώσεις
               </h2>
+
               <p className="mt-2 text-zinc-600">
                 Οι νέες δημοσιεύσεις του KomoBasket θα εμφανίζονται εδώ.
               </p>
@@ -48,13 +57,14 @@ export default async function NewsPage() {
                   {article.coverImageUrl ? (
                     <div
                       className={`relative overflow-hidden bg-zinc-900 ${
-                        index === 0 ? "aspect-[16/7]" : "aspect-[16/9]"
+                        index === 0 ? "aspect-video" : "aspect-video"
                       }`}
                     >
                       <Image
                         src={article.coverImageUrl}
-                        alt=""
+                        alt={article.title}
                         fill
+                        unoptimized
                         sizes={
                           index === 0
                             ? "(max-width: 768px) 100vw, 66vw"
@@ -70,6 +80,7 @@ export default async function NewsPage() {
                       }`}
                     >
                       <div className="absolute -right-12 -top-12 h-44 w-44 rounded-full border-[28px] border-orange-600/30" />
+
                       <div className="absolute bottom-6 left-7 text-sm font-black uppercase tracking-[0.2em] text-orange-500">
                         KomoBasket
                       </div>
@@ -79,6 +90,7 @@ export default async function NewsPage() {
                   <div className="p-7 sm:p-8">
                     <div className="flex flex-wrap items-center gap-2 text-sm font-bold uppercase tracking-[0.12em] text-orange-600">
                       <span>{article.category}</span>
+
                       {article.season && (
                         <>
                           <span className="text-zinc-300">·</span>
@@ -86,6 +98,7 @@ export default async function NewsPage() {
                         </>
                       )}
                     </div>
+
                     <h2
                       className={`mt-4 font-black leading-tight text-zinc-950 ${
                         index === 0 ? "text-3xl sm:text-4xl" : "text-2xl"
@@ -93,9 +106,11 @@ export default async function NewsPage() {
                     >
                       {article.title}
                     </h2>
+
                     <p className="mt-4 line-clamp-3 text-base leading-7 text-zinc-600">
                       {article.excerpt}
                     </p>
+
                     <Link
                       href={`/news/${article.slug}`}
                       className="mt-6 inline-flex items-center gap-2 font-black text-zinc-900 transition group-hover:text-orange-600"

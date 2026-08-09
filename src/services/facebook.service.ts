@@ -49,16 +49,48 @@ function buildArticleUrl(article: NewsArticle, publicUrl: string) {
   return `${normalizedPublicUrl}/news/${article.slug}`;
 }
 
+function buildFacebookPreview(article: NewsArticle) {
+  const normalizedContent = article.content
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const maxLength = 300;
+
+  if (normalizedContent.length <= maxLength) {
+    return normalizedContent;
+  }
+
+  const shortened = normalizedContent.slice(0, maxLength);
+
+  const lastSentenceEnd = Math.max(
+    shortened.lastIndexOf("."),
+    shortened.lastIndexOf("!"),
+    shortened.lastIndexOf("?"),
+  );
+
+  if (lastSentenceEnd >= 140) {
+    return shortened.slice(0, lastSentenceEnd + 1).trim();
+  }
+
+  const lastSpace = shortened.lastIndexOf(" ");
+
+  return `${shortened
+    .slice(0, lastSpace > 0 ? lastSpace : maxLength)
+    .trim()}...`;
+}
+
 function buildFacebookMessage(
   article: NewsArticle,
   articleUrl: string,
 ) {
+  const preview = buildFacebookPreview(article);
+
   return [
     `🏀 ${article.title}`,
     "",
-    article.excerpt,
+    preview,
     "",
-    "Διαβάστε περισσότερα:",
+    "📖 Διαβάστε περισσότερα:",
     articleUrl,
   ]
     .filter(Boolean)
@@ -68,7 +100,6 @@ function buildFacebookMessage(
 export async function publishNewsArticleToFacebook(
   article: NewsArticle,
 ): Promise<FacebookPublishResult> {
-
   console.log("[Facebook] publishNewsArticleToFacebook() called");
 
   if (article.status !== "published") {
