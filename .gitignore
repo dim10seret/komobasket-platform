@@ -49,6 +49,15 @@ data/news-uploaded-files/
 .wrangler/
 .wrangler-home/
 .wrangler-dry-run/
+.wrangler-state/
+
+# local temp and backups
+.d1tmp/
+.tmp_backups_*/
+.tmp_d1_backup_*/
+.tmp_d1_backups_*/
+.codex-duplicate-check.png
+.tmp_*.js
 
 # Cloudflared logs
 .cloudflared-*.log

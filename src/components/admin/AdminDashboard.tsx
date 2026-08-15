@@ -1163,12 +1163,16 @@ function Players({data}:{data:Snapshot}) {
   const [newAthleteLastName, setNewAthleteLastName] = useState("");
   const [newAthleteBirthDate, setNewAthleteBirthDate] = useState("");
   const [newAthletePhotoUrl, setNewAthletePhotoUrl] = useState("");
+  const [newAthletePhotoPreview, setNewAthletePhotoPreview] = useState("");
+  const [newAthletePhotoFileName, setNewAthletePhotoFileName] = useState("");
   const [newAthleteShirtNumber, setNewAthleteShirtNumber] = useState("");
   const [newAthleteUploadMessage, setNewAthleteUploadMessage] = useState("");
   const [newAthleteUploadBusy, setNewAthleteUploadBusy] = useState(false);
   const [newStaffFirstName, setNewStaffFirstName] = useState("");
   const [newStaffLastName, setNewStaffLastName] = useState("");
   const [newStaffBirthDate, setNewStaffBirthDate] = useState("");
+  const [newStaffPhotoPreview, setNewStaffPhotoPreview] = useState("");
+  const [newStaffPhotoFileName, setNewStaffPhotoFileName] = useState("");
   const [newStaffRole, setNewStaffRole] = useState<TeamRosterViewRole>("other");
   const [newStaffCustomRoleLabel, setNewStaffCustomRoleLabel] = useState("");
   const [newStaffPhotoUrl, setNewStaffPhotoUrl] = useState("");
@@ -1180,6 +1184,8 @@ function Players({data}:{data:Snapshot}) {
   const [editingAthleteLastName, setEditingAthleteLastName] = useState("");
   const [editingAthleteBirthDate, setEditingAthleteBirthDate] = useState("");
   const [editingAthletePhotoUrl, setEditingAthletePhotoUrl] = useState("");
+  const [editingAthletePhotoPreview, setEditingAthletePhotoPreview] = useState("");
+  const [editingAthletePhotoFileName, setEditingAthletePhotoFileName] = useState("");
   const [editingAthleteShirtNumber, setEditingAthleteShirtNumber] = useState("");
   const [editingAthleteUploadBusy, setEditingAthleteUploadBusy] = useState(false);
   const [editingAthleteUploadMessage, setEditingAthleteUploadMessage] = useState("");
@@ -1188,6 +1194,8 @@ function Players({data}:{data:Snapshot}) {
   const [editingStaffLastName, setEditingStaffLastName] = useState("");
   const [editingStaffBirthDate, setEditingStaffBirthDate] = useState("");
   const [editingStaffPhotoUrl, setEditingStaffPhotoUrl] = useState("");
+  const [editingStaffPhotoPreview, setEditingStaffPhotoPreview] = useState("");
+  const [editingStaffPhotoFileName, setEditingStaffPhotoFileName] = useState("");
   const [editingStaffRole, setEditingStaffRole] = useState<TeamRosterViewRole>("other");
   const [editingStaffCustomRoleLabel, setEditingStaffCustomRoleLabel] = useState("");
   const [editingStaffUploadBusy, setEditingStaffUploadBusy] = useState(false);
@@ -1344,6 +1352,9 @@ function Players({data}:{data:Snapshot}) {
     setNewAthleteLastName("");
     setNewAthleteBirthDate("");
     setNewAthletePhotoUrl("");
+    clearBlobPreviewUrl(newAthletePhotoPreview);
+    setNewAthletePhotoPreview("");
+    setNewAthletePhotoFileName("");
     setNewAthleteShirtNumber("");
     setNewAthleteUploadMessage("");
     setNewAthleteUploadBusy(false);
@@ -1360,6 +1371,9 @@ function Players({data}:{data:Snapshot}) {
     setNewStaffRole("other");
     setNewStaffCustomRoleLabel("");
     setNewStaffPhotoUrl("");
+    clearBlobPreviewUrl(newStaffPhotoPreview);
+    setNewStaffPhotoPreview("");
+    setNewStaffPhotoFileName("");
     setNewStaffUploadMessage("");
     setNewStaffUploadBusy(false);
   };
@@ -1369,6 +1383,10 @@ function Players({data}:{data:Snapshot}) {
     setSearchMode("athlete");
     resetAddFormForAthlete();
     resetAddFormForStaff();
+  };
+
+  const clearBlobPreviewUrl = (previewUrl: string) => {
+    if (previewUrl && previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
   };
 
   async function uploadEntityPhoto(file: File, labelSetter: (value: string) => void, busySetter: (value: boolean) => void, messageSetter: (value: string) => void) {
@@ -1391,6 +1409,38 @@ function Players({data}:{data:Snapshot}) {
       busySetter(false);
     }
   }
+
+  const handleNewAthletePhotoSelect = (file: File) => {
+    clearBlobPreviewUrl(newAthletePhotoPreview);
+    setNewAthletePhotoFileName(file.name);
+    setNewAthletePhotoPreview(URL.createObjectURL(file));
+    setNewAthleteUploadMessage("Φόρτωση εικόνας...");
+    void uploadEntityPhoto(file, setNewAthletePhotoUrl, setNewAthleteUploadBusy, setNewAthleteUploadMessage);
+  };
+
+  const handleNewStaffPhotoSelect = (file: File) => {
+    clearBlobPreviewUrl(newStaffPhotoPreview);
+    setNewStaffPhotoFileName(file.name);
+    setNewStaffPhotoPreview(URL.createObjectURL(file));
+    setNewStaffUploadMessage("Φόρτωση εικόνας...");
+    void uploadEntityPhoto(file, setNewStaffPhotoUrl, setNewStaffUploadBusy, setNewStaffUploadMessage);
+  };
+
+  const handleEditingAthletePhotoSelect = (file: File) => {
+    clearBlobPreviewUrl(editingAthletePhotoPreview);
+    setEditingAthletePhotoFileName(file.name);
+    setEditingAthletePhotoPreview(URL.createObjectURL(file));
+    setEditingAthleteUploadMessage("Φόρτωση εικόνας...");
+    void uploadEntityPhoto(file, setEditingAthletePhotoUrl, setEditingAthleteUploadBusy, setEditingAthleteUploadMessage);
+  };
+
+  const handleEditingStaffPhotoSelect = (file: File) => {
+    clearBlobPreviewUrl(editingStaffPhotoPreview);
+    setEditingStaffPhotoFileName(file.name);
+    setEditingStaffPhotoPreview(URL.createObjectURL(file));
+    setEditingStaffUploadMessage("Φόρτωση εικόνας...");
+    void uploadEntityPhoto(file, setEditingStaffPhotoUrl, setEditingStaffUploadBusy, setEditingStaffUploadMessage);
+  };
 
   const addSearchResultLabel = (item: SearchAthleteResult | SearchStaffResult) => {
     const first = item.first_name?.trim();
@@ -1538,6 +1588,9 @@ function Players({data}:{data:Snapshot}) {
       shirtNumber: parseShirtNumber(editingAthleteShirtNumber),
     }, "Τα στοιχεία ρόστερ αποθηκεύτηκαν.");
 
+    clearBlobPreviewUrl(editingAthletePhotoPreview);
+    setEditingAthletePhotoPreview("");
+    setEditingAthletePhotoFileName("");
     setEditingAthlete(null);
   }
 
@@ -1559,6 +1612,9 @@ function Players({data}:{data:Snapshot}) {
       customRoleLabel: editingStaffCustomRoleLabel || null,
     }, "Οι αλλαγές ρόλου αποθηκεύτηκαν.");
 
+    clearBlobPreviewUrl(editingStaffPhotoPreview);
+    setEditingStaffPhotoPreview("");
+    setEditingStaffPhotoFileName("");
     setEditingStaff(null);
   }
 
@@ -1652,23 +1708,15 @@ function Players({data}:{data:Snapshot}) {
 
         <Panel title="Αθλητές">
           {selectedTeamRoster.athletes.length > 0 ? <>
-            <div className="mb-3 grid grid-cols-2 gap-2 text-xs font-black uppercase tracking-wider text-zinc-500 sm:grid-cols-4">
-              {[
-                ["first_name","Όνομα"],
-                ["last_name","Επώνυμο"],
-                ["birth_date","Ημ. Γέννησης"],
-                ["shirt_number","Νο. Φανέλας"],
-              ].map(([key,label]) => (
-                <button key={key} type="button" onClick={() => sortAthleteColumn(key as "first_name" | "last_name" | "birth_date" | "shirt_number")} className="text-left hover:text-zinc-900">
-                  {label}
-                  {athleteSort.key === key ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}
-                </button>
-              ))}
-            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500"><tr>
-                  <th className="px-3 py-3">#</th><th className="px-3 py-3">Φωτό</th><th className="px-3 py-3">Όνομα</th><th className="px-3 py-3">Επώνυμο</th><th className="px-3 py-3">Ημ. Γέννησης</th><th className="px-3 py-3">Νο. Φανέλας</th><th className="px-3 py-3">Ενέργειες</th>
+                  <th className="px-3 py-3">#</th><th className="px-3 py-3">Φωτό</th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("first_name")} className="text-left hover:text-zinc-900">Όνομα{athleteSort.key === "first_name" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("last_name")} className="text-left hover:text-zinc-900">Επώνυμο{athleteSort.key === "last_name" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("birth_date")} className="text-left hover:text-zinc-900">Ημ. Γέννησης{athleteSort.key === "birth_date" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("shirt_number")} className="text-left hover:text-zinc-900">Νο. Φανέλας{athleteSort.key === "shirt_number" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3">Ενέργειες</th>
                 </tr></thead>
                 <tbody>
                   {sortedAthletes.map((athlete) => {
@@ -1695,6 +1743,9 @@ function Players({data}:{data:Snapshot}) {
                               setEditingAthleteLastName(athlete.last_name ?? "");
                               setEditingAthleteBirthDate(String(athlete.birth_date ?? ""));
                               setEditingAthletePhotoUrl(String(athlete.photo_url ?? ""));
+                              clearBlobPreviewUrl(editingAthletePhotoPreview);
+                              setEditingAthletePhotoPreview(String(athlete.photo_url ?? ""));
+                              setEditingAthletePhotoFileName("");
                               setEditingAthleteShirtNumber(String(athlete.shirt_number ?? ""));
                             }}
                             className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-bold"
@@ -1726,19 +1777,14 @@ function Players({data}:{data:Snapshot}) {
 
         <Panel title="Staff">
           {selectedTeamRoster.staff.length > 0 ? <>
-            <div className="mb-3 grid grid-cols-3 gap-2 text-xs font-black uppercase tracking-wider text-zinc-500 sm:grid-cols-4">
-              {[
-                ["staff_first_name","Όνομα"],
-                ["staff_last_name","Επώνυμο"],
-                ["staff_role","Ρόλος"],
-              ].map(([key,label]) => <button key={key} type="button" onClick={() => sortStaffColumn(key as "staff_first_name" | "staff_last_name" | "staff_role")} className="text-left hover:text-zinc-900">
-                {label}{staffSort.key === key ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}
-              </button>)}
-            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500"><tr>
-                  <th className="px-3 py-3">Φωτό</th><th className="px-3 py-3">Όνομα</th><th className="px-3 py-3">Επώνυμο</th><th className="px-3 py-3">Ρόλος</th><th className="px-3 py-3">Ενέργειες</th>
+                  <th className="px-3 py-3">Φωτό</th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortStaffColumn("staff_first_name")} className="text-left hover:text-zinc-900">Όνομα{staffSort.key === "staff_first_name" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortStaffColumn("staff_last_name")} className="text-left hover:text-zinc-900">Επώνυμο{staffSort.key === "staff_last_name" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><button type="button" onClick={() => sortStaffColumn("staff_role")} className="text-left hover:text-zinc-900">Ρόλος{staffSort.key === "staff_role" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3">Ενέργειες</th>
                 </tr></thead>
                 <tbody>
                   {sortedStaff.map((member) => {
@@ -1765,6 +1811,9 @@ function Players({data}:{data:Snapshot}) {
                               setEditingStaffLastName(member.last_name ?? "");
                               setEditingStaffBirthDate(String(member.birth_date ?? ""));
                               setEditingStaffPhotoUrl(String(member.photo_url ?? ""));
+                              clearBlobPreviewUrl(editingStaffPhotoPreview);
+                              setEditingStaffPhotoPreview(String(member.photo_url ?? ""));
+                              setEditingStaffPhotoFileName("");
                               setEditingStaffRole(String(member.role === "other" ? "other" : member.role) as TeamRosterViewRole);
                               setEditingStaffCustomRoleLabel(member.custom_role_label ?? "");
                             }}
@@ -1962,15 +2011,27 @@ function Players({data}:{data:Snapshot}) {
                     <input value={newAthleteShirtNumber} onChange={(event)=>setNewAthleteShirtNumber(event.target.value)} className={inputClass} />
                   </Field>
                   <Field label="Φωτογραφία">
-                    <div className="flex items-center gap-2">
-                      <input value={newAthletePhotoUrl} readOnly className={inputClass} />
-                      <input type="file" accept="image/*" onChange={(event) => {
-                        const file = event.currentTarget.files?.[0];
-                        if (!file) return;
-                        void uploadEntityPhoto(file, setNewAthletePhotoUrl, setNewAthleteUploadBusy, setNewAthleteUploadMessage);
-                      }} />
+                    <div className="mt-1 flex items-center gap-3">
+                      <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                        {(newAthletePhotoPreview || newAthletePhotoUrl)
+                          ? <img src={newAthletePhotoPreview || newAthletePhotoUrl} alt="Άσκηση προεπισκόπησης" className="h-full w-full object-cover" />
+                          : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                      </div>
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                        <span>📷 {newAthletePhotoPreview || newAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            if (!file) return;
+                            handleNewAthletePhotoSelect(file);
+                          }}
+                        />
+                      </label>
                     </div>
-                    {newAthleteUploadBusy ? <p className="text-xs text-zinc-500">Φόρτωση εικόνας...</p> : <p className="text-xs text-zinc-500">{newAthleteUploadMessage}</p>}
+                    <p className="mt-2 text-xs text-zinc-500">{newAthleteUploadBusy ? "Φόρτωση εικόνας..." : (newAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${newAthletePhotoFileName}` : newAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                   </Field>
                   <button
                     type="button"
@@ -2044,15 +2105,27 @@ function Players({data}:{data:Snapshot}) {
                     <input value={newStaffCustomRoleLabel} onChange={(event)=>setNewStaffCustomRoleLabel(event.target.value)} className={inputClass} disabled={newStaffRole !== "other"} />
                   </Field>
                   <Field label="Φωτογραφία">
-                    <div className="flex items-center gap-2">
-                      <input value={newStaffPhotoUrl} readOnly className={inputClass} />
-                      <input type="file" accept="image/*" onChange={(event) => {
-                        const file = event.currentTarget.files?.[0];
-                        if (!file) return;
-                        void uploadEntityPhoto(file, setNewStaffPhotoUrl, setNewStaffUploadBusy, setNewStaffUploadMessage);
-                      }} />
+                    <div className="mt-1 flex items-center gap-3">
+                      <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                        {(newStaffPhotoPreview || newStaffPhotoUrl)
+                          ? <img src={newStaffPhotoPreview || newStaffPhotoUrl} alt="Άσκηση προεπισκόπησης" className="h-full w-full object-cover" />
+                          : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                      </div>
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                        <span>📷 {newStaffPhotoPreview || newStaffPhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            if (!file) return;
+                            handleNewStaffPhotoSelect(file);
+                          }}
+                        />
+                      </label>
                     </div>
-                    {newStaffUploadBusy ? <p className="text-xs text-zinc-500">Φόρτωση εικόνας...</p> : <p className="text-xs text-zinc-500">{newStaffUploadMessage}</p>}
+                    <p className="mt-2 text-xs text-zinc-500">{newStaffUploadBusy ? "Φόρτωση εικόνας..." : (newStaffPhotoFileName ? `Επιλεγμένο αρχείο: ${newStaffPhotoFileName}` : newStaffUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                   </Field>
                   <button
                     type="button"
@@ -2086,21 +2159,44 @@ function Players({data}:{data:Snapshot}) {
                   <input value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} />
                 </Field>
                 <Field label="Φωτογραφία">
-                  <div className="flex items-center gap-2">
-                    <input value={editingAthletePhotoUrl} readOnly className={inputClass} />
-                    <input type="file" accept="image/*" onChange={(event) => {
-                      const file = event.currentTarget.files?.[0];
-                      if (!file) return;
-                      void uploadEntityPhoto(file, setEditingAthletePhotoUrl, setEditingAthleteUploadBusy, setEditingAthleteUploadMessage);
-                    }} />
+                  <div className="mt-1 flex items-center gap-3">
+                    <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                      {(editingAthletePhotoPreview || editingAthletePhotoUrl)
+                        ? <img src={editingAthletePhotoPreview || editingAthletePhotoUrl} alt="Άσκηση προεπισκόπησης" className="h-full w-full object-cover" />
+                        : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                      <span>📷 {editingAthletePhotoPreview || editingAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          if (!file) return;
+                          handleEditingAthletePhotoSelect(file);
+                        }}
+                      />
+                    </label>
                   </div>
-                  {editingAthleteUploadBusy ? <p className="text-xs text-zinc-500">Φόρτωση εικόνας...</p> : <p className="text-xs text-zinc-500">{editingAthleteUploadMessage}</p>}
+                  <p className="mt-2 text-xs text-zinc-500">{editingAthleteUploadBusy ? "Φόρτωση εικόνας..." : (editingAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${editingAthletePhotoFileName}` : editingAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                 </Field>
                 <div className="mt-1 flex gap-2">
                   <button type="button" className={buttonClass} onClick={() => void saveAthleteEdits()} disabled={actionBusy}>
                     Αποθήκευση
                   </button>
-                  <button type="button" onClick={() => setEditingAthlete(null)} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Ακύρωση</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearBlobPreviewUrl(editingAthletePhotoPreview);
+                      setEditingAthletePhotoPreview("");
+                      setEditingAthletePhotoFileName("");
+                      setEditingAthlete(null);
+                    }}
+                    className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black"
+                  >
+                    Ακύρωση
+                  </button>
                 </div>
               </div>
             </div>
@@ -2130,21 +2226,44 @@ function Players({data}:{data:Snapshot}) {
                   <input value={editingStaffCustomRoleLabel} onChange={(event)=>setEditingStaffCustomRoleLabel(event.target.value)} className={inputClass} disabled={editingStaffRole !== "other"} />
                 </Field>
                 <Field label="Φωτογραφία">
-                  <div className="flex items-center gap-2">
-                    <input value={editingStaffPhotoUrl} readOnly className={inputClass} />
-                    <input type="file" accept="image/*" onChange={(event) => {
-                      const file = event.currentTarget.files?.[0];
-                      if (!file) return;
-                      void uploadEntityPhoto(file, setEditingStaffPhotoUrl, setEditingStaffUploadBusy, setEditingStaffUploadMessage);
-                    }} />
+                  <div className="mt-1 flex items-center gap-3">
+                    <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                      {(editingStaffPhotoPreview || editingStaffPhotoUrl)
+                        ? <img src={editingStaffPhotoPreview || editingStaffPhotoUrl} alt="Άσκηση προεπισκόπησης" className="h-full w-full object-cover" />
+                        : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                      <span>📷 {editingStaffPhotoPreview || editingStaffPhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          if (!file) return;
+                          handleEditingStaffPhotoSelect(file);
+                        }}
+                      />
+                    </label>
                   </div>
-                  {editingStaffUploadBusy ? <p className="text-xs text-zinc-500">Φόρτωση εικόνας...</p> : <p className="text-xs text-zinc-500">{editingStaffUploadMessage}</p>}
+                  <p className="mt-2 text-xs text-zinc-500">{editingStaffUploadBusy ? "Φόρτωση εικόνας..." : (editingStaffPhotoFileName ? `Επιλεγμένο αρχείο: ${editingStaffPhotoFileName}` : editingStaffUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                 </Field>
                 <div className="mt-1 flex gap-2">
                   <button type="button" className={buttonClass} onClick={() => void saveStaffEdits()} disabled={actionBusy}>
                     Αποθήκευση
                   </button>
-                  <button type="button" onClick={() => setEditingStaff(null)} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Ακύρωση</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearBlobPreviewUrl(editingStaffPhotoPreview);
+                      setEditingStaffPhotoPreview("");
+                      setEditingStaffPhotoFileName("");
+                      setEditingStaff(null);
+                    }}
+                    className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black"
+                  >
+                    Ακύρωση
+                  </button>
                 </div>
               </div>
             </div>
