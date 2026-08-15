@@ -1,14 +1,6 @@
 import "server-only";
 
-import regularGames2024 from "@/data/games-2024-25.json";
-import regularGames2025 from "@/data/games-2025-26.json";
 import { players as legacyPlayers } from "@/data/players";
-import { cupGames, playoffGames, playoffSeries } from "@/data/postseason-2024-25";
-import {
-  finalFour2025,
-  playoffSeries2025,
-  stratosMylonasCup2025,
-} from "@/data/postseason-2025-26";
 import { teams as legacyTeams } from "@/data/teams";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import {
@@ -16,7 +8,7 @@ import {
   findAutomaticPlayerMatch,
   normalizePlayerName,
 } from "@/lib/player-matching";
-import type { D1DatabaseBinding, D1PreparedStatement } from "@/types/cloudflare";
+import type { D1DatabaseBinding } from "@/types/cloudflare";
 
 const HISTORICAL_SEASONS = [
   "2019-20",
@@ -29,24 +21,232 @@ const HISTORICAL_SEASONS = [
 
 type DbRow = Record<string, unknown>;
 
-type HistoricalGame = {
-  id: string;
-  stage: string;
-  homeTeam: string;
-  awayTeam: string;
-  homeScore?: number;
-  awayScore?: number;
-  date?: string;
-  time?: string;
-  venue?: string;
-  round?: number | string;
-  label?: string;
-  note?: string;
+const SEASON_STATUSES = new Set(["draft", "active", "completed"]);
+const COMPETITION_TYPES = new Set(["league", "cup", "tournament"]);
+const COMPETITION_LIFECYCLES = new Set(["under_construction", "online", "complete"]);
+const PARTICIPATION_STATUSES = new Set(["active", "inactive", "withdrawn"]);
+const COMPLETED_COMPETITION_STATUSES = new Set(["complete", "completed", "finished"]);
+const STAFF_ROLE_VALUES = [
+  "head_coach",
+  "assistant_coach",
+  "trainer",
+  "physiotherapist",
+  "doctor",
+  "team_manager",
+  "team_official",
+  "other",
+ ] as const;
+const STAFF_ROLES = new Set<string>(STAFF_ROLE_VALUES);
+const PHASE_KINDS = new Set([
+  "regular_season",
+  "play_in",
+  "play_out",
+  "playoffs",
+  "final_four",
+  "finals",
+  "custom",
+]);
+
+const lifecycleToLegacyStatus: Record<string, string> = {
+  under_construction: "draft",
+  online: "active",
+  complete: "completed",
 };
+
+type SeasonInput = {
+  name: string;
+  startsOn: string | null;
+  endsOn: string | null;
+  status: "draft" | "active" | "completed";
+};
+
+type StaffRole = (typeof STAFF_ROLE_VALUES)[number];
+
+type SeasonSortInfo = {
+  value: number | null;
+  raw: string;
+};
+
+type SearchAthleteContext = {
+  lastTeam: string | null;
+  lastSeason: string | null;
+};
+
+type SearchResultPlayer = {
+  player_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  display_name: string;
+  birth_date: string | null;
+  last_team_name: string | null;
+  last_season_name: string | null;
+  career_history: {
+    season_name: string;
+    team_name: string;
+    competition_name: string | null;
+    season_year_key: number | null;
+  }[];
+};
+
+type SearchResultStaff = {
+  staff_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  display_name: string | null;
+  birth_date: string | null;
+  last_team_name: string | null;
+  last_season_name: string | null;
+};
+
+type RosterAthleteRow = {
+  roster_id: string;
+  player_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  display_name: string;
+  photo_url: string | null;
+  birth_date: string | null;
+  shirt_number: number | null;
+};
+
+type RosterStaffRow = {
+  membership_id: string;
+  staff_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  display_name: string | null;
+  photo_url: string | null;
+  birth_date: string | null;
+  role: string;
+  custom_role_label: string | null;
+};
+
+type PreviousRosterInfo = {
+  seasonId: string | null;
+  seasonName: string | null;
+  targetAthleteRosterExists: boolean;
+  targetAthleteCount: number;
+  targetStaffRosterExists: boolean;
+  targetStaffCount: number;
+  previousAthleteCount: number;
+  previousStaffCount: number;
+};
+
+type TeamRosterManagementView = {
+  seasonId: string;
+  seasonName: string;
+  competitionId: string;
+  competitionName: string;
+  teamId: string;
+  teamName: string;
+  athletes: RosterAthleteRow[];
+  staff: RosterStaffRow[];
+  previousRoster: PreviousRosterInfo;
+};
+
+type SearchRequestInput = {
+  query: string;
+  limit?: number;
+};
+
+function withLimit(limit: unknown, fallback = 25) {
+  if (limit === undefined || limit === null) return fallback;
+  const parsed = Number(limit);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, 100);
+}
+
+function normalizeLookupOrder(left: SeasonSortInfo, right: SeasonSortInfo) {
+  if (left.value !== null && right.value !== null) {
+    if (left.value !== right.value) return left.value - right.value;
+    return right.raw.localeCompare(left.raw, "el-GR", { numeric: true, sensitivity: "base" });
+  }
+  if (left.value === null && right.value === null) {
+    return right.raw.localeCompare(left.raw, "el-GR", { numeric: true, sensitivity: "base" });
+  }
+  if (left.value === null) return -1;
+  return 1;
+}
+
+function normalizeStaffRole(value: unknown, fallback: "other" | StaffRole = "other") {
+  const role = String(value ?? fallback).trim();
+  return STAFF_ROLES.has(role) ? role as StaffRole : fallback;
+}
+
+function parseSeasonOrderValue(input: { name?: string | null; startsOn?: string | null }) {
+  const seasonName = String(input.name ?? "").trim();
+  const startsOn = String(input.startsOn ?? "").trim();
+
+  const labelMatch = /^(\d{4})-(\d{2})$/.exec(seasonName);
+  if (labelMatch) return Number(labelMatch[1]);
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(startsOn)) {
+    return Number(startsOn.slice(0, 4));
+  }
+
+  return null;
+}
+
+function seasonSortInfo(row: { name: string | null; starts_on: string | null }) {
+  return {
+    value: parseSeasonOrderValue({ name: row.name, startsOn: row.starts_on }),
+    raw: String(row.name ?? ""),
+  } satisfies SeasonSortInfo;
+}
+
+function isEarlierSeason(left: SeasonSortInfo, right: SeasonSortInfo) {
+  if (left.value !== null && right.value !== null) return left.value < right.value;
+  if (left.value === null && right.value === null) return left.raw < right.raw;
+  if (left.value === null) return true;
+  return false;
+}
+
+function isAtOrBeforeSeason(left: SeasonSortInfo, right: SeasonSortInfo) {
+  if (left.value !== null && right.value !== null) return left.value <= right.value;
+  if (left.value === right.value) return left.raw <= right.raw;
+  if (left.value === null) return true;
+  return false;
+}
 
 async function database() {
   const env = await getKomoBasketCloudflareEnv();
   return env?.NEWS_DB ?? null;
+}
+
+function isCompletedCompetitionStatus(status: string | null | undefined) {
+  return isCompletedStatus(String(status ?? ""));
+}
+
+async function assertRosterTargetWritable(
+  db: D1DatabaseBinding,
+  seasonId: string,
+  competitionId: string,
+) {
+  const statusRows = await rows<{
+    seasonStatus: string | null;
+    competitionLifecycle: string | null;
+  }>(
+    db,
+    `SELECT
+      s.status AS seasonStatus,
+      COALESCE(cp.lifecycle_status, CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END) AS competitionLifecycle
+    FROM league_seasons s
+    JOIN league_competitions c ON c.id=?
+    LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
+    WHERE s.id=? AND c.id=?`,
+    [competitionId, seasonId, competitionId],
+  );
+
+  const seasonStatus = statusRows[0]?.seasonStatus ?? null;
+  const competitionLifecycle = statusRows[0]?.competitionLifecycle ?? null;
+
+  if (isCompletedCompetitionStatus(seasonStatus) || isCompletedCompetitionStatus(competitionLifecycle)) {
+    throw new Error("Η ενέργεια δεν επιτρέπεται σε ολοκληρωμένη σεζόν ή διοργάνωση.");
+  }
+}
+
+function isCompletedStatus(status: string) {
+  return COMPLETED_COMPETITION_STATUSES.has(String(status).trim().toLowerCase());
 }
 
 async function rows<T = DbRow>(db: D1DatabaseBinding, sql: string, values: unknown[] = []) {
@@ -67,8 +267,264 @@ function baseTeamSlug(season: string, slug: string) {
   return slug.startsWith(`${season}-`) ? slug.slice(season.length + 1) : slug;
 }
 
-function historicalGameId(season: string, competition: string, externalId: string) {
-  return `game_${season.replace(/[^0-9]/g, "")}_${competition}_${slugify(externalId)}`;
+function optionalInteger(value: unknown, label: string, minimum = 0) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum) {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρο.`);
+  }
+  return parsed;
+}
+
+function numberValue(value: unknown, fallback: number, label: string) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρο.`);
+  return parsed;
+}
+
+function booleanValue(value: unknown) {
+  return value === true || value === 1 || value === "1" || value === "true" || value === "on";
+}
+
+function teamInput(input: Record<string, unknown>, current?: DbRow) {
+  const name = String(input.name ?? current?.name ?? "").trim();
+  if (!name) throw new Error("Η ονομασία της ομάδας είναι υποχρεωτική.");
+
+  const slug = String(input.slug ?? "").trim() || slugify(name);
+  if (!slug) throw new Error("Δεν ήταν δυνατή η δημιουργία συντόμου ονόματος για την ομάδα.");
+
+  return {
+    name,
+    slug,
+    city: String(input.city ?? current?.city ?? "Κομοτηνή").trim() || "Κομοτηνή",
+    logoUrl: String(input.logoUrl ?? current?.logo_url ?? "").trim() || null,
+    active: input.active === undefined ? Number(current?.active ?? 1) === 1 : booleanValue(input.active),
+  };
+}
+
+function participationStatus(value: unknown, fallback = "active") {
+  const status = String(value ?? fallback).trim();
+  if (!PARTICIPATION_STATUSES.has(status)) {
+    throw new Error("Η κατάσταση συμμετοχής της ομάδας δεν είναι έγκυρη.");
+  }
+  return status;
+}
+
+function lifecycleValue(input: Record<string, unknown>, fallback = "under_construction") {
+  const lifecycle = String(input.lifecycleStatus ?? input.status ?? fallback);
+  const normalized = lifecycle === "draft" ? "under_construction"
+    : lifecycle === "active" ? "online"
+      : lifecycle === "completed" ? "complete" : lifecycle;
+  if (!COMPETITION_LIFECYCLES.has(normalized)) {
+    throw new Error("Η κατάσταση της διοργάνωσης δεν είναι έγκυρη.");
+  }
+  return normalized;
+}
+
+function phaseKindValue(input: Record<string, unknown>, fallback = "regular_season") {
+  const raw = String(input.phaseKind ?? input.phaseType ?? fallback);
+  const normalized = raw === "regular" ? "regular_season" : raw;
+  if (!PHASE_KINDS.has(normalized)) throw new Error("Ο τύπος της φάσης δεν είναι έγκυρος.");
+  return normalized;
+}
+
+function seasonInput(input: Record<string, unknown>): SeasonInput {
+  const name = String(input.name ?? "").trim();
+  const startsOn = String(input.startsOn ?? "").trim() || null;
+  const endsOn = String(input.endsOn ?? "").trim() || null;
+  const status = String(input.status ?? "draft");
+
+  const seasonMatch = /^(\d{4})-(\d{2})$/.exec(name);
+  if (!seasonMatch || Number(seasonMatch[2]) !== (Number(seasonMatch[1]) + 1) % 100) {
+    throw new Error("Η ονομασία της σεζόν πρέπει να έχει μορφή 2026-27.");
+  }
+  if (startsOn && !/^\d{4}-\d{2}-\d{2}$/.test(startsOn)) {
+    throw new Error("Η ημερομηνία έναρξης δεν είναι έγκυρη.");
+  }
+  if (endsOn && !/^\d{4}-\d{2}-\d{2}$/.test(endsOn)) {
+    throw new Error("Η ημερομηνία λήξης δεν είναι έγκυρη.");
+  }
+  if (startsOn && endsOn && startsOn > endsOn) {
+    throw new Error("Η ημερομηνία λήξης πρέπει να είναι μετά την ημερομηνία έναρξης.");
+  }
+  if (!SEASON_STATUSES.has(status)) {
+    throw new Error("Η κατάσταση της σεζόν δεν είναι έγκυρη.");
+  }
+
+  return { name, startsOn, endsOn, status: status as SeasonInput["status"] };
+}
+
+async function competitionInput(
+  db: D1DatabaseBinding,
+  input: Record<string, unknown>,
+  current?: DbRow,
+) {
+  const sourceId = String(input.sourceCompetitionId ?? "").trim();
+  const source = sourceId
+    ? await db.prepare(`SELECT c.*, cp.lifecycle_status, cf.expected_team_count,
+        cf.regular_season_meetings, cf.win_points, cf.loss_points, cf.forfeit_points,
+        cf.tiebreakers_json, cf.settings_json AS format_settings_json
+        FROM league_competitions c
+        LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
+        LEFT JOIN league_competition_formats cf ON cf.competition_id=c.id
+        WHERE c.id=?`).bind(sourceId).first<DbRow>()
+    : null;
+  if (sourceId && !source) throw new Error("Δεν βρέθηκε η διοργάνωση που επιλέχθηκε για επαναχρησιμοποίηση.");
+
+  const seasonId = String(input.seasonId ?? current?.season_id ?? "").trim();
+  const season = seasonId
+    ? await db.prepare("SELECT id FROM league_seasons WHERE id=?").bind(seasonId).first<{ id: string }>()
+    : null;
+  if (!season) throw new Error("Επίλεξε έγκυρη σεζόν.");
+
+  const name = String(input.name ?? source?.name ?? current?.name ?? "").trim();
+  if (!name) throw new Error("Η ονομασία της διοργάνωσης είναι υποχρεωτική.");
+  const type = String(input.type ?? source?.type ?? current?.type ?? "league");
+  if (!COMPETITION_TYPES.has(type)) throw new Error("Ο τύπος της διοργάνωσης δεν είναι έγκυρος.");
+  const lifecycleStatus = lifecycleValue(
+    input,
+    String(source?.lifecycle_status ?? current?.lifecycle_status ?? "under_construction"),
+  );
+  const expectedTeamCount = optionalInteger(
+    input.expectedTeamCount ?? source?.expected_team_count ?? current?.expected_team_count,
+    "Αριθμός ομάδων",
+    2,
+  );
+  const regularSeasonMeetings = optionalInteger(
+    input.regularSeasonMeetings ?? source?.regular_season_meetings ?? current?.regular_season_meetings ?? 1,
+    "Αγώνες μεταξύ ομάδων",
+    0,
+  ) ?? 1;
+
+  return {
+    sourceId,
+    seasonId,
+    name,
+    slug: String(input.slug ?? "").trim() || slugify(name),
+    type,
+    description: String(input.description ?? source?.description ?? current?.description ?? "").trim(),
+    lifecycleStatus,
+    legacyStatus: lifecycleToLegacyStatus[lifecycleStatus],
+    expectedTeamCount,
+    regularSeasonMeetings,
+    winPoints: numberValue(input.winPoints ?? source?.win_points ?? current?.win_points, 2, "Βαθμοί νίκης"),
+    lossPoints: numberValue(input.lossPoints ?? source?.loss_points ?? current?.loss_points, 1, "Βαθμοί ήττας"),
+    forfeitPoints: numberValue(input.forfeitPoints ?? source?.forfeit_points ?? current?.forfeit_points, 0, "Βαθμοί μηδενισμού"),
+    tiebreakersJson: String(input.tiebreakersJson ?? source?.tiebreakers_json ?? current?.tiebreakers_json ?? "[]"),
+    settingsJson: String(input.settingsJson ?? source?.format_settings_json ?? current?.format_settings_json ?? "{}"),
+    copyPhases: booleanValue(input.copyPhases),
+  };
+}
+
+async function saveCompetitionDetails(
+  db: D1DatabaseBinding,
+  id: string,
+  competition: Awaited<ReturnType<typeof competitionInput>>,
+) {
+  await db.prepare(`INSERT INTO league_competition_publication
+    (competition_id,lifecycle_status,published_at,completed_at,updated_at)
+    VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(competition_id) DO UPDATE SET
+      lifecycle_status=excluded.lifecycle_status,
+      published_at=CASE WHEN excluded.lifecycle_status='online' THEN COALESCE(league_competition_publication.published_at,CURRENT_TIMESTAMP) ELSE league_competition_publication.published_at END,
+      completed_at=CASE WHEN excluded.lifecycle_status='complete' THEN COALESCE(league_competition_publication.completed_at,CURRENT_TIMESTAMP) ELSE NULL END,
+      updated_at=CURRENT_TIMESTAMP`)
+    .bind(
+      id,
+      competition.lifecycleStatus,
+      competition.lifecycleStatus === "online" ? new Date().toISOString() : null,
+      competition.lifecycleStatus === "complete" ? new Date().toISOString() : null,
+    ).run();
+
+  await db.prepare(`INSERT INTO league_competition_formats
+    (competition_id,expected_team_count,regular_season_meetings,win_points,loss_points,forfeit_points,tiebreakers_json,settings_json,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(competition_id) DO UPDATE SET
+      expected_team_count=excluded.expected_team_count,
+      regular_season_meetings=excluded.regular_season_meetings,
+      win_points=excluded.win_points,
+      loss_points=excluded.loss_points,
+      forfeit_points=excluded.forfeit_points,
+      tiebreakers_json=excluded.tiebreakers_json,
+      settings_json=excluded.settings_json,
+      updated_at=CURRENT_TIMESTAMP`)
+    .bind(
+      id,
+      competition.expectedTeamCount,
+      competition.regularSeasonMeetings,
+      competition.winPoints,
+      competition.lossPoints,
+      competition.forfeitPoints,
+      competition.tiebreakersJson,
+      competition.settingsJson,
+    ).run();
+}
+
+async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>, current?: DbRow) {
+  const competitionId = String(input.competitionId ?? current?.competition_id ?? "").trim();
+  const competition = competitionId
+    ? await db.prepare("SELECT id FROM league_competitions WHERE id=?").bind(competitionId).first<{ id: string }>()
+    : null;
+  if (!competition) throw new Error("Επίλεξε έγκυρη διοργάνωση.");
+  const name = String(input.name ?? current?.name ?? "").trim();
+  if (!name) throw new Error("Η ονομασία της φάσης είναι υποχρεωτική.");
+  const phaseKind = phaseKindValue(input, String(current?.phase_kind ?? "regular_season"));
+  const bestOf = optionalInteger(input.bestOf ?? current?.best_of, "Best of", 1);
+  if (bestOf !== null && bestOf % 2 === 0) throw new Error("Το Best of πρέπει να είναι μονός αριθμός.");
+  const winsRequired = optionalInteger(input.winsRequired ?? current?.wins_required, "Απαιτούμενες νίκες", 1);
+  if (bestOf !== null && winsRequired !== null && winsRequired > Math.ceil(bestOf / 2)) {
+    throw new Error("Οι απαιτούμενες νίκες δεν συμφωνούν με το Best of.");
+  }
+  const sourcePhaseId = String(input.carryOverSourcePhaseId ?? current?.carry_over_source_phase_id ?? "").trim() || null;
+  if (sourcePhaseId) {
+    const source = await db.prepare("SELECT id FROM league_phases WHERE id=? AND competition_id=?")
+      .bind(sourcePhaseId, competitionId).first<{ id: string }>();
+    if (!source) throw new Error("Η φάση προέλευσης πρέπει να ανήκει στην ίδια διοργάνωση.");
+  }
+  return {
+    competitionId,
+    name,
+    slug: String(input.slug ?? "").trim() || slugify(name),
+    phaseKind,
+    legacyPhaseType: phaseKind === "regular_season" ? "regular" : phaseKind,
+    orderIndex: optionalInteger(input.orderIndex ?? current?.order_index ?? 0, "Σειρά εμφάνισης", 0) ?? 0,
+    bracketSize: optionalInteger(input.bracketSize ?? current?.bracket_size, "Μέγεθος ταμπλό", 2),
+    bestOf,
+    winsRequired,
+    carryOverEnabled: booleanValue(input.carryOverEnabled),
+    carryOverSourcePhaseId: sourcePhaseId,
+    settingsJson: String(input.settingsJson ?? current?.rule_settings_json ?? "{}"),
+  };
+}
+
+async function savePhaseRules(
+  db: D1DatabaseBinding,
+  id: string,
+  phase: Awaited<ReturnType<typeof phaseInput>>,
+) {
+  await db.prepare(`INSERT INTO league_phase_rules
+    (phase_id,phase_kind,bracket_size,best_of,wins_required,carry_over_enabled,carry_over_source_phase_id,settings_json,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(phase_id) DO UPDATE SET
+      phase_kind=excluded.phase_kind,
+      bracket_size=excluded.bracket_size,
+      best_of=excluded.best_of,
+      wins_required=excluded.wins_required,
+      carry_over_enabled=excluded.carry_over_enabled,
+      carry_over_source_phase_id=excluded.carry_over_source_phase_id,
+      settings_json=excluded.settings_json,
+      updated_at=CURRENT_TIMESTAMP`)
+    .bind(
+      id,
+      phase.phaseKind,
+      phase.bracketSize,
+      phase.bestOf,
+      phase.winsRequired,
+      phase.carryOverEnabled ? 1 : 0,
+      phase.carryOverEnabled ? phase.carryOverSourcePhaseId : null,
+      phase.settingsJson,
+    ).run();
 }
 
 export async function getLeagueAdminSnapshot() {
@@ -82,6 +538,8 @@ export async function getLeagueAdminSnapshot() {
       competitions: HISTORICAL_SEASONS.map((season) => ({
         id: `competition_${season}_league`, season_id: `season_${season}`,
         season_name: season, name: "KomoBasket League", slug: "komobasket-league", type: "league", status: "completed",
+        lifecycle_status: "complete", expected_team_count: null, regular_season_meetings: 1,
+        win_points: 2, loss_points: 1, forfeit_points: 0,
       })),
       teams: legacyTeams.map((team) => ({
         id: `team_${baseTeamSlug(team.season, team.slug)}`, name: team.name,
@@ -103,21 +561,41 @@ export async function getLeagueAdminSnapshot() {
 
   const [seasons, competitions, teams, participations, players, rosters, movements, phases, games] = await Promise.all([
     rows(db, "SELECT * FROM league_seasons ORDER BY name DESC"),
-    rows(db, `SELECT c.*, s.name AS season_name FROM league_competitions c JOIN league_seasons s ON s.id=c.season_id ORDER BY s.name DESC, c.name`),
+    rows(db, `SELECT c.*, s.name AS season_name,
+      COALESCE(cp.lifecycle_status,
+        CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END
+      ) AS lifecycle_status,
+      cf.expected_team_count, cf.regular_season_meetings, cf.win_points,
+      cf.loss_points, cf.forfeit_points, cf.tiebreakers_json, cf.settings_json AS format_settings_json
+      FROM league_competitions c
+      JOIN league_seasons s ON s.id=c.season_id
+      LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
+      LEFT JOIN league_competition_formats cf ON cf.competition_id=c.id
+      ORDER BY s.name DESC, c.name`),
     rows(db, "SELECT * FROM league_teams ORDER BY name"),
-    rows(db, `SELECT st.id, st.season_id, st.team_id, st.display_name, st.logo_url,
-      s.name AS season_name, t.name AS team_name,
-      GROUP_CONCAT(c.name, ', ') AS competition_names
-      FROM league_season_teams st
+    rows(db, `SELECT ct.id, ct.competition_id, ct.season_team_id, ct.seed, ct.status,
+      st.season_id, st.team_id, st.display_name, st.logo_url,
+      s.name AS season_name, t.name AS team_name, c.name AS competition_name
+      FROM league_competition_teams ct
+      JOIN league_season_teams st ON st.id=ct.season_team_id
       JOIN league_seasons s ON s.id=st.season_id
       JOIN league_teams t ON t.id=st.team_id
-      LEFT JOIN league_competition_teams ct ON ct.season_team_id=st.id
-      LEFT JOIN league_competitions c ON c.id=ct.competition_id
-      GROUP BY st.id ORDER BY s.name DESC, st.display_name`),
+      JOIN league_competitions c ON c.id=ct.competition_id
+      ORDER BY s.name DESC, c.name, st.display_name`),
     rows(db, "SELECT * FROM league_players ORDER BY display_name LIMIT 1000"),
     rows(db, `SELECT r.*, p.display_name AS player_name, t.name AS team_name, s.name AS season_name FROM league_roster_memberships r JOIN league_players p ON p.id=r.player_id JOIN league_teams t ON t.id=r.team_id JOIN league_seasons s ON s.id=r.season_id ORDER BY s.name DESC, t.name, p.display_name LIMIT 2000`),
     rows(db, `SELECT m.*, p.display_name AS player_name, ft.name AS from_team_name, tt.name AS to_team_name FROM league_player_movements m JOIN league_players p ON p.id=m.player_id LEFT JOIN league_teams ft ON ft.id=m.from_team_id LEFT JOIN league_teams tt ON tt.id=m.to_team_id ORDER BY m.effective_on DESC LIMIT 500`),
-    rows(db, `SELECT p.*, c.name AS competition_name FROM league_phases p JOIN league_competitions c ON c.id=p.competition_id ORDER BY c.name, p.order_index`),
+    rows(db, `SELECT p.*, c.name AS competition_name, s.name AS season_name,
+      COALESCE(pr.phase_kind, CASE WHEN p.phase_type='regular' THEN 'regular_season' ELSE p.phase_type END) AS phase_kind,
+      pr.bracket_size, pr.best_of, pr.wins_required, pr.carry_over_enabled,
+      pr.carry_over_source_phase_id, source_phase.name AS carry_over_source_name,
+      pr.settings_json AS rule_settings_json
+      FROM league_phases p
+      JOIN league_competitions c ON c.id=p.competition_id
+      JOIN league_seasons s ON s.id=c.season_id
+      LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+      LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
+      ORDER BY s.name DESC, c.name, p.order_index`),
     rows(db, `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name FROM league_games g JOIN league_teams ht ON ht.id=g.home_team_id JOIN league_teams at ON at.id=g.away_team_id LEFT JOIN league_phases p ON p.id=g.phase_id ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`),
   ]);
 
@@ -131,45 +609,1040 @@ export async function getLeagueAdminSnapshot() {
   };
 }
 
+async function loadSeasonSortInfo(db: D1DatabaseBinding, seasonId: string) {
+  return db.prepare("SELECT id,name,starts_on FROM league_seasons WHERE id=?")
+    .bind(seasonId).first<{ id: string; name: string | null; starts_on: string | null }>()
+    .then((season) => (season ? seasonSortInfo(season) : null));
+}
+
+export async function getPreviousRosterLookup(
+  seasonId: string,
+  competitionId: string,
+  teamId: string,
+) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+
+  const target = await loadSeasonSortInfo(db, seasonId);
+  if (!target) throw new Error("Δεν βρέθηκε η επιλεγμένη σεζόν.");
+
+  const targetAthleteCount = await db.prepare(
+    `SELECT COUNT(*) AS count FROM league_roster_memberships
+     WHERE season_id=? AND competition_id=? AND team_id=? AND status='active'`,
+  ).bind(seasonId, competitionId, teamId).first<{ count: number }>();
+
+  const targetStaffCount = await db.prepare(
+    `SELECT COUNT(*) AS count FROM league_staff_memberships
+     WHERE season_id=? AND competition_id=? AND team_id=?`,
+  ).bind(seasonId, competitionId, teamId).first<{ count: number }>();
+
+  const candidateSeasons = await rows<{
+    id: string;
+    name: string | null;
+    starts_on: string | null;
+  }>(
+    db,
+    `SELECT DISTINCT s.id, s.name, s.starts_on
+     FROM league_seasons s
+     JOIN league_competitions c ON c.season_id=s.id
+     JOIN league_competition_teams ct ON ct.competition_id=c.id
+     JOIN league_season_teams st ON st.id=ct.season_team_id
+     WHERE c.id=?
+       AND st.team_id=?
+       AND c.status IS NOT NULL`,
+    [competitionId, teamId],
+  );
+
+  const targetSort = target;
+  const previousCandidate = candidateSeasons
+    .map((season) => ({ ...seasonSortInfo({ name: season.name, starts_on: season.starts_on }), id: season.id }))
+    .filter((info) => isEarlierSeason(info, targetSort))
+    .sort((left, right) => normalizeLookupOrder(left, right))
+    .at(-1);
+
+  const previousSeasonId = previousCandidate?.id ?? null;
+
+  let previousAthleteCount = 0;
+  let previousStaffCount = 0;
+  if (previousSeasonId) {
+    const previousAthletes = await db.prepare(
+      `SELECT COUNT(*) AS count FROM league_roster_memberships
+       WHERE season_id=? AND competition_id=? AND team_id=? AND status='active'`,
+    ).bind(previousSeasonId, competitionId, teamId).first<{ count: number }>();
+    previousAthleteCount = previousAthletes?.count ?? 0;
+
+    const previousStaff = await db.prepare(
+      `SELECT COUNT(*) AS count FROM league_staff_memberships
+       WHERE season_id=? AND competition_id=? AND team_id=?`,
+    ).bind(previousSeasonId, competitionId, teamId).first<{ count: number }>();
+    previousStaffCount = previousStaff?.count ?? 0;
+  }
+
+  const previousSeasonInfo = previousSeasonId ? await loadSeasonSortInfo(db, previousSeasonId) : null;
+  const previousSeasonName = previousSeasonInfo ? previousSeasonInfo.raw : null;
+
+  return {
+    seasonId: previousSeasonId,
+    seasonName: previousSeasonName,
+    targetAthleteRosterExists: (targetAthleteCount?.count ?? 0) > 0,
+    targetAthleteCount: Number(targetAthleteCount?.count ?? 0),
+    targetStaffRosterExists: (targetStaffCount?.count ?? 0) > 0,
+    targetStaffCount: Number(targetStaffCount?.count ?? 0),
+    previousAthleteCount,
+    previousStaffCount,
+  } satisfies PreviousRosterInfo;
+}
+
+export async function getTeamRosterManagementView(
+  seasonId: string,
+  competitionId: string,
+  teamId: string,
+) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+
+  const selection = await db.prepare(`
+    SELECT
+      s.id AS season_id, s.name AS season_name,
+      c.id AS competition_id, c.name AS competition_name,
+      t.id AS team_id, t.name AS team_name
+    FROM league_seasons s
+    INNER JOIN league_competitions c ON c.season_id=s.id
+    INNER JOIN league_competition_teams ct ON ct.competition_id=c.id
+    INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+    INNER JOIN league_teams t ON t.id=st.team_id
+    WHERE s.id=? AND c.id=? AND t.id=?
+      AND ct.status IS NOT NULL
+  `).bind(seasonId, competitionId, teamId).first<{
+    season_id: string;
+    season_name: string;
+    competition_id: string;
+    competition_name: string;
+    team_id: string;
+    team_name: string;
+  }>();
+  if (!selection) throw new Error("Η επιλεγμένη ομάδα δεν συμμετέχει στη συγκεκριμένη διοργάνωση.");
+
+  const athletes = await rows<RosterAthleteRow>(db, `
+    SELECT
+      r.id AS roster_id,
+      p.id AS player_id,
+      p.first_name,
+      p.last_name,
+      p.display_name,
+      p.photo_url,
+      p.birth_date,
+      r.shirt_number
+    FROM league_roster_memberships r
+    INNER JOIN league_players p ON p.id = r.player_id
+    WHERE r.season_id=? AND r.competition_id=? AND r.team_id=? AND r.status='active'
+    ORDER BY COALESCE(p.last_name, p.display_name, ""), COALESCE(p.first_name, p.display_name, "")
+  `, [seasonId, competitionId, teamId]);
+
+  const staff = await rows<RosterStaffRow>(db, `
+    SELECT
+      sm.id AS membership_id,
+      s.id AS staff_id,
+      s.first_name,
+      s.last_name,
+      s.display_name,
+      s.photo_url,
+      s.birth_date,
+      sm.role,
+      sm.custom_role_label
+    FROM league_staff_memberships sm
+    INNER JOIN league_staff s ON s.id = sm.staff_id
+    WHERE sm.season_id=? AND sm.competition_id=? AND sm.team_id=?
+    ORDER BY COALESCE(s.last_name, s.display_name, ""), COALESCE(s.first_name, s.display_name, "")
+  `, [seasonId, competitionId, teamId]);
+
+  const previousRoster = await getPreviousRosterLookup(seasonId, competitionId, teamId);
+
+  return {
+    seasonId: selection.season_id,
+    seasonName: String(selection.season_name),
+    competitionId: selection.competition_id,
+    competitionName: String(selection.competition_name),
+    teamId: selection.team_id,
+    teamName: String(selection.team_name),
+    athletes,
+    staff,
+    previousRoster,
+  } satisfies TeamRosterManagementView;
+}
+
+export async function copyPreviousRoster(
+  db: D1DatabaseBinding,
+  seasonId: string,
+  competitionId: string,
+  teamId: string,
+  includeStaff = false,
+) {
+  const lookup = await getPreviousRosterLookup(seasonId, competitionId, teamId);
+  if (!lookup.seasonId) return { copiedAthletes: 0, copiedStaff: 0 };
+
+  const previousSeasonId = lookup.seasonId;
+
+  let copiedAthletes = 0;
+  const previousAthletes = await rows<{ player_id: string; shirt_number: number | null }>(
+    db,
+    `SELECT player_id, MAX(shirt_number) AS shirt_number
+     FROM league_roster_memberships
+     WHERE season_id=? AND team_id=? AND competition_id=? AND status='active'
+     GROUP BY player_id`,
+    [previousSeasonId, teamId, competitionId],
+  );
+
+  for (const player of previousAthletes) {
+    const existing = await db.prepare(`SELECT id
+      FROM league_roster_memberships
+      WHERE season_id=? AND competition_id=? AND team_id=? AND player_id=? AND status='active'
+      LIMIT 1`)
+      .bind(seasonId, competitionId, teamId, player.player_id)
+      .first<{ id: string }>();
+    if (existing) continue;
+
+    await db.prepare(`INSERT INTO league_roster_memberships
+      (id,season_id,competition_id,player_id,team_id,shirt_number,joined_on,left_on,status)
+      VALUES (?,?,?,?,?,?,NULL,NULL,'active')`)
+      .bind(
+        createEntityId("roster"),
+        seasonId,
+        competitionId,
+        player.player_id,
+        teamId,
+        player.shirt_number,
+      ).run();
+    copiedAthletes += 1;
+  }
+
+  let copiedStaff = 0;
+  if (includeStaff) {
+    const previousStaff = await rows<{
+      staff_id: string;
+      role: string;
+      custom_role_label: string | null;
+    }>(
+      db,
+      `SELECT staff_id, role, custom_role_label
+       FROM league_staff_memberships
+       WHERE season_id=? AND competition_id=? AND team_id=?`,
+      [previousSeasonId, competitionId, teamId],
+    );
+
+    for (const staff of previousStaff) {
+      const existing = await db.prepare(`SELECT id
+        FROM league_staff_memberships
+        WHERE season_id=? AND competition_id=? AND team_id=? AND staff_id=?`
+      ).bind(seasonId, competitionId, teamId, staff.staff_id).first<{ id: string }>();
+      if (existing) continue;
+
+      await db.prepare(`INSERT INTO league_staff_memberships
+        (id,staff_id,season_id,competition_id,team_id,role,custom_role_label)
+        VALUES (?,?,?,?,?,?,?)`)
+        .bind(
+          createEntityId("staffMembership"),
+          staff.staff_id,
+          seasonId,
+          competitionId,
+          teamId,
+          normalizeStaffRole(staff.role, "other"),
+          staff.custom_role_label,
+        ).run();
+      copiedStaff += 1;
+    }
+  }
+
+  return { copiedAthletes, copiedStaff };
+}
+
+export async function searchAthletesForRosterFoundation(input: SearchRequestInput) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const query = String(input.query ?? "").trim();
+  const limit = withLimit(input.limit, 25);
+  if (!query) return [] as SearchResultPlayer[];
+  const normalized = normalizePlayerName(query);
+  const wildcard = `%${normalized}%`;
+
+  const rowsQuery = await rows<{
+    player_id: string;
+    first_name: string | null;
+    last_name: string | null;
+    display_name: string;
+    birth_date: string | null;
+    last_team_name: string | null;
+    last_season_name: string | null;
+  }>(
+    db,
+    `SELECT
+      p.id AS player_id,
+      p.first_name,
+      p.last_name,
+      p.display_name,
+      p.birth_date,
+      (
+        SELECT t.name
+        FROM league_roster_memberships r
+        JOIN league_teams t ON t.id = r.team_id
+        WHERE r.player_id = p.id AND r.status='active'
+        ORDER BY r.created_at DESC
+        LIMIT 1
+      ) AS last_team_name,
+      (
+        SELECT s.name
+        FROM league_roster_memberships r
+        JOIN league_seasons s ON s.id = r.season_id
+        WHERE r.player_id = p.id AND r.status='active'
+        ORDER BY r.created_at DESC
+        LIMIT 1
+      ) AS last_season_name
+    FROM league_players p
+    WHERE p.normalized_name LIKE ?
+       OR lower(p.display_name) LIKE lower(?)
+       OR (p.first_name IS NOT NULL AND lower(p.first_name) LIKE lower(?))
+       OR (p.last_name IS NOT NULL AND lower(p.last_name) LIKE lower(?))
+    ORDER BY p.display_name ASC
+    LIMIT ?`,
+    [wildcard, `%${query}%`, wildcard, wildcard, limit],
+  );
+  if (rowsQuery.length === 0) {
+    return [];
+  }
+
+  const ids = rowsQuery.map((row) => row.player_id);
+  const placeholders = ids.map(() => "?").join(",");
+  const careerRows = await rows<{
+    player_id: string;
+    season_name: string;
+    team_name: string;
+    competition_name: string;
+    season_year_key: number | null;
+    season_start_on: string | null;
+  }>(
+    db,
+    `SELECT
+      roster.player_id,
+      season.name AS season_name,
+      team.name AS team_name,
+      competition.name AS competition_name,
+      CAST(substr(season.name, 1, 4) AS INTEGER) AS season_year_key,
+      season.starts_on AS season_start_on
+    FROM (
+      SELECT
+        player_id,
+        season_id,
+        team_id,
+        competition_id
+      FROM league_roster_memberships
+      WHERE player_id IN (${placeholders})
+      GROUP BY player_id, season_id, team_id
+    ) AS roster
+    JOIN league_seasons season ON season.id = roster.season_id
+    JOIN league_teams team ON team.id = roster.team_id
+    JOIN league_competitions competition ON competition.id = roster.competition_id
+    ORDER BY
+      CASE
+        WHEN CAST(substr(season.name, 1, 4) AS INTEGER) IS NOT NULL
+          THEN CAST(substr(season.name, 1, 4) AS INTEGER)
+        ELSE -1
+      END DESC,
+      season.name DESC,
+      team.name ASC`,
+    [...ids],
+  );
+
+  const careerHistoryByPlayer = new Map<string, {
+    season_name: string;
+    team_name: string;
+    competition_name: string | null;
+    season_year_key: number | null;
+  }[]>();
+
+  for (const row of careerRows) {
+    const history = careerHistoryByPlayer.get(row.player_id) ?? [];
+    const duplicate = history.some((entry) => entry.season_name === row.season_name && entry.team_name === row.team_name);
+    if (!duplicate) {
+      history.push({
+        season_name: row.season_name,
+        team_name: row.team_name,
+        competition_name: row.competition_name ?? null,
+        season_year_key: row.season_year_key ?? null,
+      });
+      careerHistoryByPlayer.set(row.player_id, history);
+    }
+  }
+
+  return rowsQuery.map((row) => ({
+    player_id: row.player_id,
+    first_name: row.first_name,
+    last_name: row.last_name,
+    display_name: row.display_name,
+    birth_date: row.birth_date,
+    last_team_name: row.last_team_name,
+    last_season_name: row.last_season_name,
+    career_history: careerHistoryByPlayer.get(row.player_id) ?? [],
+  }));
+}
+
+export async function searchStaffForRosterFoundation(input: SearchRequestInput) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const query = String(input.query ?? "").trim();
+  const limit = withLimit(input.limit, 25);
+  if (!query) return [] as SearchResultStaff[];
+  const wildcard = `%${normalizePlayerName(query)}%`;
+
+  const rowsQuery = await rows<{
+    staff_id: string;
+    first_name: string | null;
+    last_name: string | null;
+    display_name: string | null;
+    birth_date: string | null;
+    last_team_name: string | null;
+    last_season_name: string | null;
+  }>(
+    db,
+    `SELECT
+      s.id AS staff_id,
+      s.first_name,
+      s.last_name,
+      s.display_name,
+      s.birth_date,
+      (
+        SELECT t.name
+        FROM league_staff_memberships m
+        JOIN league_teams t ON t.id=m.team_id
+        WHERE m.staff_id=s.id
+        ORDER BY m.created_at DESC
+        LIMIT 1
+      ) AS last_team_name,
+      (
+        SELECT se.name
+        FROM league_staff_memberships m
+        JOIN league_seasons se ON se.id=m.season_id
+        WHERE m.staff_id=s.id
+        ORDER BY m.created_at DESC
+        LIMIT 1
+      ) AS last_season_name
+    FROM league_staff s
+    WHERE s.normalized_name LIKE ?
+       OR lower(s.display_name) LIKE lower(?)
+    ORDER BY s.display_name ASC
+    LIMIT ?`,
+    [wildcard, `%${String(query)}%`, limit],
+  );
+
+  return rowsQuery.map((row) => ({
+    staff_id: row.staff_id,
+    first_name: row.first_name,
+    last_name: row.last_name,
+    display_name: row.display_name,
+    birth_date: row.birth_date,
+    last_team_name: row.last_team_name,
+    last_season_name: row.last_season_name,
+  }));
+}
+
+export async function updateAthleteCanonical(input: {
+  playerId: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  displayName?: string | null;
+  birthDate?: string | null;
+  photoUrl?: string | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const playerId = String(input.playerId ?? "").trim();
+  if (!playerId) throw new Error("Δεν επιλέχθηκε αθλητής.");
+
+  const existing = await db.prepare("SELECT * FROM league_players WHERE id=?")
+    .bind(playerId).first<DbRow>();
+  if (!existing) throw new Error("Δεν βρέθηκε αθλητής.");
+
+  const displayName = String(input.displayName ?? existing.display_name).trim() || String(existing.display_name);
+  const normalizedName = normalizePlayerName(displayName);
+  const firstName = input.firstName !== undefined ? (String(input.firstName).trim() || null) : existing.first_name ?? null;
+  const lastName = input.lastName !== undefined ? (String(input.lastName).trim() || null) : existing.last_name ?? null;
+  const birthDate = input.birthDate !== undefined ? (input.birthDate ? String(input.birthDate) : null) : existing.birth_date ?? null;
+  const photoUrl = input.photoUrl !== undefined ? (input.photoUrl ? String(input.photoUrl) : null) : existing.photo_url ?? null;
+
+  await db.prepare(`UPDATE league_players
+    SET first_name=?, last_name=?, display_name=?, normalized_name=?, birth_date=?, photo_url=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).bind(firstName, lastName, displayName, normalizedName, birthDate, photoUrl, playerId).run();
+  return { playerId };
+}
+
+export async function updateRosterShirtNumber(input: { rosterId: string; shirtNumber: number | null }) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const rosterId = String(input.rosterId ?? "").trim();
+  if (!rosterId) throw new Error("Δεν επιλέχθηκε εγγραφή ρόστερ.");
+  const existing = await db.prepare("SELECT id, season_id, competition_id FROM league_roster_memberships WHERE id=?")
+    .bind(rosterId).first<{ id: string; season_id: string; competition_id: string }>();
+  if (!existing) throw new Error("Δεν βρέθηκε η εγγραφή.");
+  await assertRosterTargetWritable(db, existing.season_id, existing.competition_id);
+
+  await db.prepare(`UPDATE league_roster_memberships
+    SET shirt_number=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).bind(input.shirtNumber, rosterId).run();
+  return { rosterId };
+}
+
+export async function removeAthleteFromRoster(input: { rosterId: string; effectiveOn?: string | null }) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const rosterId = String(input.rosterId ?? "").trim();
+  if (!rosterId) throw new Error("Δεν επιλέχθηκε εγγραφή ρόστερ.");
+  const date = String(input.effectiveOn || new Date().toISOString().slice(0, 10));
+  const existing = await db.prepare(
+    "SELECT id, player_id, team_id, season_id, competition_id FROM league_roster_memberships WHERE id=?",
+  ).bind(rosterId).first<{ id: string; player_id: string; team_id: string; season_id: string; competition_id: string }>();
+  if (!existing) throw new Error("Δεν βρέθηκε η εγγραφή.");
+  await assertRosterTargetWritable(db, existing.season_id, existing.competition_id);
+
+  await db.prepare(`UPDATE league_roster_memberships
+    SET status='departed', left_on=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).bind(date, rosterId).run();
+  await db.prepare(`INSERT INTO league_player_movements
+    (id, player_id, season_id, from_team_id, to_team_id, movement_type, effective_on, note)
+    VALUES (?, ?, ?, ?, ?, 'departure', ?, '')`)
+    .bind(createEntityId("movement"), existing.player_id, existing.season_id, existing.team_id, null, date).run();
+  return { rosterId };
+}
+
+export async function createAthleteCanonical(input: {
+  firstName: string;
+  lastName: string;
+  birthDate?: string | null;
+  photoUrl?: string | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+
+  const firstName = String(input.firstName ?? "").trim();
+  const lastName = String(input.lastName ?? "").trim();
+  if (!firstName || !lastName) throw new Error("Το όνομα και το επώνυμο είναι υποχρεωτικά.");
+
+  const displayName = `${firstName} ${lastName}`.trim();
+  const normalizedName = normalizePlayerName(displayName);
+  const id = createEntityId("player");
+  const birthDate = input.birthDate ? String(input.birthDate) : null;
+  const photoUrl = input.photoUrl ? String(input.photoUrl) : null;
+
+  await db.prepare(`INSERT INTO league_players
+    (id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active, slug)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`)
+    .bind(id, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, slugify(displayName))
+    .run();
+
+  return { playerId: id };
+}
+
+function athleteInTargetRosterRowExists(
+  db: D1DatabaseBinding,
+  seasonId: string,
+  competitionId: string,
+  teamId: string,
+  playerId: string,
+) {
+  return db.prepare(`SELECT id FROM league_roster_memberships
+    WHERE season_id=? AND competition_id=? AND team_id=? AND player_id=? AND status='active'`)
+    .bind(seasonId, competitionId, teamId, playerId).first<{ id: string }>();
+}
+
+export async function addExistingAthleteToRoster(input: {
+  playerId: string;
+  seasonId: string;
+  competitionId: string;
+  teamId: string;
+  shirtNumber?: number | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+
+  const playerId = String(input.playerId ?? "").trim();
+  const seasonId = String(input.seasonId ?? "").trim();
+  const competitionId = String(input.competitionId ?? "").trim();
+  const teamId = String(input.teamId ?? "").trim();
+  if (!playerId || !seasonId || !competitionId || !teamId) {
+    throw new Error("Λείπουν υποχρεωτικά πεδία.");
+  }
+
+  const player = await db.prepare(`SELECT id FROM league_players WHERE id=?`).bind(playerId).first<{ id: string }>();
+  if (!player) throw new Error("Δεν βρέθηκε ο αθλητής.");
+  const playerConflict = await db.prepare(`SELECT id FROM league_staff WHERE id=?`).bind(playerId).first<{ id: string }>();
+  if (playerConflict) {
+    throw new Error("Το αναγνωριστικό δεν μπορεί να χρησιμοποιηθεί ταυτόχρονα ως staff.");
+  }
+
+  await assertRosterTargetWritable(db, seasonId, competitionId);
+
+  const exists = await athleteInTargetRosterRowExists(db, seasonId, competitionId, teamId, playerId);
+  if (exists) {
+    return { rosterId: exists.id, created: false, duplicate: true };
+  }
+
+  const rosterId = createEntityId("roster");
+  await db.prepare(`INSERT INTO league_roster_memberships
+    (id, season_id, competition_id, player_id, team_id, shirt_number, joined_on, left_on, status, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,NULL,NULL,'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+    .bind(rosterId, seasonId, competitionId, playerId, teamId, input.shirtNumber ?? null).run();
+
+  return { rosterId, created: true, duplicate: false };
+}
+
+export async function createAthleteWithRoster(input: {
+  firstName: string;
+  lastName: string;
+  birthDate?: string | null;
+  photoUrl?: string | null;
+  seasonId: string;
+  competitionId: string;
+  teamId: string;
+  shirtNumber?: number | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+
+  const seasonId = String(input.seasonId ?? "").trim();
+  const competitionId = String(input.competitionId ?? "").trim();
+  const teamId = String(input.teamId ?? "").trim();
+  if (!seasonId || !competitionId || !teamId) throw new Error("Λείπουν τα στοιχεία ρόστερ.");
+
+  await assertRosterTargetWritable(db, seasonId, competitionId);
+
+  const createdAthlete = await createAthleteCanonical({
+    firstName: input.firstName,
+    lastName: input.lastName,
+    birthDate: input.birthDate,
+    photoUrl: input.photoUrl,
+  });
+
+  const roster = await addExistingAthleteToRoster({
+    playerId: createdAthlete.playerId,
+    seasonId,
+    competitionId,
+    teamId,
+    shirtNumber: input.shirtNumber ?? null,
+  });
+
+  return { playerId: createdAthlete.playerId, rosterId: roster.rosterId, duplicate: false, created: true };
+}
+
+export async function createStaffInFoundation(input: {
+  firstName?: string | null;
+  lastName?: string | null;
+  displayName?: string | null;
+  birthDate?: string | null;
+  photoUrl?: string | null;
+  active?: boolean;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const firstName = String(input.firstName ?? "").trim() || null;
+  const lastName = String(input.lastName ?? "").trim() || null;
+  const displayName = String(input.displayName ?? "").trim() || `${firstName ?? ""} ${lastName ?? ""}`.trim();
+  if (!displayName) throw new Error("Απαιτείται όνομα.");
+  const normalizedName = normalizePlayerName(displayName);
+
+  const id = createEntityId("staff");
+  const birthDate = input.birthDate ? String(input.birthDate) : null;
+  const photoUrl = input.photoUrl ? String(input.photoUrl) : null;
+  const active = input.active === undefined ? 1 : (input.active ? 1 : 0);
+
+  await db.prepare(`INSERT INTO league_staff
+    (id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, active)
+    .run();
+  return { staffId: id };
+}
+
+export async function createStaffWithRoster(input: {
+  firstName: string;
+  lastName: string;
+  birthDate?: string | null;
+  photoUrl?: string | null;
+  role: StaffRole | string;
+  customRoleLabel?: string | null;
+  seasonId: string;
+  competitionId: string;
+  teamId: string;
+}) {
+  const staff = await createStaffInFoundation({
+    firstName: input.firstName,
+    lastName: input.lastName,
+    birthDate: input.birthDate ?? null,
+    photoUrl: input.photoUrl ?? null,
+  });
+
+  const staffId = staff.staffId;
+  const membership = await upsertStaffMembership({
+    staffId,
+    seasonId: String(input.seasonId),
+    competitionId: String(input.competitionId),
+    teamId: String(input.teamId),
+    role: input.role,
+    customRoleLabel: input.customRoleLabel ?? null,
+  });
+  return {
+    staffId,
+    membershipId: membership.staffMembershipId,
+    membershipUpdated: membership.updated,
+  };
+}
+
+export async function addExistingStaffToRoster(input: {
+  staffId: string;
+  seasonId: string;
+  competitionId: string;
+  teamId: string;
+  role: StaffRole | string;
+  customRoleLabel?: string | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const staffId = String(input.staffId ?? "").trim();
+  const seasonId = String(input.seasonId ?? "").trim();
+  const competitionId = String(input.competitionId ?? "").trim();
+  const teamId = String(input.teamId ?? "").trim();
+  if (!staffId || !seasonId || !competitionId || !teamId) {
+    throw new Error("Λείπουν υποχρεωτικά πεδία.");
+  }
+
+  const staff = await rows(db,"SELECT id FROM league_staff WHERE id=?", [staffId]);
+  if (!(await staff).length) throw new Error("Δεν βρέθηκε το μέλος Staff.");
+  const staffConflict = await db.prepare(`SELECT id FROM league_players WHERE id=?`).bind(staffId).first<{ id: string }>();
+  if (staffConflict) {
+    throw new Error("Το αναγνωριστικό δεν μπορεί να χρησιμοποιηθεί ταυτόχρονα ως αθλητής.");
+  }
+  await assertRosterTargetWritable(db, seasonId, competitionId);
+
+  return upsertStaffMembership({
+    staffId,
+    seasonId,
+    competitionId,
+    teamId,
+    role: input.role,
+    customRoleLabel: input.customRoleLabel,
+  });
+}
+
+export async function copyPreviousRosterForTeam(input: {
+  seasonId: string;
+  competitionId: string;
+  teamId: string;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const seasonId = String(input.seasonId ?? "").trim();
+  const competitionId = String(input.competitionId ?? "").trim();
+  const teamId = String(input.teamId ?? "").trim();
+  if (!seasonId || !competitionId || !teamId) throw new Error("Λείπουν στοιχεία στοχευμένου ρόστερ.");
+  await assertRosterTargetWritable(db, seasonId, competitionId);
+
+  return copyPreviousRoster(db, seasonId, competitionId, teamId, true);
+}
+
+export async function updateStaffCanonical(input: {
+  staffId: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  displayName?: string | null;
+  birthDate?: string | null;
+  photoUrl?: string | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const staffId = String(input.staffId ?? "").trim();
+  if (!staffId) throw new Error("Δεν επιλέχθηκε staff.");
+  const existing = await db.prepare("SELECT * FROM league_staff WHERE id=?")
+    .bind(staffId).first<DbRow>();
+  if (!existing) throw new Error("Δεν βρέθηκε staff.");
+
+  const displayName = String(input.displayName ?? existing.display_name).trim() || String(existing.display_name);
+  const normalizedName = normalizePlayerName(displayName);
+  const firstName = input.firstName !== undefined ? (String(input.firstName).trim() || null) : existing.first_name ?? null;
+  const lastName = input.lastName !== undefined ? (String(input.lastName).trim() || null) : existing.last_name ?? null;
+  const birthDate = input.birthDate !== undefined ? (input.birthDate ? String(input.birthDate) : null) : existing.birth_date ?? null;
+  const photoUrl = input.photoUrl !== undefined ? (input.photoUrl ? String(input.photoUrl) : null) : existing.photo_url ?? null;
+
+  await db.prepare(`UPDATE league_staff
+    SET first_name=?, last_name=?, display_name=?, normalized_name=?, birth_date=?, photo_url=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).bind(firstName, lastName, displayName, normalizedName, birthDate, photoUrl, staffId).run();
+  return { staffId };
+}
+
+export async function upsertStaffMembership(input: {
+  staffId: string;
+  seasonId: string;
+  competitionId: string;
+  teamId: string;
+  role: StaffRole | string;
+  customRoleLabel?: string | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const staffId = String(input.staffId ?? "").trim();
+  const seasonId = String(input.seasonId ?? "").trim();
+  const competitionId = String(input.competitionId ?? "").trim();
+  const teamId = String(input.teamId ?? "").trim();
+  if (!staffId || !seasonId || !competitionId || !teamId) throw new Error("Δεν υπάρχουν όλα τα πεδία συμμετοχής.");
+  await assertRosterTargetWritable(db, seasonId, competitionId);
+
+  const role = normalizeStaffRole(input.role, "other");
+  const customRoleLabel = input.customRoleLabel ? String(input.customRoleLabel) : null;
+
+  const existing = await db.prepare(`SELECT id FROM league_staff_memberships
+    WHERE staff_id=? AND season_id=? AND competition_id=? AND team_id=?`)
+    .bind(staffId, seasonId, competitionId, teamId).first<{ id: string }>();
+  if (existing) {
+    await db.prepare(`UPDATE league_staff_memberships
+      SET role=?, custom_role_label=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).bind(role, customRoleLabel, existing.id).run();
+    return { staffMembershipId: existing.id, updated: true };
+  }
+
+  const id = createEntityId("staffMembership");
+  await db.prepare(`INSERT INTO league_staff_memberships
+    (id, staff_id, season_id, competition_id, team_id, role, custom_role_label)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, staffId, seasonId, competitionId, teamId, role, customRoleLabel).run();
+  return { staffMembershipId: id, updated: false };
+}
+
+export async function updateStaffMembership(input: {
+  membershipId: string;
+  role: StaffRole | string;
+  customRoleLabel?: string | null;
+}) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const membershipId = String(input.membershipId ?? "").trim();
+  if (!membershipId) throw new Error("Δεν επιλέχθηκε εγγραφή staff.");
+  const role = normalizeStaffRole(input.role, "other");
+  const customRoleLabel = input.customRoleLabel ? String(input.customRoleLabel) : null;
+  const existing = await db.prepare("SELECT id, season_id, competition_id FROM league_staff_memberships WHERE id=?")
+    .bind(membershipId).first<{ id: string; season_id: string; competition_id: string }>();
+  if (!existing) throw new Error("Δεν βρέθηκε η εγγραφή.");
+  await assertRosterTargetWritable(db, existing.season_id, existing.competition_id);
+
+  await db.prepare(`UPDATE league_staff_memberships
+    SET role=?, custom_role_label=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).bind(role, customRoleLabel, membershipId).run();
+  return { staffMembershipId: membershipId };
+}
+
+export async function removeStaffFromRoster(input: { membershipId: string }) {
+  const db = await database();
+  if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
+  const membershipId = String(input.membershipId ?? "").trim();
+  if (!membershipId) throw new Error("Δεν επιλέχθηκε εγγραφή staff.");
+  const existing = await db.prepare("SELECT id, season_id, competition_id FROM league_staff_memberships WHERE id=?")
+    .bind(membershipId).first<{ id: string; season_id: string; competition_id: string }>();
+  if (!existing) throw new Error("Δεν βρέθηκε η εγγραφή.");
+  await assertRosterTargetWritable(db, existing.season_id, existing.competition_id);
+  await db.prepare("DELETE FROM league_staff_memberships WHERE id=?").bind(membershipId).run();
+  return { staffMembershipId: membershipId };
+}
+
 export async function createLeagueEntity(resource: string, input: Record<string, unknown>, actor: string) {
   const db = await database();
   if (!db) throw new Error("Η αποθήκευση διοργανώσεων είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
-  const id = createEntityId(resource.replace(/s$/, ""));
+  let id = createEntityId(resource.replace(/s$/, ""));
   const now = new Date().toISOString();
 
   if (resource === "seasons") {
-    const name = String(input.name ?? "").trim();
+    const season = seasonInput(input);
+    const existing = await db.prepare("SELECT id FROM league_seasons WHERE name=?")
+      .bind(season.name).first<{ id: string }>();
+    if (existing) throw new Error("Υπάρχει ήδη σεζόν με αυτή την ονομασία.");
     await db.prepare(`INSERT INTO league_seasons (id,name,slug,starts_on,ends_on,status) VALUES (?,?,?,?,?,?)`)
-      .bind(id, name, String(input.slug || slugify(name)), input.startsOn || null, input.endsOn || null, input.status || "draft").run();
+      .bind(id, season.name, String(input.slug || slugify(season.name)), season.startsOn, season.endsOn, season.status).run();
   } else if (resource === "competitions") {
-    const name = String(input.name ?? "").trim();
+    const competition = await competitionInput(db, input);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_competitions WHERE season_id=? AND slug=?",
+    ).bind(competition.seasonId, competition.slug).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη διοργάνωση με αυτή την ονομασία στη συγκεκριμένη σεζόν.");
     await db.prepare(`INSERT INTO league_competitions (id,season_id,name,slug,type,description,status) VALUES (?,?,?,?,?,?,?)`)
-      .bind(id, input.seasonId, name, String(input.slug || slugify(name)), input.type || "league", input.description || "", input.status || "draft").run();
+      .bind(
+        id,
+        competition.seasonId,
+        competition.name,
+        competition.slug,
+        competition.type,
+        competition.description,
+        competition.legacyStatus,
+      ).run();
+    await saveCompetitionDetails(db, id, competition);
+
+    if (competition.copyPhases && competition.sourceId) {
+      const sourcePhases = await rows<DbRow>(db, `SELECT p.*,
+        pr.phase_kind, pr.bracket_size, pr.best_of, pr.wins_required,
+        pr.carry_over_enabled, pr.carry_over_source_phase_id,
+        pr.settings_json AS rule_settings_json
+        FROM league_phases p
+        LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+        WHERE p.competition_id=? ORDER BY p.order_index`, [competition.sourceId]);
+      const copiedIds = new Map<string, string>();
+      for (const sourcePhase of sourcePhases) {
+        const phaseId = createEntityId("phase");
+        copiedIds.set(String(sourcePhase.id), phaseId);
+        await db.prepare(`INSERT INTO league_phases
+          (id,competition_id,name,slug,phase_type,order_index,settings_json)
+          VALUES (?,?,?,?,?,?,?)`)
+          .bind(
+            phaseId,
+            id,
+            sourcePhase.name,
+            sourcePhase.slug,
+            sourcePhase.phase_type,
+            sourcePhase.order_index,
+            sourcePhase.settings_json ?? "{}",
+          ).run();
+        await db.prepare(`INSERT INTO league_phase_rules
+          (phase_id,phase_kind,bracket_size,best_of,wins_required,carry_over_enabled,carry_over_source_phase_id,settings_json)
+          VALUES (?,?,?,?,?,?,NULL,?)
+          ON CONFLICT(phase_id) DO UPDATE SET
+            phase_kind=excluded.phase_kind, bracket_size=excluded.bracket_size,
+            best_of=excluded.best_of, wins_required=excluded.wins_required,
+            carry_over_enabled=excluded.carry_over_enabled,
+            carry_over_source_phase_id=NULL, settings_json=excluded.settings_json`)
+          .bind(
+            phaseId,
+            sourcePhase.phase_kind ?? (sourcePhase.phase_type === "regular" ? "regular_season" : sourcePhase.phase_type),
+            sourcePhase.bracket_size,
+            sourcePhase.best_of,
+            sourcePhase.wins_required,
+            sourcePhase.carry_over_enabled ?? 0,
+            sourcePhase.rule_settings_json ?? "{}",
+          ).run();
+      }
+      for (const sourcePhase of sourcePhases) {
+        const copiedSource = copiedIds.get(String(sourcePhase.carry_over_source_phase_id ?? ""));
+        if (copiedSource) {
+          await db.prepare("UPDATE league_phase_rules SET carry_over_source_phase_id=? WHERE phase_id=?")
+            .bind(copiedSource, copiedIds.get(String(sourcePhase.id))).run();
+        }
+      }
+    }
   } else if (resource === "teams") {
-    const name = String(input.name ?? "").trim();
-    await db.prepare(`INSERT INTO league_teams (id,name,slug,city,logo_url,active) VALUES (?,?,?,?,?,1)`)
-      .bind(id, name, String(input.slug || slugify(name)), input.city || "Κομοτηνή", input.logoUrl || null).run();
+    const team = teamInput(input);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_teams WHERE slug=? OR LOWER(TRIM(name))=LOWER(TRIM(?))",
+    ).bind(team.slug, team.name).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη ομάδα με αυτή την ονομασία.");
+    await db.prepare(`INSERT INTO league_teams (id,name,slug,city,logo_url,active) VALUES (?,?,?,?,?,?)`)
+      .bind(id, team.name, team.slug, team.city, team.logoUrl, team.active ? 1 : 0).run();
   } else if (resource === "participations") {
-    const seasonId = String(input.seasonId ?? "");
-    const teamId = String(input.teamId ?? "");
-    if (!seasonId || !teamId) throw new Error("Η σεζόν και η ομάδα είναι υποχρεωτικές.");
-    const existingSeasonTeam = await db.prepare(
-      "SELECT id FROM league_season_teams WHERE season_id=? AND team_id=?",
-    ).bind(seasonId, teamId).first<{ id: string }>();
-    const seasonTeamId = existingSeasonTeam?.id ?? id;
-    if (!existingSeasonTeam) {
+    const seasonId = String(input.seasonId ?? "").trim();
+    const competitionId = String(input.competitionId ?? "").trim();
+    const rawTeamIds = input.teamIds;
+    const singleTeamId = String(input.teamId ?? "").trim();
+    const normalizedTeamIds = new Set<string>();
+
+    if (Array.isArray(rawTeamIds)) {
+      for (const value of rawTeamIds) {
+        const normalized = String(value).trim();
+        if (normalized) normalizedTeamIds.add(normalized);
+      }
+    } else if (typeof rawTeamIds === "string") {
+      for (const value of rawTeamIds.split(",").map((value) => value.trim()).filter(Boolean)) {
+        normalizedTeamIds.add(value);
+      }
+    }
+
+    if (singleTeamId) normalizedTeamIds.add(singleTeamId);
+
+    const teamIds = Array.from(normalizedTeamIds);
+
+    if (!seasonId || !competitionId || !teamIds.length) {
+      throw new Error("Η σεζόν, η διοργάνωση και η ομάδα είναι υποχρεωτικές.");
+    }
+
+    const competition = await db.prepare(
+      "SELECT id FROM league_competitions WHERE id=? AND season_id=?",
+    ).bind(competitionId, seasonId).first<{ id: string }>();
+    if (!competition) throw new Error("Η διοργάνωση δεν ανήκει στην επιλεγμένη σεζόν.");
+
+    const normalizedSeed = optionalInteger(input.seed, "Seed", 1);
+    let created = 0;
+    let existing = 0;
+
+    for (const teamId of teamIds) {
       const team = await db.prepare("SELECT name,logo_url FROM league_teams WHERE id=?")
         .bind(teamId).first<{ name: string; logo_url: string | null }>();
       if (!team) throw new Error("Δεν βρέθηκε η ομάδα.");
-      await db.prepare(`INSERT INTO league_season_teams
-        (id,season_id,team_id,display_name,logo_url) VALUES (?,?,?,?,?)`)
-        .bind(seasonTeamId, seasonId, teamId, input.displayName || team.name, input.logoUrl || team.logo_url).run();
+
+      const existingSeasonTeam = await db.prepare(
+        "SELECT id FROM league_season_teams WHERE season_id=? AND team_id=?",
+      ).bind(seasonId, teamId).first<{ id: string }>();
+      let seasonTeamId = existingSeasonTeam?.id ?? "";
+      if (!seasonTeamId) {
+        const pendingSeasonTeamId = createEntityId("season_team");
+        await db.prepare(`INSERT INTO league_season_teams
+          (id,season_id,team_id,display_name,logo_url) VALUES (?,?,?,?,?)
+          ON CONFLICT(season_id,team_id) DO NOTHING`)
+          .bind(pendingSeasonTeamId, seasonId, teamId, input.displayName || team.name, input.logoUrl || team.logo_url).run();
+
+        const createdSeasonTeam = await db.prepare(
+          "SELECT id FROM league_season_teams WHERE season_id=? AND team_id=?",
+        ).bind(seasonId, teamId).first<{ id: string }>();
+        seasonTeamId = createdSeasonTeam?.id || "";
+        if (!seasonTeamId) throw new Error("Αποτυχία αποθήκευσης σχέσης ομάδας με σεζόν.");
+      }
+
+      const existingEntry = await db.prepare(
+        "SELECT id,status FROM league_competition_teams WHERE competition_id=? AND season_team_id=?",
+      ).bind(competitionId, seasonTeamId).first<{ id: string; status: string }>();
+      if (existingEntry) {
+        existing += 1;
+        if (existingEntry.status !== "active") {
+          await db.prepare(
+            "UPDATE league_competition_teams SET seed=?,status='active' WHERE id=?",
+          ).bind(normalizedSeed, existingEntry.id).run();
+        }
+        continue;
+      }
+
+      const insertResult = (await db.prepare(`INSERT INTO league_competition_teams
+        (id,competition_id,season_team_id,seed,status) VALUES (?,?,?,?,'active')
+        ON CONFLICT(competition_id, season_team_id) DO NOTHING`)
+        .bind(createEntityId("competition_team"), competitionId, seasonTeamId, normalizedSeed).run()) as { meta?: { changes?: number } };
+      const finalEntry = await db.prepare(
+        "SELECT id,status FROM league_competition_teams WHERE competition_id=? AND season_team_id=?",
+      ).bind(competitionId, seasonTeamId).first<{ id: string; status: string }>();
+      if (!finalEntry) {
+        throw new Error("Αποτυχία αποθήκευσης συμμετοχής σε διοργάνωση.");
+      }
+      if (finalEntry.status !== "active") {
+        await db.prepare(
+          "UPDATE league_competition_teams SET seed=?,status='active' WHERE id=?",
+        ).bind(normalizedSeed, finalEntry.id).run();
+        existing += 1;
+        continue;
+      }
+      if (insertResult.meta?.changes) {
+        created += 1;
+      } else {
+        existing += 1;
+      }
     }
-    if (input.competitionId) {
-      await db.prepare(`INSERT OR IGNORE INTO league_competition_teams
-        (id,competition_id,season_team_id,seed,status) VALUES (?,?,?,?,'active')`)
-        .bind(createEntityId("entry"), input.competitionId, seasonTeamId, input.seed || null).run();
-    }
+
+    // Στη φάση 5C: προσθήκη participation χωρίς αυτόματη αντιγραφή roster.
+
+    await db.prepare(`INSERT INTO league_audit_log (id,actor_email,action,entity_type,entity_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(createEntityId("audit"), actor, "create", "participations", "", JSON.stringify({ seasonId, competitionId, teamIds, created, existing }), now).run();
+
+    return {
+      teamIds: teamIds.length,
+      created,
+      existing,
+      message: `Προστέθηκαν ${created} ομάδες. ${existing > 0 ? `${existing} υπήρχαν ήδη στη διοργάνωση.` : ""}`.trim(),
+    };
   } else if (resource === "players") {
     const name = String(input.displayName ?? "").trim();
     const existing = await rows<{ id: string; display_name: string }>(db, "SELECT id,display_name FROM league_players");
@@ -184,9 +1657,14 @@ export async function createLeagueEntity(resource: string, input: Record<string,
   } else if (resource === "rosters") {
     await addRosterMembership(db, id, input);
   } else if (resource === "phases") {
-    const name = String(input.name ?? "").trim();
+    const phase = await phaseInput(db, input);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_phases WHERE competition_id=? AND slug=?",
+    ).bind(phase.competitionId, phase.slug).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη φάση με αυτή την ονομασία στη διοργάνωση.");
     await db.prepare(`INSERT INTO league_phases (id,competition_id,name,slug,phase_type,order_index) VALUES (?,?,?,?,?,?)`)
-      .bind(id, input.competitionId, name, String(input.slug || slugify(name)), input.phaseType || "regular", Number(input.orderIndex || 0)).run();
+      .bind(id, phase.competitionId, phase.name, phase.slug, phase.legacyPhaseType, phase.orderIndex).run();
+    await savePhaseRules(db, id, phase);
   } else if (resource === "games") {
     await db.prepare(`INSERT INTO league_games (id,competition_id,phase_id,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(id, input.competitionId, input.phaseId || null, input.roundLabel || "", input.scheduledAt || null, input.venue || "", input.homeTeamId, input.awayTeamId, input.homeScore ?? null, input.awayScore ?? null, input.status || "scheduled").run();
@@ -197,6 +1675,455 @@ export async function createLeagueEntity(resource: string, input: Record<string,
   await db.prepare(`INSERT INTO league_audit_log (id,actor_email,action,entity_type,entity_id,details_json,created_at) VALUES (?,?,?,?,?,?,?)`)
     .bind(createEntityId("audit"), actor, "create", resource, id, JSON.stringify(input), now).run();
   return { id, automaticallyMatched: false };
+}
+
+export async function updateLeagueSeason(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η επεξεργασία σεζόν είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε σεζόν για επεξεργασία.");
+
+  const current = await db.prepare("SELECT * FROM league_seasons WHERE id=?")
+    .bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η σεζόν.");
+
+  const season = seasonInput(input);
+  const duplicate = await db.prepare("SELECT id FROM league_seasons WHERE name=? AND id<>?")
+    .bind(season.name, id).first<{ id: string }>();
+  if (duplicate) throw new Error("Υπάρχει ήδη άλλη σεζόν με αυτή την ονομασία.");
+
+  await db.prepare(`UPDATE league_seasons
+    SET name=?, starts_on=?, ends_on=?, status=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`)
+    .bind(season.name, season.startsOn, season.endsOn, season.status, id).run();
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,?)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "update",
+      "seasons",
+      id,
+      JSON.stringify({ before: current, after: season }),
+      new Date().toISOString(),
+    ).run();
+
+  return { id };
+}
+
+export async function deleteLeagueSeason(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή σεζόν είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε σεζόν για διαγραφή.");
+
+  const current = await db.prepare("SELECT * FROM league_seasons WHERE id=?")
+    .bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η σεζόν.");
+
+  const dependencies = await db.prepare(`SELECT
+    EXISTS(SELECT 1 FROM league_competitions WHERE season_id=? LIMIT 1) AS competitions,
+    EXISTS(SELECT 1 FROM league_season_teams WHERE season_id=? LIMIT 1) AS team_participations,
+    EXISTS(SELECT 1 FROM league_roster_memberships WHERE season_id=? LIMIT 1) AS roster_memberships,
+    EXISTS(SELECT 1 FROM league_player_movements WHERE season_id=? LIMIT 1) AS player_movements,
+    EXISTS(SELECT 1 FROM league_legacy_player_refs WHERE season_id=? LIMIT 1) AS legacy_player_refs`)
+    .bind(id, id, id, id, id).first<Record<string, number>>();
+
+  if (dependencies && Object.values(dependencies).some(Boolean)) {
+    throw new Error(`Η σεζόν «${String(current.name)}» δεν μπορεί να διαγραφεί επειδή χρησιμοποιείται ήδη από διοργανώσεις ή άλλα αγωνιστικά δεδομένα.`);
+  }
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,?)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "delete",
+      "seasons",
+      id,
+      JSON.stringify({ deleted: current }),
+      new Date().toISOString(),
+    ).run();
+
+  await db.prepare("DELETE FROM league_seasons WHERE id=?")
+    .bind(id).run();
+
+  return { id };
+}
+
+export async function deleteLeagueCompetition(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή διοργάνωσης είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε διοργάνωση για διαγραφή.");
+
+  const current = await db.prepare("SELECT * FROM league_competitions WHERE id=?")
+    .bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η διοργάνωση.");
+
+  const dependencies = await db.prepare(`SELECT
+    EXISTS(SELECT 1 FROM league_competition_teams WHERE competition_id=? LIMIT 1) AS team_participations,
+    EXISTS(SELECT 1 FROM league_roster_memberships WHERE competition_id=? LIMIT 1) AS roster_memberships,
+    EXISTS(SELECT 1 FROM league_phases WHERE competition_id=? LIMIT 1) AS phases,
+    EXISTS(SELECT 1 FROM league_games WHERE competition_id=? LIMIT 1) AS games,
+    EXISTS(
+      SELECT 1
+      FROM league_player_game_stats AS stats
+      INNER JOIN league_games AS games ON games.id=stats.game_id
+      WHERE games.competition_id=?
+      LIMIT 1
+    ) AS player_stats`)
+    .bind(id, id, id, id, id).first<Record<string, number>>();
+
+  if (dependencies && Object.values(dependencies).some(Boolean)) {
+    throw new Error(`Η διοργάνωση «${String(current.name)}» δεν μπορεί να διαγραφεί επειδή χρησιμοποιείται ήδη από συμμετοχές ομάδων, ρόστερ, φάσεις, αγώνες ή άλλα αγωνιστικά δεδομένα.`);
+  }
+
+  await db.batch([
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`)
+      .bind(
+        createEntityId("audit"),
+        actor,
+        "delete",
+        "competitions",
+        id,
+        JSON.stringify({ deleted: current }),
+        new Date().toISOString(),
+      ),
+    db.prepare("DELETE FROM league_competition_publication WHERE competition_id=?").bind(id),
+    db.prepare("DELETE FROM league_competition_formats WHERE competition_id=?").bind(id),
+    db.prepare("DELETE FROM league_competitions WHERE id=?").bind(id),
+  ]);
+
+  return { id };
+}
+
+export async function deleteLeagueParticipation(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή συμμετοχής είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε συμμετοχή για διαγραφή.");
+
+  const current = await db.prepare(`
+    SELECT ct.id, ct.competition_id, ct.season_team_id,
+      st.team_id, st.season_id,
+      s.status AS season_status,
+      c.name AS competition_name, s.name AS season_name,
+      COALESCE(cp.lifecycle_status, CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END) AS lifecycle_status
+    FROM league_competition_teams ct
+    JOIN league_season_teams st ON st.id=ct.season_team_id
+    JOIN league_competitions c ON c.id=ct.competition_id
+    JOIN league_seasons s ON s.id=st.season_id
+    LEFT JOIN league_competition_publication cp ON cp.competition_id=ct.competition_id
+    WHERE ct.id=?
+  `)
+    .bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η συμμετοχή.");
+
+  const competitionLifecycle = String(current.lifecycle_status ?? "");
+  const seasonStatus = String(current.season_status ?? "");
+  if (isCompletedStatus(competitionLifecycle) || isCompletedStatus(seasonStatus)) {
+    throw new Error("Δεν επιτρέπεται η αφαίρεση ομάδας από ολοκληρωμένη διοργάνωση ή σεζόν.");
+  }
+
+  const dependencies = await db.prepare(`
+    SELECT
+      EXISTS(SELECT 1 FROM league_games WHERE competition_id=? LIMIT 1) AS games,
+      EXISTS(
+        SELECT 1
+        FROM league_player_game_stats stats
+        INNER JOIN league_games g ON g.id=stats.game_id
+        WHERE g.competition_id=?
+        LIMIT 1
+      ) AS player_stats,
+      EXISTS(SELECT 1 FROM league_roster_memberships WHERE competition_id=? AND team_id=? LIMIT 1) AS roster_memberships
+    `)
+    .bind(
+      String(current.competition_id),
+      String(current.competition_id),
+      String(current.competition_id),
+      String(current.team_id),
+    ).first<Record<string, number>>();
+
+  if (dependencies && (dependencies.games || dependencies.player_stats || dependencies.roster_memberships)) {
+    throw new Error(`Η συμμετοχή στην ομάδα της διοργάνωσης ${String(current.competition_name)} δεν μπορεί να αφαιρεθεί επειδή υπάρχουν εξαρτώμενα αγωνιστικά δεδομένα στη σεζόν ${String(current.season_name)}.`);
+  }
+
+  await db.prepare("DELETE FROM league_competition_teams WHERE id=?").bind(id).run();
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "delete",
+      "participations",
+      id,
+      JSON.stringify({ deleted: current }),
+    ).run();
+
+  return { id };
+}
+
+export async function deleteLeagueTeam(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή ομάδας είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε ομάδα για διαγραφή.");
+
+  const current = await db.prepare("SELECT * FROM league_teams WHERE id=?")
+    .bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η ομάδα.");
+
+  const references = await db.prepare(`
+    SELECT
+      EXISTS(SELECT 1 FROM league_season_teams WHERE team_id=? LIMIT 1) AS season_teams,
+      EXISTS(
+        SELECT 1
+        FROM league_competition_teams ct
+        INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+        WHERE st.team_id=?
+        LIMIT 1
+      ) AS competition_participations,
+      EXISTS(SELECT 1 FROM league_roster_memberships WHERE team_id=? LIMIT 1) AS roster_memberships,
+      EXISTS(SELECT 1 FROM league_games WHERE home_team_id=? OR away_team_id=? LIMIT 1) AS games,
+      EXISTS(SELECT 1 FROM league_player_game_stats WHERE team_id=? LIMIT 1) AS player_stats,
+      EXISTS(
+        SELECT 1
+        FROM league_player_movements
+        WHERE from_team_id=? OR to_team_id=?
+        LIMIT 1
+      ) AS player_movements
+    `)
+    .bind(id, id, id, id, id, id, id, id).first<Record<string, number>>();
+
+  const participationRows = await db.prepare(`
+    SELECT
+      st.id AS season_team_id,
+      s.name AS season_name,
+      s.status AS season_status,
+      c.name AS competition_name,
+      c.id AS competition_id,
+      COALESCE(cp.lifecycle_status, CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END) AS competition_status
+    FROM league_competition_teams ct
+    INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+    INNER JOIN league_seasons s ON s.id=st.season_id
+    INNER JOIN league_competitions c ON c.id=ct.competition_id
+    LEFT JOIN league_competition_publication cp ON cp.competition_id=ct.competition_id
+    WHERE st.team_id=?
+  `).bind(id).all<DbRow>();
+
+  const completedParticipations = (participationRows.results ?? []).filter((participation) => {
+    if (isCompletedStatus(String(participation.competition_status ?? ""))) return true;
+    if (isCompletedStatus(String(participation.season_status ?? ""))) return true;
+    return false;
+  });
+
+  const completedParticipation = completedParticipations.length > 0;
+  if (completedParticipation) {
+    const sample = completedParticipations[0];
+    throw new Error(
+      `Η ομάδα ${String(current.name)} δεν μπορεί να διαγραφεί γιατί έχει ιστορική συμμετοχή στην διοργάνωση ${String(sample?.competition_name ?? "")} / σεζόν ${String(sample?.season_name ?? "")}.`,
+    );
+  }
+
+  if (references?.competition_participations) {
+    throw new Error("Η ομάδα συμμετέχει ακόμη σε ενεργή ή μη ολοκληρωμένη διοργάνωση. Αφαίρεσέ την πρώτα από τη διοργάνωση.");
+  }
+
+  const dependencyRows = [
+    { key: "roster_memberships", label: "roster" },
+    { key: "games", label: "αγώνων" },
+    { key: "player_stats", label: "στατιστικών" },
+    { key: "player_movements", label: "μετακινήσεων παικτών" },
+  ] as const;
+  for (const dependency of dependencyRows) {
+    if (references?.[dependency.key]) {
+      throw new Error(`Η ομάδα ${String(current.name)} δεν μπορεί να διαγραφεί επειδή έχει εξαρτώμενα δεδομένα ${dependency.label}.`);
+    }
+  }
+
+  const seasonTeamRows = await db.prepare(`
+    SELECT st.id, st.season_id, s.status AS season_status, s.name AS season_name
+    FROM league_season_teams st
+    INNER JOIN league_seasons s ON s.id=st.season_id
+    WHERE st.team_id=?
+  `).bind(id).all<DbRow>();
+
+  for (const seasonTeam of seasonTeamRows.results ?? []) {
+    if (isCompletedStatus(String(seasonTeam.season_status ?? ""))) {
+      throw new Error(`Η ομάδα ${String(current.name)} συνδέεται με ολοκληρωμένη σεζόν (${String(seasonTeam.season_name)}), άρα δεν μπορεί να διαγραφεί χωρίς ιστορική απώλεια.`);
+    }
+  }
+
+  if (references?.season_teams) {
+    await db.prepare("DELETE FROM league_season_teams WHERE team_id=?")
+      .bind(id).run();
+  }
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,?)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "delete",
+      "teams",
+      id,
+      JSON.stringify({ deleted: current }),
+      new Date().toISOString(),
+    ).run();
+
+  await db.prepare("DELETE FROM league_teams WHERE id=?")
+    .bind(id).run();
+
+  return { id };
+}
+
+export async function updateLeagueEntity(resource: string, input: Record<string, unknown>, actor: string) {
+  if (resource === "seasons") return updateLeagueSeason(input, actor);
+
+  const db = await database();
+  if (!db) throw new Error("Η επεξεργασία είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε εγγραφή για επεξεργασία.");
+
+  if (resource === "teams") {
+    const current = await db.prepare("SELECT * FROM league_teams WHERE id=?")
+      .bind(id).first<DbRow>();
+    if (!current) throw new Error("Δεν βρέθηκε η ομάδα.");
+
+    const team = teamInput(input, current);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_teams WHERE (slug=? OR LOWER(TRIM(name))=LOWER(TRIM(?))) AND id<>?",
+    ).bind(team.slug, team.name, id).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη άλλη ομάδα με αυτή την ονομασία.");
+
+    await db.prepare(`UPDATE league_teams SET
+      name=?, slug=?, city=?, logo_url=?, active=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).bind(
+        team.name,
+        team.slug,
+        team.city,
+        team.logoUrl,
+        team.active ? 1 : 0,
+        id,
+      ).run();
+
+    await db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).bind(
+        createEntityId("audit"), actor, "update", resource, id,
+        JSON.stringify({ before: current, after: team }), new Date().toISOString(),
+      ).run();
+    return { id };
+  }
+
+  if (resource === "participations") {
+    const current = await db.prepare(`SELECT ct.*, st.season_id, st.team_id,
+      st.display_name, st.logo_url
+      FROM league_competition_teams ct
+      JOIN league_season_teams st ON st.id=ct.season_team_id
+      WHERE ct.id=?`).bind(id).first<DbRow>();
+    if (!current) throw new Error("Δεν βρέθηκε η συμμετοχή της ομάδας.");
+
+    const status = participationStatus(input.status, String(current.status ?? "active"));
+    const seed = optionalInteger(input.seed ?? current.seed, "Seed", 1);
+    const displayName = String(input.displayName ?? current.display_name ?? "").trim();
+    if (!displayName) throw new Error("Η ονομασία της ομάδας στη σεζόν είναι υποχρεωτική.");
+    const logoUrl = String(input.logoUrl ?? current.logo_url ?? "").trim() || null;
+
+    await db.prepare(`UPDATE league_season_teams
+      SET display_name=?, logo_url=? WHERE id=?`)
+      .bind(displayName, logoUrl, String(current.season_team_id)).run();
+    await db.prepare(`UPDATE league_competition_teams
+      SET seed=?, status=? WHERE id=?`)
+      .bind(seed, status, id).run();
+
+    const after = { seed, status, displayName, logoUrl };
+    await db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).bind(
+        createEntityId("audit"), actor, "update", resource, id,
+        JSON.stringify({ before: current, after }), new Date().toISOString(),
+      ).run();
+    return { id };
+  }
+
+  if (resource === "competitions") {
+    const current = await db.prepare(`SELECT c.*, cp.lifecycle_status,
+      cf.expected_team_count, cf.regular_season_meetings, cf.win_points,
+      cf.loss_points, cf.forfeit_points, cf.tiebreakers_json,
+      cf.settings_json AS format_settings_json
+      FROM league_competitions c
+      LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
+      LEFT JOIN league_competition_formats cf ON cf.competition_id=c.id
+      WHERE c.id=?`).bind(id).first<DbRow>();
+    if (!current) throw new Error("Δεν βρέθηκε η διοργάνωση.");
+    const competition = await competitionInput(db, input, current);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_competitions WHERE season_id=? AND slug=? AND id<>?",
+    ).bind(competition.seasonId, competition.slug, id).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη άλλη διοργάνωση με αυτή την ονομασία στη συγκεκριμένη σεζόν.");
+    await db.prepare(`UPDATE league_competitions SET
+      season_id=?, name=?, slug=?, type=?, description=?, status=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).bind(
+        competition.seasonId,
+        competition.name,
+        competition.slug,
+        competition.type,
+        competition.description,
+        competition.legacyStatus,
+        id,
+      ).run();
+    await saveCompetitionDetails(db, id, competition);
+    await db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).bind(
+        createEntityId("audit"), actor, "update", resource, id,
+        JSON.stringify({ before: current, after: competition }), new Date().toISOString(),
+      ).run();
+    return { id };
+  }
+
+  if (resource === "phases") {
+    const current = await db.prepare(`SELECT p.*, pr.phase_kind, pr.bracket_size,
+      pr.best_of, pr.wins_required, pr.carry_over_enabled,
+      pr.carry_over_source_phase_id, pr.settings_json AS rule_settings_json
+      FROM league_phases p
+      LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+      WHERE p.id=?`).bind(id).first<DbRow>();
+    if (!current) throw new Error("Δεν βρέθηκε η φάση.");
+    const phase = await phaseInput(db, input, current);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_phases WHERE competition_id=? AND slug=? AND id<>?",
+    ).bind(phase.competitionId, phase.slug, id).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη άλλη φάση με αυτή την ονομασία στη διοργάνωση.");
+    await db.prepare(`UPDATE league_phases SET competition_id=?, name=?, slug=?,
+      phase_type=?, order_index=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .bind(phase.competitionId, phase.name, phase.slug, phase.legacyPhaseType, phase.orderIndex, id).run();
+    await savePhaseRules(db, id, phase);
+    await db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).bind(
+        createEntityId("audit"), actor, "update", resource, id,
+        JSON.stringify({ before: current, after: phase }), new Date().toISOString(),
+      ).run();
+    return { id };
+  }
+
+  throw new Error("Μη υποστηριζόμενη ενέργεια επεξεργασίας.");
 }
 
 async function addRosterMembership(db: D1DatabaseBinding, id: string, input: Record<string, unknown>) {
@@ -231,210 +2158,4 @@ export async function departPlayer(input: Record<string, unknown>, actor: string
   await db.prepare(`INSERT INTO league_audit_log (id,actor_email,action,entity_type,entity_id,details_json) VALUES (?,?,?,?,?,?)`)
     .bind(createEntityId("audit"), actor, "departure", "rosters", roster.id, JSON.stringify(input)).run();
   return { id: roster.id };
-}
-
-export async function migrateHistoricalLeagueData(actor: string) {
-  const db = await database();
-  if (!db) throw new Error("Η ιστορική μεταφορά εκτελείται μόνο στην εγκατεστημένη βάση D1.");
-  const leagueDb: D1DatabaseBinding = db;
-  const pendingStatements: D1PreparedStatement[] = [];
-
-  async function flushStatements() {
-    if (pendingStatements.length === 0) return;
-    const statements = pendingStatements.splice(0, pendingStatements.length);
-    await leagueDb.batch(statements);
-  }
-
-  async function queue(statement: D1PreparedStatement) {
-    pendingStatements.push(statement);
-    if (pendingStatements.length >= 40) await flushStatements();
-  }
-
-  for (const season of HISTORICAL_SEASONS) {
-    const seasonId = `season_${season}`;
-    const competitionId = `competition_${season}_league`;
-    await queue(db.prepare(`INSERT OR IGNORE INTO league_seasons (id,name,slug,status) VALUES (?,?,?,'completed')`).bind(seasonId, season, season));
-    await queue(db.prepare(`INSERT OR IGNORE INTO league_competitions (id,season_id,name,slug,type,status) VALUES (?,?,?,'komobasket-league','league','completed')`).bind(competitionId, seasonId, "KomoBasket League"));
-  }
-
-  const teamIds = new Map<string, string>();
-  const teamsBySeason = new Map<string, { id: string; displayName: string; seasonTeamId: string }[]>();
-  for (const team of legacyTeams) {
-    const baseSlug = baseTeamSlug(team.season, team.slug);
-    const teamId = `team_${baseSlug}`;
-    teamIds.set(team.slug, teamId);
-    await queue(db.prepare(`INSERT OR IGNORE INTO league_teams (id,name,slug,city,logo_url) VALUES (?,?,?,?,?)`).bind(teamId, team.name, baseSlug, team.city, team.logo));
-    const seasonTeamId = `seasonteam_${team.season}_${baseSlug}`;
-    const seasonCandidates = teamsBySeason.get(team.season) ?? [];
-    seasonCandidates.push({ id: teamId, displayName: team.name, seasonTeamId });
-    teamsBySeason.set(team.season, seasonCandidates);
-    await queue(db.prepare(`INSERT OR IGNORE INTO league_season_teams (id,season_id,team_id,display_name,logo_url) VALUES (?,?,?,?,?)`).bind(seasonTeamId, `season_${team.season}`, teamId, team.name, team.logo));
-    await queue(db.prepare(`INSERT OR IGNORE INTO league_competition_teams (id,competition_id,season_team_id) VALUES (?,?,?)`).bind(`entry_${team.season}_${baseSlug}`, `competition_${team.season}_league`, seasonTeamId));
-  }
-
-  const existing = await rows<{ id:string; display_name:string }>(db, "SELECT id,display_name FROM league_players");
-  const candidates = existing.map((row) => ({ id: row.id, displayName: row.display_name }));
-  let created = 0;
-  let merged = 0;
-  for (const player of legacyPlayers) {
-    const match = findAutomaticPlayerMatch(player.name, candidates);
-    let playerId: string;
-    if (match) {
-      playerId = match.candidate.id;
-      merged += 1;
-      await queue(db.prepare(`INSERT OR IGNORE INTO league_player_aliases (id,player_id,alias,normalized_alias,source,confidence) VALUES (?,?,?,?,?,?)`)
-        .bind(`alias_${player.slug}`, playerId, player.name, normalizePlayerName(player.name), "historical-auto", match.confidence));
-      await queue(db.prepare(`INSERT OR IGNORE INTO league_player_merge_log (id,kept_player_id,merged_player_id,merged_name,reason,confidence,snapshot_json) VALUES (?,?,?,?,?,?,?)`)
-        .bind(`merge_${player.slug}`, playerId, player.slug, player.name, match.reason, match.confidence, JSON.stringify(player)));
-    } else {
-      playerId = `player_${player.slug}`;
-      const slug = player.slug;
-      await queue(db.prepare(`INSERT OR IGNORE INTO league_players (id,slug,display_name,normalized_name) VALUES (?,?,?,?)`).bind(playerId, slug, player.name, normalizePlayerName(player.name)));
-      candidates.push({ id: playerId, displayName: player.name });
-      created += 1;
-    }
-    await queue(db.prepare(`INSERT OR REPLACE INTO league_legacy_player_refs (legacy_slug,player_id,season_id) VALUES (?,?,?)`).bind(player.slug, playerId, `season_${player.season}`));
-    const teamId = teamIds.get(player.teamSlug);
-    if (teamId) {
-      await queue(db.prepare(`INSERT OR IGNORE INTO league_roster_memberships (id,season_id,competition_id,player_id,team_id,shirt_number,status) VALUES (?,?,?,?,?,?, 'active')`)
-        .bind(`roster_${player.slug}`, `season_${player.season}`, `competition_${player.season}_league`, playerId, teamId, player.number ?? null));
-    }
-  }
-
-  const phaseIds = new Map<string, string>();
-  const phaseOrder = new Map<string, number>();
-  let skippedGames = 0;
-
-  function resolveTeam(season: string, name: string) {
-    const candidatesForSeason = teamsBySeason.get(season) ?? [];
-    const exact = candidatesForSeason.find(
-      (candidate) => normalizePlayerName(candidate.displayName) === normalizePlayerName(name),
-    );
-    if (exact) return exact;
-    const match = findAutomaticPlayerMatch(name, candidatesForSeason);
-    if (!match) return null;
-    return candidatesForSeason.find((candidate) => candidate.id === match.candidate.id) ?? null;
-  }
-
-  async function ensureCompetition(season: string, kind: "league" | "cup") {
-    if (kind === "league") return `competition_${season}_league`;
-    const competitionId = `competition_${season}_cup`;
-    const name = season === "2025-26" ? "Κύπελλο Στράτος Μυλωνά" : "KomoCup";
-    await queue(leagueDb.prepare(`INSERT OR IGNORE INTO league_competitions
-      (id,season_id,name,slug,type,status) VALUES (?,?,?,?,?,'completed')`)
-      .bind(competitionId, `season_${season}`, name, slugify(name), "cup"));
-    return competitionId;
-  }
-
-  async function ensurePhase(competitionId: string, stage: string) {
-    const key = `${competitionId}:${stage}`;
-    const existingId = phaseIds.get(key);
-    if (existingId) return existingId;
-    const phaseId = `phase_${slugify(competitionId)}_${slugify(stage)}`;
-    const nextOrder = (phaseOrder.get(competitionId) ?? 0) + 1;
-    phaseOrder.set(competitionId, nextOrder);
-    phaseIds.set(key, phaseId);
-    const phaseType = stage === "Κανονική περίοδος"
-      ? "regular"
-      : stage.toLocaleLowerCase("el-GR").includes("τελικό") || stage.toLocaleLowerCase("el-GR").includes("final")
-        ? "finals"
-        : "playoffs";
-    await queue(leagueDb.prepare(`INSERT OR IGNORE INTO league_phases
-      (id,competition_id,name,slug,phase_type,order_index) VALUES (?,?,?,?,?,?)`)
-      .bind(phaseId, competitionId, stage, slugify(stage), phaseType, nextOrder));
-    return phaseId;
-  }
-
-  async function importHistoricalGame(
-    season: string,
-    kind: "league" | "cup",
-    game: HistoricalGame,
-  ) {
-    if (game.homeTeam === "Πρόκριση άνευ αγώνα" || game.awayTeam === "Πρόκριση άνευ αγώνα") {
-      skippedGames += 1;
-      return;
-    }
-    const homeTeam = resolveTeam(season, game.homeTeam);
-    const awayTeam = resolveTeam(season, game.awayTeam);
-    if (!homeTeam || !awayTeam) {
-      skippedGames += 1;
-      return;
-    }
-    const competitionId = await ensureCompetition(season, kind);
-    const phaseId = await ensurePhase(competitionId, game.stage);
-    for (const team of [homeTeam, awayTeam]) {
-      await queue(leagueDb.prepare(`INSERT OR IGNORE INTO league_competition_teams
-        (id,competition_id,season_team_id,status) VALUES (?,?,?,'active')`)
-        .bind(`entry_${slugify(competitionId)}_${team.id}`, competitionId, team.seasonTeamId));
-    }
-    const hasScore = Number.isFinite(game.homeScore) && Number.isFinite(game.awayScore);
-    const cancelled = Boolean(game.note?.toLocaleLowerCase("el-GR").includes("δεν διεξήχθη"));
-    const scheduledAt = game.date
-      ? `${game.date}T${game.time || "00:00"}:00`
-      : null;
-    const roundLabel = game.round !== undefined
-      ? `${game.round}η Αγωνιστική`
-      : game.label || game.stage;
-    await queue(leagueDb.prepare(`INSERT OR IGNORE INTO league_games
-      (id,competition_id,phase_id,round_label,scheduled_at,venue,home_team_id,away_team_id,
-       home_score,away_score,status,external_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(
-        historicalGameId(season, kind, game.id), competitionId, phaseId, roundLabel,
-        scheduledAt, game.venue || "", homeTeam.id, awayTeam.id,
-        game.homeScore ?? null, game.awayScore ?? null,
-        cancelled ? "cancelled" : hasScore ? "completed" : "scheduled", game.id,
-      ));
-  }
-
-  const regularSeasonImports: { season: string; games: HistoricalGame[] }[] = [
-    { season: "2024-25", games: (regularGames2024 as unknown as HistoricalGame[]).map((game) => ({ ...game, stage: "Κανονική περίοδος" })) },
-    { season: "2025-26", games: (regularGames2025 as unknown as HistoricalGame[]).map((game) => ({ ...game, stage: "Κανονική περίοδος" })) },
-  ];
-  for (const group of regularSeasonImports) {
-    for (const game of group.games) await importHistoricalGame(group.season, "league", game);
-  }
-
-  const playoffGames2024: HistoricalGame[] = [
-    ...playoffSeries.flatMap((series) => series.games
-      .filter((game) => !game.label.includes("Κανονική περίοδος"))
-      .map((game, index) => ({ ...game, id: `${series.id}-${index + 1}`, stage: series.stage }))),
-    ...playoffGames.filter((game) => game.stage.startsWith("Final Four")),
-  ];
-  for (const game of playoffGames2024) await importHistoricalGame("2024-25", "league", game);
-  for (const game of cupGames) await importHistoricalGame("2024-25", "cup", game);
-
-  const playoffGames2025: HistoricalGame[] = [
-    ...playoffSeries2025.flatMap((series) => series.games
-      .filter((game) => !game.label?.includes("Κανονική περίοδος"))),
-    ...finalFour2025.map((game) => ({ ...game, stage: `Final Four · ${game.stage}` })),
-  ];
-  for (const game of playoffGames2025) await importHistoricalGame("2025-26", "league", game);
-  for (const game of stratosMylonasCup2025) await importHistoricalGame("2025-26", "cup", game);
-
-  await flushStatements();
-
-  const historicalCompetitionIds = [
-    "competition_2024-25_league", "competition_2024-25_cup",
-    "competition_2025-26_league", "competition_2025-26_cup",
-  ];
-  const placeholders = historicalCompetitionIds.map(() => "?").join(",");
-  const gameCount = await db.prepare(
-    `SELECT COUNT(*) AS total FROM league_games WHERE competition_id IN (${placeholders})`,
-  ).bind(...historicalCompetitionIds).first<{ total: number }>();
-  const phaseCount = await db.prepare(
-    `SELECT COUNT(*) AS total FROM league_phases WHERE competition_id IN (${placeholders})`,
-  ).bind(...historicalCompetitionIds).first<{ total: number }>();
-  await db.prepare(`INSERT INTO league_audit_log (id,actor_email,action,entity_type,entity_id,details_json) VALUES (?,?,?,?,?,?)`)
-    .bind(createEntityId("audit"), actor, "historical_import", "league", "all", JSON.stringify({
-      created, merged, games: gameCount?.total ?? 0, phases: phaseCount?.total ?? 0, skippedGames,
-    })).run();
-  return {
-    created,
-    automaticallyMerged: merged,
-    total: legacyPlayers.length,
-    historicalGames: gameCount?.total ?? 0,
-    historicalPhases: phaseCount?.total ?? 0,
-    skippedGames,
-  };
 }

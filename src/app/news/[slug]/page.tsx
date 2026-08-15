@@ -140,9 +140,7 @@ export default async function NewsArticlePage({
 
     image: [articleImage],
 
-    datePublished:
-      article.publishedAt ?? article.createdAt,
-
+    datePublished: article.publishedAt ?? article.createdAt,
     dateModified: article.updatedAt,
 
     mainEntityOfPage: {
@@ -179,12 +177,49 @@ export default async function NewsArticlePage({
     url: articleUrl,
   };
 
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "@id": `${articleUrl}#breadcrumb`,
+
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Αρχική",
+        item: `${siteUrl}/`,
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Νέα",
+        item: `${siteUrl}/news`,
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: article.title,
+        item: articleUrl,
+      },
+    ],
+  };
+
   return (
     <>
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{
           __html: JSON.stringify(articleJsonLd).replace(
+            /</g,
+            "\\u003c",
+          ),
+        }}
+      />
+
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(breadcrumbJsonLd).replace(
             /</g,
             "\\u003c",
           ),
@@ -294,8 +329,7 @@ export default async function NewsArticlePage({
                           </span>
 
                           <span className="mt-1 block text-sm text-zinc-500">
-                            {attachment.contentType ===
-                            "application/pdf"
+                            {attachment.contentType === "application/pdf"
                               ? "Προβολή PDF"
                               : "Λήψη αρχείου"}
                           </span>

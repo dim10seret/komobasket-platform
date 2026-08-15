@@ -1,14 +1,42 @@
 import { requireAdmin } from "@/lib/admin-auth";
 import {
   departPlayer,
+  searchAthletesForRosterFoundation,
+  searchStaffForRosterFoundation,
+  createAthleteWithRoster,
+  addExistingAthleteToRoster,
+  updateAthleteCanonical,
+  updateRosterShirtNumber,
+  removeAthleteFromRoster,
+  createStaffWithRoster,
+  addExistingStaffToRoster,
+  updateStaffCanonical,
+  updateStaffMembership,
+  removeStaffFromRoster,
+  copyPreviousRosterForTeam,
   getLeagueAdminSnapshot,
-  migrateHistoricalLeagueData,
+  getTeamRosterManagementView,
 } from "@/services/league-admin.service";
 
 export async function GET(request: Request) {
   const authorization = requireAdmin(request);
   if (authorization.response) return authorization.response;
   try {
+    const requestUrl = new URL(request.url);
+    const view = requestUrl.searchParams.get("view");
+    if (view === "team-roster") {
+      const seasonId = requestUrl.searchParams.get("seasonId")?.trim() || "";
+      const competitionId = requestUrl.searchParams.get("competitionId")?.trim() || "";
+      const teamId = requestUrl.searchParams.get("teamId")?.trim() || "";
+      if (!seasonId || !competitionId || !teamId) {
+        return Response.json({ error: "Λείπει seasonId ή competitionId ή teamId." }, { status: 400 });
+      }
+      return Response.json({
+        view: "team-roster",
+        data: await getTeamRosterManagementView(seasonId, competitionId, teamId),
+      });
+    }
+
     return Response.json(await getLeagueAdminSnapshot());
   } catch (error) {
     return Response.json(
@@ -23,30 +51,117 @@ export async function PATCH(request: Request) {
   if (authorization.response) return authorization.response;
   try {
     const input = (await request.json()) as Record<string, unknown>;
-    if (input.action !== "departure") {
-      return Response.json({ error: "Μη υποστηριζόμενη ενέργεια." }, { status: 400 });
+    const action = String(input.action ?? "");
+    if (action === "departure" || action === "removeAthleteFromRoster") {
+      return Response.json(await removeAthleteFromRoster({ rosterId: String(input.rosterId ?? ""), effectiveOn: input.effectiveOn ? String(input.effectiveOn) : null }));
     }
-    return Response.json(await departPlayer(input, authorization.identity.email));
+    if (action === "searchAthletes") {
+      return Response.json(await searchAthletesForRosterFoundation({
+        query: String(input.query ?? ""),
+        limit: input.limit ? Number(input.limit) : undefined,
+      }));
+    }
+    if (action === "searchStaff") {
+      return Response.json(await searchStaffForRosterFoundation({
+        query: String(input.query ?? ""),
+        limit: input.limit ? Number(input.limit) : undefined,
+      }));
+    }
+    if (action === "createAthleteWithRoster") {
+      return Response.json(await createAthleteWithRoster({
+        firstName: String(input.firstName ?? ""),
+        lastName: String(input.lastName ?? ""),
+        birthDate: input.birthDate ? String(input.birthDate) : null,
+        photoUrl: input.photoUrl ? String(input.photoUrl) : null,
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+      }));
+    }
+    if (action === "addExistingAthlete") {
+      return Response.json(await addExistingAthleteToRoster({
+        playerId: String(input.playerId ?? ""),
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+      }));
+    }
+    if (action === "updateAthleteCanonical") {
+      return Response.json(await updateAthleteCanonical({
+        playerId: String(input.playerId ?? ""),
+        firstName: input.firstName === undefined ? undefined : input.firstName === null ? null : String(input.firstName),
+        lastName: input.lastName === undefined ? undefined : input.lastName === null ? null : String(input.lastName),
+        displayName: input.displayName ? String(input.displayName) : undefined,
+        birthDate: input.birthDate === undefined ? undefined : input.birthDate ? String(input.birthDate) : null,
+        photoUrl: input.photoUrl === undefined ? undefined : input.photoUrl ? String(input.photoUrl) : null,
+      }));
+    }
+    if (action === "updateAthleteShirt") {
+      return Response.json(await updateRosterShirtNumber({
+        rosterId: String(input.rosterId ?? ""),
+        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+      }));
+    }
+    if (action === "createStaffWithRoster") {
+      return Response.json(await createStaffWithRoster({
+        firstName: String(input.firstName ?? ""),
+        lastName: String(input.lastName ?? ""),
+        birthDate: input.birthDate ? String(input.birthDate) : null,
+        photoUrl: input.photoUrl ? String(input.photoUrl) : null,
+        role: String(input.role ?? "other"),
+        customRoleLabel: input.customRoleLabel ? String(input.customRoleLabel) : null,
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }));
+    }
+    if (action === "addExistingStaff") {
+      return Response.json(await addExistingStaffToRoster({
+        staffId: String(input.staffId ?? ""),
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+        role: String(input.role ?? "other"),
+        customRoleLabel: input.customRoleLabel ? String(input.customRoleLabel) : null,
+      }));
+    }
+    if (action === "updateStaffCanonical") {
+      return Response.json(await updateStaffCanonical({
+        staffId: String(input.staffId ?? ""),
+        firstName: input.firstName === undefined ? undefined : input.firstName === null ? null : String(input.firstName),
+        lastName: input.lastName === undefined ? undefined : input.lastName === null ? null : String(input.lastName),
+        displayName: input.displayName ? String(input.displayName) : undefined,
+        birthDate: input.birthDate === undefined ? undefined : input.birthDate ? String(input.birthDate) : null,
+        photoUrl: input.photoUrl === undefined ? undefined : input.photoUrl ? String(input.photoUrl) : null,
+      }));
+    }
+    if (action === "updateStaffMembership") {
+      return Response.json(await updateStaffMembership({
+        membershipId: String(input.membershipId ?? ""),
+        role: String(input.role ?? "other"),
+        customRoleLabel: input.customRoleLabel ? String(input.customRoleLabel) : null,
+      }));
+    }
+    if (action === "removeStaffFromRoster") {
+      return Response.json(await removeStaffFromRoster({ membershipId: String(input.membershipId ?? "") }));
+    }
+    if (action === "copyPreviousRoster") {
+      return Response.json(await copyPreviousRosterForTeam({
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }));
+    }
+    if (action === "departPlayerLegacy") {
+      return Response.json(await departPlayer(input, authorization.identity.email));
+    }
+
+    return Response.json({ error: "Μη υποστηριζόμενη ενέργεια." }, { status: 400 });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Η ενέργεια απέτυχε." },
-      { status: 400 },
-    );
-  }
-}
-
-export async function POST(request: Request) {
-  const authorization = requireAdmin(request);
-  if (authorization.response) return authorization.response;
-  try {
-    const input = (await request.json()) as Record<string, unknown>;
-    if (input.action !== "migrate-history") {
-      return Response.json({ error: "Μη υποστηριζόμενη ενέργεια." }, { status: 400 });
-    }
-    return Response.json(await migrateHistoricalLeagueData(authorization.identity.email));
-  } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Η μεταφορά απέτυχε." },
       { status: 400 },
     );
   }

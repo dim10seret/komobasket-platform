@@ -155,6 +155,14 @@ export default function NewsManager() {
 
     const isEditing = Boolean(editingId);
 
+    const previousArticle = editingId
+      ? articles.find((article) => article.id === editingId)
+      : null;
+
+    const shouldPublishToFacebook =
+      form.status === "published" &&
+      (!isEditing || previousArticle?.status !== "published");
+
     setIsSaving(true);
     setMessage("");
     setError("");
@@ -254,6 +262,32 @@ export default function NewsManager() {
         }
       }
 
+      if (shouldPublishToFacebook) {
+        const facebookResponse = await fetch(
+          `/api/admin/news/${savedArticle.id}/facebook`,
+          {
+            method: "POST",
+          },
+        );
+
+        const facebookResult =
+          (await facebookResponse.json()) as {
+            success?: boolean;
+            postId?: string;
+            error?: string;
+          };
+
+        if (
+          !facebookResponse.ok ||
+          !facebookResult.success
+        ) {
+          throw new Error(
+            facebookResult.error ||
+              "Η ανακοίνωση αποθηκεύτηκε, αλλά η δημοσίευση στο Facebook απέτυχε.",
+          );
+        }
+      }
+
       if (isEditing) {
         setEditingId(savedArticle.id);
         setImage(null);
@@ -268,7 +302,9 @@ export default function NewsManager() {
 
       setMessage(
         savedArticle.status === "published"
-          ? "Η ανακοίνωση δημοσιεύτηκε και εμφανίζεται στα Νέα."
+          ? shouldPublishToFacebook
+            ? "Η ανακοίνωση δημοσιεύτηκε στα Νέα και στο Facebook."
+            : "Η ανακοίνωση ενημερώθηκε και παραμένει δημοσιευμένη."
           : "Το πρόχειρο αποθηκεύτηκε.",
       );
 
