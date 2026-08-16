@@ -166,14 +166,12 @@ export const getCompetitionTypeLabel = (type:string | null | undefined, customTy
 export const phaseFormatLabels:Record<string, string> = {
   standings: "Βαθμολογική",
   series: "Σειρά αγώνων",
-  knockout: "Knockout",
   custom: "Custom",
 };
 
 export const phaseFormatOptions = [
   { value: "standings", label: "Βαθμολογική" },
   { value: "series", label: "Σειρά αγώνων" },
-  { value: "knockout", label: "Knockout" },
   { value: "custom", label: "Custom" },
 ] as const;
 

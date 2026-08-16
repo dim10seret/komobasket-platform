@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   Database,
@@ -117,6 +118,9 @@ function Message({ text, kind }: { text: string; kind: "notice" | "error" }) {
 }
 
 export default function AdminDashboard({ view }: { view: AdminView }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const routeSearchParams = useSearchParams();
   const [tab, setTab] = useState<(typeof tabs)[number][0]>("overview");
   const [data, setData] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -126,7 +130,6 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
 
   const [teamSeasonFilter, setTeamSeasonFilter] = useState("all");
   const [selectedParticipationTeamIds, setSelectedParticipationTeamIds] = useState<string[]>([]);
-  const [competitionWorkspaceId, setCompetitionWorkspaceId] = useState("");
   const [competitionWorkspaceMode, setCompetitionWorkspaceMode] = useState<CompetitionWorkspaceMode>("settings");
 
   const load = useCallback(async () => {
@@ -148,6 +151,22 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     return () => window.clearTimeout(request);
   }, [load, view]);
 
+  const competitionWorkspaceId = routeSearchParams.get("competitionId") ?? "";
+
+  const setWorkspaceCompetitionId = useCallback((competitionId: string) => {
+    const normalizedCompetitionId = competitionId.trim();
+    const nextParams = new URLSearchParams(routeSearchParams.toString());
+    if (normalizedCompetitionId) {
+      nextParams.set("competitionId", normalizedCompetitionId);
+    } else {
+      nextParams.delete("competitionId");
+      setCompetitionWorkspaceMode("settings");
+    }
+
+    const nextPath = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.push(nextPath);
+  }, [pathname, routeSearchParams, router]);
+
   const create: CreateEntity = async (resource: string, input: Record<string, unknown>) => {
     setBusy(true);
     setError("");
@@ -161,7 +180,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Η αποθήκευση απέτυχε.");
       if (resource === "competitions" && payload?.id) {
-        setCompetitionWorkspaceId(String(payload.id));
+        setWorkspaceCompetitionId(String(payload.id));
         setCompetitionWorkspaceMode("settings");
       }
       setNotice(payload?.message || "Η εγγραφή αποθηκεύτηκε.");
@@ -177,9 +196,10 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
 
   const submit = async (resource: string, event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const ok = await create(resource, Object.fromEntries(new FormData(event.currentTarget).entries()));
+    const form = event.currentTarget;
+    const ok = await create(resource, Object.fromEntries(new FormData(form).entries()));
     if (!ok) return false;
-    event.currentTarget.reset();
+    form.reset();
     return true;
   };
 
@@ -232,6 +252,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
 
   const depart = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const form = event.currentTarget;
     setBusy(true);
     setError("");
     setNotice("");
@@ -239,12 +260,12 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch("/api/admin/league", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "departure", ...Object.fromEntries(new FormData(event.currentTarget).entries()) }),
+        body: JSON.stringify({ action: "departure", ...Object.fromEntries(new FormData(form).entries()) }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Η αποχώρηση απέτυχε.");
       setNotice("Η αποχώρηση καταγράφηκε χωρίς να διαγραφεί το ιστορικό του παίκτη.");
-      event.currentTarget.reset();
+      form.reset();
       await load();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Η αποχώρηση απέτυχε.");
@@ -253,7 +274,21 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     }
   };
 
+  useEffect(() => {
+    if (!data || !competitionWorkspaceId) return;
+    if (data.competitions.some((competition) => String(competition.id) === competitionWorkspaceId)) return;
+    setWorkspaceCompetitionId("");
+  }, [competitionWorkspaceId, data, setWorkspaceCompetitionId]);
+
   const isPlatform = view === "platform";
+
+  const handleTabChange = (nextTab: (typeof tabs)[number][0]) => {
+    setTab(nextTab);
+    if (nextTab === "competitions") {
+      setWorkspaceCompetitionId("");
+      setCompetitionWorkspaceMode("settings");
+    }
+  };
 
   if (view === "home") return <AdminHome />;
   if (view === "news") return <NewsAdmin />;
@@ -265,7 +300,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
         {tabs.map(([id, label, Icon]) => (
           <button
             key={id}
-            onClick={() => setTab(id)}
+            onClick={() => handleTabChange(id)}
             className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold transition ${tab === id ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"}`}
           >
             <Icon size={19} className={tab === id ? "text-orange-500" : "text-zinc-500"} />
@@ -294,7 +329,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
                 deleteEntity={deleteEntity}
                 busy={busy}
                 workspaceCompetitionId={competitionWorkspaceId}
-                setWorkspaceCompetitionId={setCompetitionWorkspaceId}
+                setWorkspaceCompetitionId={setWorkspaceCompetitionId}
                 workspaceMode={competitionWorkspaceMode}
                 setWorkspaceMode={setCompetitionWorkspaceMode}
               />

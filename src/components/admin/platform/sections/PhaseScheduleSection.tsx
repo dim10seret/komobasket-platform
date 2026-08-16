@@ -1,7 +1,7 @@
 "use client";
 
-import type { FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { FormEvent, MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Field,
   Panel,
@@ -24,11 +24,47 @@ import {
   staffRoleLabels,
   standingsTieBreakerLabel,
 } from "../shared/admin-core";
+import { PhaseParticipantsBuilder } from "../phases/PhaseParticipantsBuilder";
 
-export function PhaseFields({data,phase,competitionId}:{data:Snapshot;phase?:Row;competitionId?:string}) {
-  const [selectedFormat,setSelectedFormat]=useState(String(phase?.format ?? phase?.phase_kind ?? "standings"));
+export function PhaseFields({
+  data,
+  phase,
+  competitionId,
+  editing,
+  onExplicitSave,
+}: {
+  data: Snapshot;
+  phase?: Row;
+  competitionId?: string;
+  editing?: boolean;
+  onExplicitSave?: (event: MouseEvent<HTMLButtonElement>) => Promise<void> | void;
+}) {
+  const canonicalFormat = (value: string) => {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    return normalized === "knockout" ? "series" : normalized;
+  };
+  const [selectedFormat,setSelectedFormat]=useState(canonicalFormat(String(phase?.format ?? phase?.phase_kind ?? "standings")));
+  const [phaseNameInput, setPhaseNameInput] = useState(String(phase?.name ?? ""));
+  const [isSaving, setIsSaving] = useState(false);
   const rules = parseStandingsRules(phase?.rule_settings_json);
   const [tieBreakers,setTieBreakers]=useState<string[]>(() => normalizeStandingsTieBreakers(rules.tieBreakers));
+  const [activeStep,setActiveStep]=useState(1);
+  const isC4Format = ["series","custom"].includes(selectedFormat);
+  const shouldUseStepper = Boolean(editing && isC4Format);
+  const canGoPrevious = activeStep > 1;
+
+  const selectedFormatLabel = phaseFormatOptions.find((format) => format.value === selectedFormat)?.label ?? selectedFormat;
+  const phaseName = String(phase?.name ?? "Φάση");
+  const phaseContextHeader = `${phaseNameInput || phaseName} · ${selectedFormatLabel}`;
+
+  useEffect(() => {
+    if (!shouldUseStepper) {
+      setActiveStep(1);
+      return;
+    }
+    if (activeStep < 1) setActiveStep(1);
+    if (activeStep > 3) setActiveStep(3);
+  }, [shouldUseStepper, activeStep]);
 
   const standingsTieBreakers = normalizeStandingsTieBreakers(["head_to_head","head_to_head_point_diff","overall_point_diff","points_for","alphabetical"]);
   const canMoveUp = (index:number) => index > 0 && tieBreakers[index] !== "alphabetical";
@@ -61,63 +97,247 @@ export function PhaseFields({data,phase,competitionId}:{data:Snapshot;phase?:Row
   useEffect(() => {
     const normalized = normalizeStandingsTieBreakers(rules.tieBreakers);
     setTieBreakers(normalized);
+    if (selectedFormat !== "standings") setActiveStep((current) => Math.min(current, 1));
   }, [phase?.rule_settings_json, selectedFormat]);
 
-  return <>
-    <Field label="Ονομασία"><input required name="name" defaultValue={String(phase?.name ?? "")} placeholder="Κανονική περίοδος / Final Four" className={inputClass}/></Field>
-    <Field label="Μορφή Φάσης"><select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>{phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}</select></Field>
-    {selectedFormat === "standings" && <>
-      <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="winPoints" defaultValue={rules.winPoints} className={inputClass}/></Field>
-      <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="lossPoints" defaultValue={rules.lossPoints} className={inputClass}/></Field>
-      <Field label="Βαθμοί μηδενισμού"><input type="number" min={0} step={1} required name="forfeitPoints" defaultValue={rules.forfeitPoints} className={inputClass}/></Field>
-      <Field label="Αγώνες ανά ζευγάρι"><input type="number" min={1} step={1} required name="gamesPerPairing" defaultValue={rules.gamesPerPairing} className={inputClass}/></Field>
-      <div className="rounded-xl border border-zinc-200 p-3">
-        <p className="mb-3 text-sm font-black text-zinc-800">Κριτήρια Κατάταξης</p>
-        <p className="mb-2 text-sm text-zinc-700">Βασικό κριτήριο: <span className="font-black">Βαθμοί 🔒</span></p>
-        <div className="space-y-2">
-          {standingsTieBreakers.map((key) => {
-            if (key === "alphabetical") {
-              return <label key={key} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-sm">
-                <input type="checkbox" checked readOnly disabled className="h-4 w-4" />
-                <span>Αλφαβητικά (σταθερό fallback)</span>
-              </label>;
-            }
-            const checked = isEnabled(key);
-            const index = tieBreakers.indexOf(key);
-            return <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 p-2 text-sm">
-              <span className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleTieBreaker(key)}
-                />
-                <span>{standingsTieBreakerLabel[key] ?? key}</span>
-              </span>
-              <span className="inline-flex gap-1">
-                <button
-                  type="button"
-                  disabled={!canMoveUp(index)}
-                  onClick={() => moveTieBreaker(index, -1)}
-                  className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  disabled={!canMoveDown(index)}
-                  onClick={() => moveTieBreaker(index, 1)}
-                  className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
-                >
-                  ↓
-                </button>
-              </span>
-            </label>;
+  useEffect(() => {
+    setPhaseNameInput(String(phase?.name ?? ""));
+  }, [phase?.id, phase?.name]);
+
+  const renderStepperHeader = () => {
+    if (!shouldUseStepper) return null;
+    const steps = ["1. Συμμετοχή", "2. Διασταυρώσεις", "3. Προεπισκόπηση"];
+    return (
+      <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2">
+        <div className="flex flex-wrap gap-2">
+          {steps.map((step, index) => {
+            const stepNumber = index + 1;
+            const isActive = activeStep === stepNumber;
+            return (
+              <button
+                key={step}
+                type="button"
+                onClick={() => setActiveStep(stepNumber)}
+                className={`rounded-lg px-3 py-2 text-xs font-black ${isActive ? "bg-orange-600 text-white" : "bg-white text-zinc-700"}`}
+              >
+                {step}
+              </button>
+            );
           })}
         </div>
-        <input type="hidden" name="tieBreakers" value={JSON.stringify(tieBreakers)} />
       </div>
-    </>}
-  </>;
+    );
+  };
+
+  const renderStepContent = () => {
+    if (!shouldUseStepper) return (
+      <>
+        <Field label="Ονομασία">
+          <input
+            required
+            name="name"
+            value={phaseNameInput}
+            onChange={(event)=>setPhaseNameInput(event.target.value)}
+            placeholder="Κανονική περίοδος / Final Four"
+            className={inputClass}
+          />
+        </Field>
+        <Field label="Μορφή Φάσης"><select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>{phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}</select></Field>
+        <input type="hidden" name="phaseEditStep" value="0" />
+        <PhaseParticipantsBuilder
+          data={data}
+          phase={phase}
+          competitionId={competitionId ?? String(phase?.competition_id ?? "")}
+          selectedFormat={selectedFormat}
+        />
+        {selectedFormat === "standings" && <>
+          <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="winPoints" defaultValue={rules.winPoints} className={inputClass}/></Field>
+          <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="lossPoints" defaultValue={rules.lossPoints} className={inputClass}/></Field>
+          <Field label="Βαθμοί μηδενισμού"><input type="number" min={0} step={1} required name="forfeitPoints" defaultValue={rules.forfeitPoints} className={inputClass}/></Field>
+          <Field label="Αγώνες ανά ζευγάρι"><input type="number" min={1} step={1} required name="gamesPerPairing" defaultValue={rules.gamesPerPairing} className={inputClass}/></Field>
+          <div className="rounded-xl border border-zinc-200 p-3">
+            <p className="mb-3 text-sm font-black text-zinc-800">Κριτήρια Κατάταξης</p>
+            <p className="mb-2 text-sm text-zinc-700">Βασικό κριτήριο: <span className="font-black">Βαθμοί 🔒</span></p>
+            <div className="space-y-2">
+              {standingsTieBreakers.map((key) => {
+                if (key === "alphabetical") {
+                  return <label key={key} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-sm">
+                    <input type="checkbox" checked readOnly disabled className="h-4 w-4" />
+                    <span>Αλφαβητικά (σταθερό fallback)</span>
+                  </label>;
+                }
+                const checked = isEnabled(key);
+                const index = tieBreakers.indexOf(key);
+                return <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 p-2 text-sm">
+                  <span className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleTieBreaker(key)}
+                    />
+                    <span>{standingsTieBreakerLabel[key] ?? key}</span>
+                  </span>
+                  <span className="inline-flex gap-1">
+                    <button
+                      type="button"
+                      disabled={!canMoveUp(index)}
+                      onClick={() => moveTieBreaker(index, -1)}
+                      className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canMoveDown(index)}
+                      onClick={() => moveTieBreaker(index, 1)}
+                      className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
+                    >
+                      ↓
+                    </button>
+                  </span>
+                </label>;
+              })}
+            </div>
+            <input type="hidden" name="tieBreakers" value={JSON.stringify(tieBreakers)} />
+          </div>
+        </>}
+      </>
+    );
+
+  const showSave = activeStep === 3;
+    const isStep1 = activeStep === 1;
+    const isStep2 = activeStep === 2;
+    const isStep3 = activeStep === 3;
+    return (
+      <div className="space-y-4">
+        <input type="hidden" name="phaseEditStep" value={String(activeStep)} />
+        {isStep1 ? (
+          <>
+            <Field label="Ονομασία">
+              <input
+                required
+                name="name"
+                value={phaseNameInput}
+                onChange={(event)=>setPhaseNameInput(event.target.value)}
+                placeholder="Κανονική περίοδος / Final Four"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Μορφή Φάσης">
+              <select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>
+                {phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}
+              </select>
+            </Field>
+          </>
+        ) : (
+          <>
+            <input type="hidden" name="name" value={phaseNameInput} />
+            <input type="hidden" name="format" value={selectedFormat} />
+          </>
+        )}
+        {(isStep2 || isStep3) ? (
+          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2">
+            <p className="text-xs font-black uppercase tracking-[0.08em] text-zinc-600">PLAY OUT</p>
+            <p className="mt-1 font-black text-zinc-900">{phaseContextHeader}</p>
+          </div>
+        ) : null}
+        <PhaseParticipantsBuilder
+          data={data}
+          phase={phase}
+          competitionId={competitionId ?? String(phase?.competition_id ?? "")}
+          selectedFormat={selectedFormat}
+          activeStep={activeStep}
+        />
+
+        {selectedFormat === "standings" && (
+          <div>
+            <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="winPoints" defaultValue={rules.winPoints} className={inputClass}/></Field>
+            <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="lossPoints" defaultValue={rules.lossPoints} className={inputClass}/></Field>
+            <Field label="Βαθμοί μηδενισμού"><input type="number" min={0} step={1} required name="forfeitPoints" defaultValue={rules.forfeitPoints} className={inputClass}/></Field>
+            <Field label="Αγώνες ανά ζευγάρι"><input type="number" min={1} step={1} required name="gamesPerPairing" defaultValue={rules.gamesPerPairing} className={inputClass}/></Field>
+            <div className="rounded-xl border border-zinc-200 p-3">
+              <p className="mb-3 text-sm font-black text-zinc-800">Κριτήρια Κατάταξης</p>
+              <p className="mb-2 text-sm text-zinc-700">Βασικό κριτήριο: <span className="font-black">Βαθμοί 🔒</span></p>
+              <div className="space-y-2">
+                {standingsTieBreakers.map((key) => {
+                  if (key === "alphabetical") {
+                    return <label key={key} className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-sm">
+                      <input type="checkbox" checked readOnly disabled className="h-4 w-4" />
+                      <span>Αλφαβητικά (σταθερό fallback)</span>
+                    </label>;
+                  }
+                  const checked = isEnabled(key);
+                  const index = tieBreakers.indexOf(key);
+                  return <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 p-2 text-sm">
+                    <span className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleTieBreaker(key)}
+                      />
+                      <span>{standingsTieBreakerLabel[key] ?? key}</span>
+                    </span>
+                    <span className="inline-flex gap-1">
+                      <button
+                        type="button"
+                        disabled={!canMoveUp(index)}
+                        onClick={() => moveTieBreaker(index, -1)}
+                        className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canMoveDown(index)}
+                        onClick={() => moveTieBreaker(index, 1)}
+                        className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
+                      >
+                        ↓
+                      </button>
+                    </span>
+                  </label>;
+                })}
+              </div>
+              <input type="hidden" name="tieBreakers" value={JSON.stringify(tieBreakers)} />
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2 border-t border-zinc-200 pt-4">
+          {canGoPrevious && <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.max(1, current - 1))}>Προηγούμενο</button>}
+          {showSave ? (
+            <button
+              type="button"
+              disabled={isSaving}
+              className="rounded-xl border border-orange-600 bg-orange-600 px-4 py-2.5 font-black text-white transition duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={(event) => {
+                if (onExplicitSave) {
+                  setIsSaving(true);
+                  void (async () => {
+                    try {
+                      await onExplicitSave(event);
+                    } finally {
+                      setIsSaving(false);
+                    }
+                  })();
+                }
+              }}
+            >
+              {isSaving ? "Αποθήκευση..." : "Αποθήκευση Φάσης"}
+            </button>
+          ) : <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.min(4, current + 1))}>Επόμενο</button>}
+        </div>
+      </div>
+    );
+  };
+
+  return <div className="space-y-4">
+    {renderStepperHeader()}
+    {renderStepContent()}
+    {!shouldUseStepper && (
+      <button type="submit" name="phaseSave" data-c4-save="1" className="rounded-xl border border-orange-600 bg-orange-600 px-4 py-2.5 font-black text-white disabled:opacity-60">Αποθήκευση Φάσης</button>
+    )}
+  </div>;
 }
 
 export function StandingsPhasePreview({
@@ -226,6 +446,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
   const [editingAthleteUploadMessage,setEditingAthleteUploadMessage]=useState("");
   const [editingAthleteShirtNumber,setEditingAthleteShirtNumber]=useState("");
   const [rosterActionBusy,setRosterActionBusy]=useState(false);
+  const phaseEditFormRef = useRef<HTMLFormElement | null>(null);
   const rosterPlayers = useMemo(() => {
     return (teamRoster?.athletes ?? []).map((athlete,index)=>({ ...athlete, rowIndex:index + 1 }));
   }, [teamRoster?.athletes]);
@@ -370,13 +591,46 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
           const id=String(phase.id);
           const isEditing=editingPhaseId===id;
           const phaseFormat = String(phase.format ?? phase.phase_kind ?? "standings");
+          const handleEditFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
+            const payload = new FormData(event.currentTarget);
+            const activeStep = String(payload.get("phaseEditStep") || "0");
+            if (activeStep === "0") {
+              return updateEntity("phases", id, event, "Οι αλλαγές στη φάση και στους κανόνες της αποθηκεύτηκαν.");
+            }
+            event.preventDefault();
+            return Promise.resolve(false);
+          };
+          const handlePhaseSave = async (event: MouseEvent<HTMLButtonElement>) => {
+            const form = event.currentTarget.form || phaseEditFormRef.current;
+            if (!form) return;
+            const syntheticEvent = ({
+              preventDefault: () => {},
+              currentTarget: form,
+            } as unknown) as FormEvent<HTMLFormElement>;
+            if (await updateEntity("phases", id, syntheticEvent, "Οι αλλαγές στη φάση και στους κανόνες της αποθηκεύτηκαν.")) {
+              setEditingPhaseId(null);
+            }
+          };
           return <article key={id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div><p className="text-xs font-black uppercase tracking-wider text-orange-600">{phase.season_name} · {phase.competition_name}</p><h3 className="mt-1 text-lg font-black text-zinc-950">{phase.name}</h3><p className="mt-2 text-sm text-zinc-600">{phaseFormatLabel(phaseFormat)} · σειρά {phase.order_index ?? 0}</p></div>
               <button type="button" onClick={()=>setEditingPhaseId(isEditing?null:id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing?"Ακύρωση":"Edit"}</button>
             </div>
-            {phaseFormat === "standings" && <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />}
-            {isEditing && <form onSubmit={async(event)=>{if(await updateEntity("phases",id,event,"Οι αλλαγές στη φάση και στους κανόνες της αποθηκεύτηκαν."))setEditingPhaseId(null);}} className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2 xl:grid-cols-4"><input type="hidden" name="competitionId" value={String(phase.competition_id)}/><PhaseFields data={data} phase={phase}/><button disabled={busy} className={`${buttonClass} sm:col-span-2 xl:col-span-4 xl:justify-self-start`}>Αποθήκευση φάσης</button></form>}
+            {!isEditing && phaseFormat === "standings" && <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />}
+            {isEditing && <form
+              ref={phaseEditFormRef}
+              onSubmit={(event)=>void handleEditFormSubmit(event)}
+              className="mt-5 w-full space-y-4 border-t border-zinc-200 pt-5"
+            >
+              <input type="hidden" name="competitionId" value={String(phase.competition_id)}/>
+              <PhaseFields
+                data={data}
+                phase={phase}
+                competitionId={String(phase.competition_id)}
+                editing
+                onExplicitSave={handlePhaseSave}
+              />
+            </form>}
           </article>;
         })}
         {!data.phases.length && <p className="text-sm text-zinc-500">Δεν έχουν δημιουργηθεί ακόμη φάσεις.</p>}
