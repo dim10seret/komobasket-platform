@@ -1,0 +1,738 @@
+"use client";
+
+import type { FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Row,
+  Snapshot,
+  TeamRosterViewRole,
+  TeamRosterManagementView,
+  TeamRosterAthleteWithIndex,
+  TeamRosterAthlete,
+  inputClass,
+  buttonClass,
+  parseDateForDisplay,
+  CompetitionWorkspaceMode,
+  UpdateEntity,
+  DeleteEntity,
+  CreateEntity,
+  Field,
+  Panel,
+  seasonStatusLabels,
+  competitionLifecycleLabels,
+  getCompetitionTypeLabel,
+  staffRoleLabels,
+  phaseFormatLabel,
+  isCompletedCompetition,
+  clearBlobPreviewUrl,
+} from "../shared/admin-core";
+import { PhaseFields, StandingsPhasePreview } from "./PhaseScheduleSection";
+
+export function CompetitionFields({
+  competition,
+  includeName = true,
+  includeStatus = false,
+}: {
+  competition?: Row;
+  includeName?: boolean;
+  includeStatus?: boolean;
+}) {
+  const [selectedType,setSelectedType]=useState(String(competition?.type ?? "league"));
+
+  return <>
+    {includeName && <Field label="Όνομα Διοργάνωσης"><input required name="name" defaultValue={String(competition?.name ?? "")} placeholder="KomoBasket League" className={inputClass}/></Field>}
+    <Field label="Τύπος"><select name="type" defaultValue={String(competition?.type ?? "league")} onChange={(event)=>setSelectedType(String(event.target.value))} className={inputClass}>
+      <option value="league">Πρωτάθλημα</option>
+      <option value="cup">Κύπελλο</option>
+      <option value="tournament">Τουρνουά</option>
+      <option value="custom">Custom</option>
+    </select></Field>
+    {selectedType === "custom" && (
+      <Field label="Ονομασία τύπου"><input name="customTypeLabel" defaultValue={String(competition?.custom_type_label ?? "")} placeholder="Παραδείγματος χάρη: Βασιλικό Κύπελλο" className={inputClass}/></Field>
+    )}
+    {includeStatus && <Field label="Κατάσταση"><select name="lifecycleStatus" defaultValue={String(competition?.lifecycle_status === "complete" ? "online" : competition?.lifecycle_status ?? "under_construction")} className={inputClass}><option value="under_construction">Under Construction</option><option value="online">Online</option></select></Field>}
+    <Field label="Αναμενόμενες ομάδες"><input name="expectedTeamCount" type="number" min="2" defaultValue={String(competition?.expected_team_count ?? "")} placeholder="16" className={inputClass}/></Field>
+  </>;
+}
+
+export function Seasons({data,submit,updateEntity,deleteEntity,busy}:{data:Snapshot;submit:(r:string,e:FormEvent<HTMLFormElement>)=>void;updateEntity:UpdateEntity;deleteEntity:DeleteEntity;busy:boolean}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  return <>
+    <Panel title="Διαχείριση σεζόν" description="Δημιούργησε τη νέα αγωνιστική περίοδο και έλεγξε τις ήδη καταχωρημένες σεζόν. Καμία αλλαγή κατάστασης δεν διαγράφει δεδομένα.">
+      <form onSubmit={(e)=>void submit("seasons",e)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Field label="Ονομασία"><input required name="name" pattern="[0-9]{4}-[0-9]{2}" title="Παράδειγμα: 2026-27" placeholder="2026-27" className={inputClass}/></Field>
+        <Field label="Έναρξη"><input name="startsOn" type="date" className={inputClass}/></Field>
+        <Field label="Λήξη"><input name="endsOn" type="date" className={inputClass}/></Field>
+        <Field label="Κατάσταση"><select name="status" className={inputClass}><option value="draft">Under Construction</option><option value="active">Online</option><option value="completed">Complete</option></select></Field>
+        <button disabled={busy} className={buttonClass}>Προσθήκη σεζόν</button>
+      </form>
+      <div className="mt-7 grid gap-4 xl:grid-cols-2">
+        {data.seasons.map((season) => {
+          const id = String(season.id);
+          const competitionCount = data.competitions.filter((competition) => String(competition.season_id) === id).length;
+          const isEditing = editingId === id;
+          return <article key={id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-xl font-black text-zinc-950">{season.name}</h3>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-black ${season.status === "active" ? "bg-emerald-100 text-emerald-800" : season.status === "completed" ? "bg-zinc-200 text-zinc-700" : "bg-amber-100 text-amber-800"}`}>{seasonStatusLabels[String(season.status)] ?? season.status}</span>
+                </div>
+                <p className="mt-2 text-sm text-zinc-600">{season.starts_on || season.ends_on ? `${season.starts_on ?? "Χωρίς έναρξη"} — ${season.ends_on ?? "Χωρίς λήξη"}` : "Δεν έχουν οριστεί ημερομηνίες"} · {competitionCount} {competitionCount === 1 ? "διοργάνωση" : "διοργανώσεις"}</p>
+              </div>
+              <button type="button" onClick={() => setEditingId(isEditing ? null : id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing ? "Ακύρωση" : "Edit"}</button>
+            </div>
+            {isEditing && <form onSubmit={async (event) => { if (await updateEntity("seasons",id,event,"Οι αλλαγές στη σεζόν αποθηκεύτηκαν χωρίς να επηρεαστεί το ιστορικό της.")) setEditingId(null); }} className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2">
+              <Field label="Ονομασία"><input required name="name" pattern="[0-9]{4}-[0-9]{2}" title="Παράδειγμα: 2026-27" defaultValue={String(season.name ?? "")} className={inputClass}/></Field>
+              <Field label="Κατάσταση"><select name="status" defaultValue={String(season.status ?? "draft")} className={inputClass}><option value="draft">Under Construction</option><option value="active">Online</option><option value="completed">Complete</option></select></Field>
+              <Field label="Έναρξη"><input name="startsOn" type="date" defaultValue={String(season.starts_on ?? "")} className={inputClass}/></Field>
+              <Field label="Λήξη"><input name="endsOn" type="date" defaultValue={String(season.ends_on ?? "")} className={inputClass}/></Field>
+              <div className="flex flex-wrap gap-3 sm:col-span-2">
+                <button disabled={busy} className={buttonClass}>Αποθήκευση αλλαγών</button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    const name = String(season.name ?? "");
+                    if (!window.confirm(`Πρόκειται να διαγράψετε τη σεζόν «${name}». Θέλετε να συνεχίσετε;`)) return;
+                    if (await deleteEntity("seasons", id, `Η σεζόν «${name}» διαγράφηκε.`)) setEditingId(null);
+                  }}
+                  className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Διαγραφή Σεζόν
+                </button>
+              </div>
+            </form>}
+          </article>;
+        })}
+      </div>
+    </Panel>
+  </>;
+}
+
+export function CompetitionWorkspaceManager({
+  data,
+  submit,
+  updateEntity,
+  deleteEntity,
+  busy,
+  workspaceCompetitionId,
+  setWorkspaceCompetitionId,
+  workspaceMode,
+  setWorkspaceMode,
+}: {
+  data: Snapshot;
+  submit: (r:string, e:FormEvent<HTMLFormElement>) => Promise<boolean>;
+  updateEntity: UpdateEntity;
+  deleteEntity: DeleteEntity;
+  busy: boolean;
+  workspaceCompetitionId: string;
+  setWorkspaceCompetitionId: (value: string) => void;
+  workspaceMode: CompetitionWorkspaceMode;
+  setWorkspaceMode: (value: CompetitionWorkspaceMode) => void;
+}) {
+  const [startMode, setStartMode] = useState<"home" | "new" | "existing">("home");
+  const [selectedExistingSeasonId, setSelectedExistingSeasonId] = useState("");
+  const [selectedNewSeasonId, setSelectedNewSeasonId] = useState("");
+  const [newCompetitionLogoUrl, setNewCompetitionLogoUrl] = useState("");
+  const [newCompetitionLogoFileName, setNewCompetitionLogoFileName] = useState("");
+  const [newCompetitionLogoBusy, setNewCompetitionLogoBusy] = useState(false);
+  const newCompetitionLogoInputRef = useRef<HTMLInputElement | null>(null);
+  const [editCompetitionLogoUrl, setEditCompetitionLogoUrl] = useState("");
+  const [editCompetitionLogoFileName, setEditCompetitionLogoFileName] = useState("");
+  const [editCompetitionLogoBusy, setEditCompetitionLogoBusy] = useState(false);
+  const editCompetitionLogoInputRef = useRef<HTMLInputElement | null>(null);
+
+  const seasonById = new Map(data.seasons.map((season) => [String(season.id), season]));
+  const competitionsBySeason = selectedExistingSeasonId
+    ? data.competitions.filter((competition)=>String(competition.season_id)===selectedExistingSeasonId)
+    : [];
+  const participationCountByCompetition = new Map<string, number>();
+  for (const participation of data.participations) {
+    const competitionId = String(participation.competition_id ?? "");
+    if (competitionId) participationCountByCompetition.set(competitionId, (participationCountByCompetition.get(competitionId) ?? 0) + 1);
+  }
+
+  const selectedCompetition = data.competitions.find((competition)=>String(competition.id)===workspaceCompetitionId);
+  const selectedSeason = selectedCompetition
+    ? seasonById.get(String(selectedCompetition.season_id ?? ""))
+    : null;
+  const selectedCompetitionPhases = useMemo(() => {
+    return data.phases
+      .filter((phase) => String(phase.competition_id ?? "") === String(workspaceCompetitionId))
+      .sort((left, right) => {
+        const leftOrder = Number(left.phase_order ?? left.order_index ?? 0);
+        const rightOrder = Number(right.phase_order ?? right.order_index ?? 0);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left.id).localeCompare(String(right.id));
+      });
+  }, [data.phases, workspaceCompetitionId]);
+  const [editingPhaseId, setEditingPhaseId] = useState<string | null>(null);
+  const [showAddPhaseForm, setShowAddPhaseForm] = useState(false);
+  const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
+  const [teamRosterLoading,setTeamRosterLoading]=useState(false);
+  const [teamRosterError,setTeamRosterError]=useState("");
+  const [teamRosterNotice,setTeamRosterNotice]=useState("");
+  const [editingAthlete,setEditingAthlete]=useState<TeamRosterAthleteWithIndex | null>(null);
+  const [editingAthleteFirstName,setEditingAthleteFirstName]=useState("");
+  const [editingAthleteLastName,setEditingAthleteLastName]=useState("");
+  const [editingAthleteBirthDate,setEditingAthleteBirthDate]=useState("");
+  const [editingAthletePhotoUrl,setEditingAthletePhotoUrl]=useState("");
+  const [editingAthletePhotoPreview,setEditingAthletePhotoPreview]=useState("");
+  const [editingAthletePhotoFileName,setEditingAthletePhotoFileName]=useState("");
+  const [editingAthleteUploadBusy,setEditingAthleteUploadBusy]=useState(false);
+  const [editingAthleteUploadMessage,setEditingAthleteUploadMessage]=useState("");
+  const [editingAthleteShirtNumber,setEditingAthleteShirtNumber]=useState("");
+  const [rosterActionBusy,setRosterActionBusy]=useState(false);
+
+  const rosterPlayers = useMemo(() => (teamRoster?.athletes ?? []).map((athlete,index)=>({ ...athlete, rowIndex:index + 1 })), [teamRoster?.athletes]);
+
+  const parseShirtNumber = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isInteger(parsed) || parsed < 0) throw new Error("Μη έγκυρος αριθμός φανέλας.");
+    return parsed;
+  };
+
+  const showTeamRosterPopup = async (teamId:string, competitionId:string, seasonId:string) => {
+    if (!teamId || !competitionId || !seasonId) return;
+    setTeamRosterLoading(true);
+    setTeamRosterError("");
+    setTeamRosterNotice("");
+    try {
+      const request = await fetch(`/api/admin/league?view=team-roster&seasonId=${seasonId}&competitionId=${competitionId}&teamId=${teamId}`, { cache: "no-store" });
+      const payload = await request.json();
+      if (!request.ok || payload?.view !== "team-roster") throw new Error(payload?.error || "Αποτυχία φόρτωσης ρόστερ.");
+      setTeamRoster(payload.data as TeamRosterManagementView);
+    } catch (error) {
+      setTeamRosterError(error instanceof Error ? error.message : "Αποτυχία φόρτωσης ρόστερ.");
+      setTeamRoster(null);
+    } finally {
+      setTeamRosterLoading(false);
+    }
+  };
+
+  const closeTeamRosterPopup = () => {
+    if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview);
+    setTeamRoster(null);
+    setTeamRosterError("");
+    setTeamRosterNotice("");
+    setEditingAthlete(null);
+    setEditingAthleteFirstName("");
+    setEditingAthleteLastName("");
+    setEditingAthleteBirthDate("");
+    setEditingAthletePhotoUrl("");
+    setEditingAthletePhotoPreview("");
+    setEditingAthletePhotoFileName("");
+    setEditingAthleteUploadBusy(false);
+    setEditingAthleteUploadMessage("");
+    setEditingAthleteShirtNumber("");
+  };
+
+  const openAthleteEdit = (athlete: TeamRosterAthleteWithIndex) => {
+    setEditingAthlete(athlete);
+    setEditingAthleteFirstName(athlete.first_name ?? "");
+    setEditingAthleteLastName(athlete.last_name ?? "");
+    setEditingAthleteBirthDate(String(athlete.birth_date ?? ""));
+    setEditingAthletePhotoUrl(String(athlete.photo_url ?? ""));
+    if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview);
+    setEditingAthletePhotoPreview(String(athlete.photo_url ?? ""));
+    setEditingAthletePhotoFileName("");
+    setEditingAthleteUploadMessage("");
+    setEditingAthleteShirtNumber(String(athlete.shirt_number ?? ""));
+  };
+
+  const runStandingsRosterPatch = async (payload: Record<string, unknown>, successMessage:string) => {
+    if (!teamRoster) return;
+    setRosterActionBusy(true);
+    setTeamRosterError("");
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const payloadResponse = await response.json();
+      if (!response.ok) throw new Error(payloadResponse.error || "Η ενέργεια απέτυχε.");
+      setTeamRosterNotice(successMessage);
+      await showTeamRosterPopup(teamRoster.teamId, teamRoster.competitionId, teamRoster.seasonId);
+    } catch (error) {
+      setTeamRosterError(error instanceof Error ? error.message : "Η ενέργεια απέτυχε.");
+    } finally {
+      setRosterActionBusy(false);
+    }
+  };
+
+  const handleAthletePhotoSelect = (file: File) => {
+    if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview);
+    setEditingAthletePhotoFileName(file.name);
+    setEditingAthletePhotoPreview(URL.createObjectURL(file));
+    setEditingAthleteUploadMessage("Φόρτωση εικόνας...");
+    setEditingAthleteUploadBusy(true);
+    void (async () => {
+      const payload = new FormData();
+      payload.append("logo", file);
+      payload.append("teamId", "");
+      try {
+        const response = await fetch("/api/admin/team-logo-route", { method: "POST", body: payload });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result?.error || "Το upload απέτυχε.");
+        const uploadedPhoto = String(result.logoUrl ?? "");
+        if (!uploadedPhoto) throw new Error("Δεν αποθηκεύτηκε φωτογραφία.");
+        setEditingAthletePhotoUrl(uploadedPhoto);
+        setEditingAthleteUploadMessage("Η φωτογραφία ανέβηκε.");
+      } catch (error) {
+        setEditingAthleteUploadMessage(error instanceof Error ? error.message : "Η φωτογραφία απέτυχε.");
+      } finally {
+        setEditingAthleteUploadBusy(false);
+      }
+    })();
+  };
+
+  const saveAthleteEditsFromRoster = async () => {
+    if (!editingAthlete) return;
+    await runStandingsRosterPatch({
+      action: "updateAthleteCanonical",
+      playerId: editingAthlete.player_id,
+      firstName: editingAthleteFirstName.trim() || null,
+      lastName: editingAthleteLastName.trim() || null,
+      birthDate: editingAthleteBirthDate || null,
+      photoUrl: editingAthletePhotoUrl || null,
+    }, "Οι αλλαγές αθλητή αποθηκεύτηκαν.");
+    await runStandingsRosterPatch({
+      action: "updateAthleteShirt",
+      rosterId: editingAthlete.roster_id,
+      shirtNumber: parseShirtNumber(editingAthleteShirtNumber),
+    }, "Τα στοιχεία ρόστερ αποθηκεύτηκαν.");
+    if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview);
+    setEditingAthletePhotoPreview("");
+    setEditingAthletePhotoFileName("");
+    setEditingAthlete(null);
+  };
+
+  useEffect(() => {
+    setShowAddPhaseForm(false);
+    setEditingPhaseId(null);
+    setTeamRoster(null);
+    setTeamRosterError("");
+    setTeamRosterNotice("");
+    setEditingAthlete(null);
+  }, [workspaceCompetitionId]);
+
+  useEffect(() => {
+    if (workspaceCompetitionId) {
+      const current = data.competitions.find((competition)=>String(competition.id)===workspaceCompetitionId);
+      setEditCompetitionLogoUrl(String(current?.logo_url ?? ""));
+      setEditCompetitionLogoFileName("");
+      return;
+    }
+    setEditCompetitionLogoUrl("");
+    setEditCompetitionLogoFileName("");
+    setEditCompetitionLogoBusy(false);
+  }, [workspaceCompetitionId, data.competitions]);
+
+  useEffect(() => {
+    if (!selectedExistingSeasonId && data.seasons[0]) {
+      setSelectedExistingSeasonId(String(data.seasons[0].id));
+    }
+  }, [data.seasons, selectedExistingSeasonId]);
+
+  const uploadCompetitionLogo = async (
+    file: File,
+    setLogoUrl: (value: string) => void,
+    setBusyState: (value: boolean) => void,
+    setFileName: (value: string) => void,
+  ) => {
+    const previousFile = file.name;
+    setBusyState(true);
+    try {
+      const fd = new FormData();
+      fd.append("logo", file);
+      fd.append("teamId", "");
+      const response = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Αποτυχία μεταφόρτωσης.");
+      setLogoUrl(String(payload.logoUrl ?? ""));
+      setFileName(previousFile);
+    } finally {
+      setBusyState(false);
+    }
+  };
+
+  const openCompetitionWorkspace = (competitionId:string) => {
+    setWorkspaceCompetitionId(competitionId);
+    setWorkspaceMode("settings");
+  };
+
+  const clearCompetitionWorkspace = useCallback(() => {
+    setWorkspaceCompetitionId("");
+    setWorkspaceMode("settings");
+    setEditingPhaseId(null);
+    setStartMode("home");
+  }, [setWorkspaceMode, setWorkspaceCompetitionId]);
+
+  return (
+    <div className="space-y-5">
+      {!workspaceCompetitionId && (
+        <Panel title="Διοργανώσεις">
+          {startMode === "home" && (
+            <div className="flex flex-wrap gap-3">
+              <button onClick={() => setStartMode("new")} className={buttonClass}>Νέα Διοργάνωση</button>
+              <button onClick={() => setStartMode("existing")} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:border-orange-500">Υφιστάμενες Διοργανώσεις</button>
+            </div>
+          )}
+          {startMode === "new" && (
+            <form onSubmit={(event)=>void submit("competitions", event)} className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <CompetitionFields />
+              <Field label="Σεζόν">
+                <select required name="seasonId" value={selectedNewSeasonId} onChange={(event) => setSelectedNewSeasonId(event.target.value)} className={inputClass}>
+                  <option value="">Επιλογή</option>
+                  {data.seasons.map((season)=><option key={String(season.id)} value={String(season.id)}>{season.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Λογότυπο">
+                <div className="mt-1 flex items-center gap-3">
+                  <div className="h-16 w-16 overflow-hidden rounded-xl bg-zinc-100">
+                    {newCompetitionLogoUrl ? <img src={newCompetitionLogoUrl} alt="Προεπισκόπηση λογοτύπου" className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                  </div>
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                    <span>📷 {newCompetitionLogoUrl ? "Αλλαγή λογότυπου" : "Επιλογή λογότυπου"}</span>
+                    <input
+                      ref={newCompetitionLogoInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        if (!file) return;
+                        void uploadCompetitionLogo(file, setNewCompetitionLogoUrl, setNewCompetitionLogoBusy, setNewCompetitionLogoFileName);
+                      }}
+                    />
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-zinc-500">{newCompetitionLogoBusy ? "Μεταφόρτωση λογότυπου…" : newCompetitionLogoFileName ? `Επιλεγμένο αρχείο: ${newCompetitionLogoFileName}` : "Επίλεξε λογότυπο από τον υπολογιστή."}</p>
+              </Field>
+              <input type="hidden" name="logoUrl" value={newCompetitionLogoUrl} />
+              <div className="sm:col-span-2 xl:col-span-4 flex items-center gap-3">
+                <button disabled={busy} className={buttonClass}>Δημιουργία Διοργάνωσης</button>
+                <button type="button" onClick={() => setStartMode("home")} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700">Πίσω</button>
+              </div>
+            </form>
+          )}
+          {startMode === "existing" && (
+            <div className="mt-5 space-y-4">
+              <Field label="Σεζόν">
+                <select value={selectedExistingSeasonId} onChange={(event) => setSelectedExistingSeasonId(event.target.value)} className={inputClass}>
+                  <option value="">Επιλογή</option>
+                  {data.seasons.map((season) => <option key={String(season.id)} value={String(season.id)}>{season.name}</option>)}
+                </select>
+              </Field>
+              <div className="grid gap-3 xl:grid-cols-2">
+                {competitionsBySeason.map((competition) => {
+                  const competitionId = String(competition.id);
+                  const lifecycle = String(competition.lifecycle_status ?? "under_construction");
+                  const competitionTypeDisplay = getCompetitionTypeLabel(String(competition.type), String(competition.custom_type_label ?? ""));
+                  const participationCount = participationCountByCompetition.get(competitionId) ?? 0;
+                  return <article key={competitionId} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wider text-orange-600">{competition.season_name}</p>
+                        <h3 className="mt-1 text-xl font-black text-zinc-950">{competition.name}</h3>
+                        <p className="mt-2 text-sm text-zinc-600">{competitionTypeDisplay} · {competition.expected_team_count ?? "—"} αναμενόμενες ομάδες · {participationCount} πραγματικές συμμετοχές</p>
+                        <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ${lifecycle==="online"?"bg-emerald-100 text-emerald-800":lifecycle==="complete"?"bg-zinc-200 text-zinc-700":"bg-amber-100 text-amber-800"}`}>{competitionLifecycleLabels[lifecycle] ?? lifecycle}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => openCompetitionWorkspace(competitionId)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">Άνοιγμα</button>
+                        <button type="button" onClick={() => openCompetitionWorkspace(competitionId)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">Edit</button>
+                      </div>
+                    </div>
+                  </article>;
+                })}
+                {!selectedExistingSeasonId && <p className="text-sm text-zinc-500">Επίλεξε σεζόν.</p>}
+                {selectedExistingSeasonId && !competitionsBySeason.length && <p className="text-sm text-zinc-500">Δεν υπάρχουν διοργανώσεις για αυτή τη σεζόν.</p>}
+              </div>
+            </div>
+          )}
+        </Panel>
+      )}
+
+      {workspaceCompetitionId && selectedCompetition && (
+        <Panel title={`Ρύθμιση Διοργάνωσης`}>
+          <p className="text-sm text-zinc-700">{selectedCompetition.name} — {selectedSeason?.name ?? "—"}</p>
+          <div className="mt-4 mb-4 flex gap-2 border-b border-zinc-200 pb-4">
+            <button type="button" onClick={() => setWorkspaceMode("settings")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "settings" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Ρύθμιση Διοργάνωσης</button>
+            <button type="button" onClick={() => setWorkspaceMode("phases")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "phases" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Φάσεις & Πρόγραμμα</button>
+          </div>
+          <p className="text-sm text-zinc-600">Κατάσταση: {competitionLifecycleLabels[String(selectedCompetition.lifecycle_status ?? "under_construction")] ?? "Under Construction"}</p>
+          {workspaceMode === "settings" ? (
+            <form
+              onSubmit={(event)=>{ if (!window.confirm("Θέλεις να αποθηκεύσεις τις αλλαγές στη ρύθμιση της διοργάνωσης;")) return; void updateEntity("competitions", workspaceCompetitionId, event, "Η ρύθμιση της διοργάνωσης αποθηκεύτηκε."); }}
+              className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+            >
+              <Field label="Λογότυπο">
+                <div className="mt-1 flex items-center gap-3">
+                  <div className="h-16 w-16 overflow-hidden rounded-xl bg-zinc-100">
+                    {editCompetitionLogoUrl
+                      ? <img src={editCompetitionLogoUrl} alt="Λογότυπο διοργάνωσης" className="h-full w-full object-cover" />
+                      : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                  </div>
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                    <span>📷 {editCompetitionLogoUrl ? "Αλλαγή λογότυπου" : "Επιλογή λογότυπου"}</span>
+                    <input
+                      ref={editCompetitionLogoInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        if (!file) return;
+                        void uploadCompetitionLogo(file, setEditCompetitionLogoUrl, setEditCompetitionLogoBusy, setEditCompetitionLogoFileName);
+                      }}
+                    />
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-zinc-500">{editCompetitionLogoBusy ? "Μεταφόρτωση λογότυπου…" : editCompetitionLogoFileName ? `Επιλεγμένο αρχείο: ${editCompetitionLogoFileName}` : "Επίλεξε λογότυπο από τον υπολογιστή."}</p>
+              </Field>
+              <input type="hidden" name="logoUrl" value={editCompetitionLogoUrl} />
+              <Field label="Όνομα"><input required name="name" defaultValue={String(selectedCompetition.name ?? "")} className={inputClass}/></Field>
+                <Field label="Σεζόν"><input required disabled value={String(selectedSeason?.name ?? "")} className={inputClass}/></Field>
+                <input type="hidden" name="seasonId" value={String(selectedCompetition.season_id ?? "")} />
+                <CompetitionFields competition={selectedCompetition} includeName={false} includeStatus />
+              <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-4">
+                <button disabled={busy} className={buttonClass}>Αποθήκευση</button>
+                <button
+                  type="button"
+                  onClick={() => clearCompetitionWorkspace()}
+                  className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-700"
+                >
+                  Πίσω
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (!window.confirm(`Πρόκειται να διαγράψεις τη διοργάνωση «${String(selectedCompetition.name)}». Θέλεις να συνεχίσεις;`)) return;
+                    void deleteEntity("competitions", workspaceCompetitionId, `Η διοργάνωση «${String(selectedCompetition.name)}» διαγράφηκε.`);
+                  }}
+                  className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Διαγραφή
+                </button>
+              </div>
+            </form>
+          ) : (
+            <article className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+              {!showAddPhaseForm && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddPhaseForm(true)}
+                  className={buttonClass}
+                >
+                  + Προσθήκη Φάσης
+                </button>
+              )}
+              {showAddPhaseForm && (
+                <>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <p className="text-sm font-black text-zinc-700">Προσθήκη Φάσης</p>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddPhaseForm(false)}
+                      className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                    >
+                      Ακύρωση
+                    </button>
+                  </div>
+                  <form
+                    onSubmit={async (event) => {
+                      if (await submit("phases", event)) setShowAddPhaseForm(false);
+                    }}
+                    className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+                  >
+                    <input type="hidden" name="competitionId" value={String(selectedCompetition.id)} />
+                    <PhaseFields data={data} competitionId={String(selectedCompetition.id)} />
+                    <div className="flex items-center sm:col-span-2 xl:col-span-4">
+                      <button disabled={busy} className={buttonClass}>Προσθήκη Φάσης</button>
+                    </div>
+                  </form>
+                </>
+              )}
+              <div className="mt-6 space-y-4">
+                {!selectedCompetitionPhases.length && <p className="text-sm text-zinc-500">Δεν έχουν δημιουργηθεί ακόμη Φάσεις.</p>}
+                {selectedCompetitionPhases.map((phase, index) => {
+                  const phaseId = String(phase.id);
+                  const isEditing = editingPhaseId === phaseId;
+                  const phaseOrder = Number(phase.phase_order ?? phase.order_index ?? index + 1);
+                  const phaseFormat = String(phase.format ?? phase.phase_kind ?? "standings");
+                  return <article key={phaseId} className="rounded-xl border border-zinc-200 bg-white p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wider text-orange-600">{index + 1}. {phase.name}</p>
+                        <p className="mt-1 text-sm text-zinc-700">{phaseFormatLabel(phaseFormat)} · σειρά {phaseOrder}</p>
+                      </div>
+                      <button type="button" onClick={()=>setEditingPhaseId(isEditing ? null : phaseId)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing ? "Ακύρωση" : "Edit Φάσης"}</button>
+                    </div>
+                    {isEditing && (
+                      <form onSubmit={async (event) => {
+                        if (await updateEntity("phases", phaseId, event, "Η φάση ενημερώθηκε.")) {
+                          setEditingPhaseId(null);
+                        }
+                      }} className="mt-4 border-t border-zinc-200 pt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <PhaseFields data={data} phase={phase} competitionId={String(phase.competition_id ?? "")} />
+                        <input type="hidden" name="competitionId" value={String(phase.competition_id ?? "")} />
+                        <div className="sm:col-span-2 xl:col-span-4">
+                          <button disabled={busy} className={buttonClass}>Αποθήκευση Φάσης</button>
+                        </div>
+                      </form>
+                    )}
+                    {phaseFormat === "standings" && <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />}
+                  </article>;
+                })}
+              </div>
+              {teamRosterLoading && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                  <div className="max-w-sm rounded-2xl bg-white p-6 text-center text-zinc-700">Φόρτωση ρόστερ…</div>
+                </div>
+              )}
+              {teamRosterError && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                  <div className="w-full max-w-xl rounded-2xl bg-white p-4">
+                    <div className="text-sm font-black text-red-700">{teamRosterError}</div>
+                    <button type="button" onClick={closeTeamRosterPopup} className="mt-4 rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Κλείσιμο</button>
+                  </div>
+                </div>
+              )}
+              {teamRoster && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                  <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-4 sm:p-6">
+                    <div className="mb-4 flex items-start justify-between gap-2">
+                      <div>
+                        <h3 className="text-xl font-black text-zinc-950">{teamRoster.teamName}</h3>
+                        <p className="text-sm text-zinc-600">{teamRoster.competitionName} · {teamRoster.seasonName}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button type="button" className={`${buttonClass} text-sm`}>Επεξεργασία Ρόστερ</button>
+                        <button type="button" onClick={closeTeamRosterPopup} className="rounded-xl border border-zinc-300 px-3 py-2.5 font-black">Κλείσιμο</button>
+                      </div>
+                    </div>
+                    {teamRosterNotice ? <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{teamRosterNotice}</p> : null}
+                    <section className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                      <h4 className="font-black text-zinc-800">Αθλητές</h4>
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full min-w-[760px] text-left text-sm">
+                          <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                            <tr>
+                              <th className="px-3 py-2">#</th><th className="px-3 py-2">Φωτογραφία</th><th className="px-3 py-2">Όνομα</th><th className="px-3 py-2">Επώνυμο</th><th className="px-3 py-2">Ημ. Γέννησης</th><th className="px-3 py-2">Νο. Φανέλας</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rosterPlayers.map((athlete) => (
+                              <tr key={athlete.roster_id} className="border-b border-zinc-100 last:border-0">
+                                <td className="px-3 py-2">{athlete.rowIndex}</td>
+                                <td className="px-3 py-2">
+                                  {athlete.photo_url ? <img src={athlete.photo_url} alt={`${athlete.first_name ?? ""} ${athlete.last_name ?? ""}`} className="h-8 w-8 rounded-full object-cover" /> : <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-[10px] text-zinc-500">—</span>}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <button
+                                    type="button"
+                                    className="text-blue-700 underline decoration-blue-300 hover:text-blue-900"
+                                    onClick={() => openAthleteEdit(athlete)}
+                                    disabled={rosterActionBusy}
+                                  >
+                                    {athlete.first_name || athlete.display_name || "—"}
+                                  </button>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <button
+                                    type="button"
+                                    className="text-blue-700 underline decoration-blue-300 hover:text-blue-900"
+                                    onClick={() => openAthleteEdit(athlete)}
+                                    disabled={rosterActionBusy}
+                                  >
+                                    {athlete.last_name || athlete.display_name || "—"}
+                                  </button>
+                                </td>
+                                <td className="px-3 py-2 text-zinc-700">{parseDateForDisplay(String(athlete.birth_date ?? ""))}</td>
+                                <td className="px-3 py-2 text-zinc-700">{athlete.shirt_number ?? "—"}</td>
+                              </tr>
+                            ))}
+                            {!rosterPlayers.length && <tr><td className="px-3 py-4 text-zinc-500" colSpan={6}>Δεν υπάρχουν αθλητές στο roster.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                    <section className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                      <h4 className="font-black text-zinc-800">Staff</h4>
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full min-w-[680px] text-left text-sm">
+                          <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                            <tr><th className="px-3 py-2">Φωτογραφία</th><th className="px-3 py-2">Όνομα</th><th className="px-3 py-2">Επώνυμο</th><th className="px-3 py-2">Ρόλος</th></tr>
+                          </thead>
+                          <tbody>
+                            {teamRoster.staff.map((member) => {
+                              const firstName = member.first_name?.trim() ? member.first_name : member.display_name;
+                              const lastName = member.last_name?.trim() ? member.last_name : member.display_name;
+                              return (
+                                <tr key={member.membership_id} className="border-b border-zinc-100 last:border-0">
+                                  <td className="px-3 py-2">
+                                    {member.photo_url ? <img src={member.photo_url} alt={firstName ?? ""} className="h-8 w-8 rounded-full object-cover" /> : <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-[10px] text-zinc-500">—</span>}
+                                  </td>
+                                  <td className="px-3 py-2 text-zinc-700">{firstName || "—"}</td>
+                                  <td className="px-3 py-2 text-zinc-700">{lastName || "—"}</td>
+                                  <td className="px-3 py-2 text-zinc-700">{member.role === "other" ? (member.custom_role_label || staffRoleLabels.other) : staffRoleLabels[member.role as TeamRosterViewRole] || member.role}</td>
+                                </tr>
+                              );
+                            })}
+                            {!teamRoster.staff.length && <tr><td className="px-3 py-4 text-zinc-500" colSpan={4}>Δεν υπάρχουν staff μέλη στο roster.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              )}
+              {editingAthlete && (
+                <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4">
+                  <div className="w-full max-w-xl rounded-2xl bg-white p-4 sm:p-6">
+                    <h3 className="text-lg font-black text-zinc-950">Athlete Edit</h3>
+                    <p className="mt-1 text-sm text-zinc-600">Φωτογραφία • Όνομα • Επώνυμο • Ημ. Γέννησης • Νο. Φανέλας</p>
+                    <div className="mt-4 grid gap-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label="Όνομα"><input value={editingAthleteFirstName} onChange={(event)=>setEditingAthleteFirstName(event.target.value)} className={inputClass} /></Field>
+                        <Field label="Επώνυμο"><input value={editingAthleteLastName} onChange={(event)=>setEditingAthleteLastName(event.target.value)} className={inputClass} /></Field>
+                      </div>
+                      <Field label="Ημερομηνία γέννησης"><input type="date" value={editingAthleteBirthDate} onChange={(event)=>setEditingAthleteBirthDate(event.target.value)} className={inputClass} /></Field>
+                      <Field label="Νο. Φανέλας"><input value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} /></Field>
+                      <Field label="Φωτογραφία">
+                        <div className="mt-1 flex items-center gap-3">
+                          <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                            {(editingAthletePhotoPreview || editingAthletePhotoUrl)
+                              ? <img src={editingAthletePhotoPreview || editingAthletePhotoUrl} alt="Athlete photo preview" className="h-full w-full object-cover" />
+                              : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                          </div>
+                          <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                            <span>📷 {editingAthletePhotoPreview || editingAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                            <input type="file" accept="image/*" className="hidden" onChange={(event)=>{ const file = event.currentTarget.files?.[0]; if (!file) return; handleAthletePhotoSelect(file); }} />
+                          </label>
+                        </div>
+                        <p className="mt-2 text-xs text-zinc-500">{editingAthleteUploadBusy ? "Φόρτωση εικόνας..." : (editingAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${editingAthletePhotoFileName}` : editingAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
+                      </Field>
+                      <div className="mt-1 flex gap-2">
+                        <button type="button" className={buttonClass} onClick={() => void saveAthleteEditsFromRoster()} disabled={rosterActionBusy}>Αποθήκευση</button>
+                        <button type="button" onClick={() => { if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview); setEditingAthletePhotoPreview(""); setEditingAthletePhotoFileName(""); setEditingAthlete(null); }} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Ακύρωση</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </article>
+          )}
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+
