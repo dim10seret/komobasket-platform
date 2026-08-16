@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS league_competitions (
   id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
   name TEXT NOT NULL, slug TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'league'
     CHECK (type IN ('league','cup','tournament')),
-  description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft'
+  custom_type_label TEXT, logo_url TEXT, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','active','completed')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(season_id, slug)
@@ -105,7 +105,8 @@ CREATE INDEX IF NOT EXISTS idx_staff_memberships_team
 
 CREATE TABLE IF NOT EXISTS league_phases (
   id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
-  name TEXT NOT NULL, slug TEXT NOT NULL, phase_type TEXT NOT NULL DEFAULT 'regular', order_index INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL, slug TEXT NOT NULL, phase_type TEXT NOT NULL DEFAULT 'regular', format TEXT NOT NULL DEFAULT 'standings' CHECK (format IN ('standings','series','knockout','custom')), order_index INTEGER NOT NULL DEFAULT 0, phase_order INTEGER,
+
   settings_json TEXT NOT NULL DEFAULT '{}', UNIQUE(competition_id, slug)
 );
 

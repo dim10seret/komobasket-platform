@@ -37,15 +37,41 @@ const STAFF_ROLE_VALUES = [
   "other",
  ] as const;
 const STAFF_ROLES = new Set<string>(STAFF_ROLE_VALUES);
-const PHASE_KINDS = new Set([
-  "regular_season",
-  "play_in",
-  "play_out",
-  "playoffs",
-  "final_four",
-  "finals",
-  "custom",
-]);
+const PHASE_FORMATS = new Set(["standings", "series", "knockout", "custom"]);
+const PHASE_FORMAT_TO_LEGACY_KIND: Record<string, string> = {
+  standings: "regular_season",
+  series: "play_in",
+  knockout: "playoffs",
+  custom: "custom",
+};
+const PHASE_KIND_TO_FORMAT: Record<string, string> = {
+  regular: "standings",
+  regular_season: "standings",
+  play_in: "series",
+  play_out: "series",
+  playoffs: "knockout",
+  final_four: "knockout",
+  finals: "knockout",
+  custom: "custom",
+  standings: "standings",
+  series: "series",
+  knockout: "knockout",
+};
+const STANDINGS_TIE_BREAKER_OPTIONS = [
+  "head_to_head",
+  "head_to_head_point_diff",
+  "overall_point_diff",
+  "points_for",
+  "alphabetical",
+] as const;
+const STANDINGS_TIE_BREAKER_SET = new Set<string>(STANDINGS_TIE_BREAKER_OPTIONS);
+const DEFAULT_STANDINGS_TIE_BREAKERS = [
+  "head_to_head",
+  "head_to_head_point_diff",
+  "overall_point_diff",
+  "points_for",
+  "alphabetical",
+];
 
 const lifecycleToLegacyStatus: Record<string, string> = {
   under_construction: "draft",
@@ -322,11 +348,67 @@ function lifecycleValue(input: Record<string, unknown>, fallback = "under_constr
   return normalized;
 }
 
-function phaseKindValue(input: Record<string, unknown>, fallback = "regular_season") {
-  const raw = String(input.phaseKind ?? input.phaseType ?? fallback);
-  const normalized = raw === "regular" ? "regular_season" : raw;
-  if (!PHASE_KINDS.has(normalized)) throw new Error("Ο τύπος της φάσης δεν είναι έγκυρος.");
-  return normalized;
+function phaseFormatValue(input: Record<string, unknown>, fallback = "standings") {
+  const raw = String(input.format ?? input.phaseKind ?? input.phaseType ?? fallback);
+  const normalized = String(raw).trim().toLowerCase();
+  const mapped = PHASE_KIND_TO_FORMAT[normalized] ?? normalized;
+  if (!PHASE_FORMATS.has(mapped)) throw new Error("Ο τύπος της φάσης δεν είναι έγκυρος.");
+  return mapped;
+}
+
+function phaseFormatToPhaseType(phaseFormat: string) {
+  const normalized = String(phaseFormat).trim().toLowerCase();
+  const mapped = PHASE_FORMAT_TO_LEGACY_KIND[normalized];
+  if (!mapped) throw new Error("Ο τύπος αποθήκευσης φάσης είναι άκυρος.");
+  return mapped;
+}
+
+function parsePhaseRuleJson(input: unknown) {
+  if (typeof input !== "string" || !input.trim()) return {};
+  try {
+    const parsed = JSON.parse(input);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+function parseStandingsRuleInt(value: unknown, fallback: number, label: string, minimum = 0) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < minimum) {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρο.`);
+  }
+  return parsed;
+}
+
+function parseScheduleMode(value: unknown) {
+  const normalized = String(value ?? "automatic").trim().toLowerCase();
+  if (normalized === "manual") return "manual";
+  return "automatic";
+}
+
+function parseStandingsTieBreakers(value: unknown) {
+  const fallback = value === undefined || value === null ? DEFAULT_STANDINGS_TIE_BREAKERS : value;
+  const parsed = Array.isArray(fallback)
+    ? fallback
+    : parsePhaseRuleJson(fallback);
+  const source = Array.isArray(parsed) ? parsed : null;
+  if (!source) return [...DEFAULT_STANDINGS_TIE_BREAKERS];
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const item of source) {
+    const key = String(item ?? "").trim();
+    if (!key || !STANDINGS_TIE_BREAKER_SET.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(key);
+  }
+  const withoutAlphabetical = normalized.filter((item) => item !== "alphabetical");
+  return [...withoutAlphabetical, "alphabetical"];
 }
 
 function seasonInput(input: Record<string, unknown>): SeasonInput {
@@ -380,8 +462,13 @@ async function competitionInput(
 
   const name = String(input.name ?? source?.name ?? current?.name ?? "").trim();
   if (!name) throw new Error("Η ονομασία της διοργάνωσης είναι υποχρεωτική.");
-  const type = String(input.type ?? source?.type ?? current?.type ?? "league");
+  const rawType = String(input.type ?? source?.type ?? current?.type ?? "league");
+  const type = rawType === "custom" ? "league" : rawType;
   if (!COMPETITION_TYPES.has(type)) throw new Error("Ο τύπος της διοργάνωσης δεν είναι έγκυρος.");
+  const customTypeLabel = rawType === "custom"
+    ? String(input.customTypeLabel ?? "").trim() || null
+    : null;
+  if (rawType === "custom" && !customTypeLabel) throw new Error("Απαιτείται ονομασία για custom τύπο.");
   const lifecycleStatus = lifecycleValue(
     input,
     String(source?.lifecycle_status ?? current?.lifecycle_status ?? "under_construction"),
@@ -403,6 +490,7 @@ async function competitionInput(
     name,
     slug: String(input.slug ?? "").trim() || slugify(name),
     type,
+    customTypeLabel,
     description: String(input.description ?? source?.description ?? current?.description ?? "").trim(),
     lifecycleStatus,
     legacyStatus: lifecycleToLegacyStatus[lifecycleStatus],
@@ -414,6 +502,7 @@ async function competitionInput(
     tiebreakersJson: String(input.tiebreakersJson ?? source?.tiebreakers_json ?? current?.tiebreakers_json ?? "[]"),
     settingsJson: String(input.settingsJson ?? source?.format_settings_json ?? current?.format_settings_json ?? "{}"),
     copyPhases: booleanValue(input.copyPhases),
+    logoUrl: String(input.logoUrl ?? source?.logo_url ?? current?.logo_url ?? "").trim() || null,
   };
 }
 
@@ -469,7 +558,21 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
   if (!competition) throw new Error("Επίλεξε έγκυρη διοργάνωση.");
   const name = String(input.name ?? current?.name ?? "").trim();
   if (!name) throw new Error("Η ονομασία της φάσης είναι υποχρεωτική.");
-  const phaseKind = phaseKindValue(input, String(current?.phase_kind ?? "regular_season"));
+  const phaseFormat = phaseFormatValue(input, String(current?.format ?? current?.phase_kind ?? "standings"));
+  const legacyPhaseType = phaseFormatToPhaseType(phaseFormat);
+  const providedOrder = optionalInteger(
+    input.orderIndex ?? input.phaseOrder ?? input.order ?? input.phase_order,
+    "Σειρά εμφάνισης",
+    1,
+  );
+  const nextOrder = current
+    ? undefined
+    : await db.prepare(
+      "SELECT COALESCE(MAX(COALESCE(phase_order, order_index, 0)), 0) AS max_order FROM league_phases WHERE competition_id=?",
+    ).bind(competitionId).first<{ max_order: number | null }>();
+  const resolvedPhaseOrder = current
+    ? (providedOrder ?? Number(current?.phase_order ?? current?.order_index ?? 1))
+    : (providedOrder ?? Number(nextOrder?.max_order ?? 0) + 1);
   const bestOf = optionalInteger(input.bestOf ?? current?.best_of, "Best of", 1);
   if (bestOf !== null && bestOf % 2 === 0) throw new Error("Το Best of πρέπει να είναι μονός αριθμός.");
   const winsRequired = optionalInteger(input.winsRequired ?? current?.wins_required, "Απαιτούμενες νίκες", 1);
@@ -482,19 +585,58 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
       .bind(sourcePhaseId, competitionId).first<{ id: string }>();
     if (!source) throw new Error("Η φάση προέλευσης πρέπει να ανήκει στην ίδια διοργάνωση.");
   }
+  const currentRuleSettings = parsePhaseRuleJson(current?.rule_settings_json);
+  const scheduleMode = parseScheduleMode(
+    input.scheduleMode ?? currentRuleSettings.scheduleMode,
+  );
+  const winPoints = parseStandingsRuleInt(
+    input.winPoints ?? currentRuleSettings.winPoints,
+    2,
+    "Βαθμοί νίκης",
+    0,
+  );
+  const lossPoints = parseStandingsRuleInt(
+    input.lossPoints ?? currentRuleSettings.lossPoints,
+    1,
+    "Βαθμοί ήττας",
+    0,
+  );
+  const forfeitPoints = parseStandingsRuleInt(
+    input.forfeitPoints ?? currentRuleSettings.forfeitPoints,
+    0,
+    "Βαθμοί μηδενισμού",
+    0,
+  );
+  const gamesPerPairing = parseStandingsRuleInt(
+    input.gamesPerPairing ?? currentRuleSettings.gamesPerPairing,
+    1,
+    "Αγώνες ανά ζευγάρι",
+    1,
+  );
+  const tieBreakers = parseStandingsTieBreakers(
+    input.tieBreakers ?? currentRuleSettings.tieBreakers,
+  );
   return {
     competitionId,
     name,
     slug: String(input.slug ?? "").trim() || slugify(name),
-    phaseKind,
-    legacyPhaseType: phaseKind === "regular_season" ? "regular" : phaseKind,
-    orderIndex: optionalInteger(input.orderIndex ?? current?.order_index ?? 0, "Σειρά εμφάνισης", 0) ?? 0,
+    phaseFormat,
+    legacyPhaseType,
+    orderIndex: Number.isFinite(resolvedPhaseOrder) ? resolvedPhaseOrder : 1,
     bracketSize: optionalInteger(input.bracketSize ?? current?.bracket_size, "Μέγεθος ταμπλό", 2),
     bestOf,
     winsRequired,
     carryOverEnabled: booleanValue(input.carryOverEnabled),
     carryOverSourcePhaseId: sourcePhaseId,
-    settingsJson: String(input.settingsJson ?? current?.rule_settings_json ?? "{}"),
+    settingsJson: JSON.stringify({
+      ...currentRuleSettings,
+      winPoints,
+      lossPoints,
+      forfeitPoints,
+      gamesPerPairing,
+      tieBreakers,
+      scheduleMode,
+    }),
   };
 }
 
@@ -517,7 +659,7 @@ async function savePhaseRules(
       updated_at=CURRENT_TIMESTAMP`)
     .bind(
       id,
-      phase.phaseKind,
+      phase.legacyPhaseType,
       phase.bracketSize,
       phase.bestOf,
       phase.winsRequired,
@@ -525,6 +667,31 @@ async function savePhaseRules(
       phase.carryOverEnabled ? phase.carryOverSourcePhaseId : null,
       phase.settingsJson,
     ).run();
+}
+
+async function normalizeCompetitionPhaseOrder(
+  db: D1DatabaseBinding,
+  competitionId: string,
+) {
+  const competitionPhases = await rows<{ id: string; phase_order: number | null; order_index: number | null }>(
+    db,
+    `SELECT id, COALESCE(phase_order, order_index, 0) AS phase_order, order_index
+      FROM league_phases
+      WHERE competition_id=?
+      ORDER BY COALESCE(phase_order, order_index, 0), id`,
+    [competitionId],
+  );
+
+  for (let index = 0; index < competitionPhases.length; index++) {
+    const sequenceOrder = index + 1;
+    const row = competitionPhases[index];
+    if (!row?.id) continue;
+    await db.prepare(
+      `UPDATE league_phases
+        SET phase_order=?, order_index=?
+        WHERE id=?`,
+    ).bind(sequenceOrder, sequenceOrder, row.id).run();
+  }
 }
 
 export async function getLeagueAdminSnapshot() {
@@ -565,6 +732,7 @@ export async function getLeagueAdminSnapshot() {
       COALESCE(cp.lifecycle_status,
         CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END
       ) AS lifecycle_status,
+      c.custom_type_label, c.logo_url,
       cf.expected_team_count, cf.regular_season_meetings, cf.win_points,
       cf.loss_points, cf.forfeit_points, cf.tiebreakers_json, cf.settings_json AS format_settings_json
       FROM league_competitions c
@@ -587,6 +755,7 @@ export async function getLeagueAdminSnapshot() {
     rows(db, `SELECT m.*, p.display_name AS player_name, ft.name AS from_team_name, tt.name AS to_team_name FROM league_player_movements m JOIN league_players p ON p.id=m.player_id LEFT JOIN league_teams ft ON ft.id=m.from_team_id LEFT JOIN league_teams tt ON tt.id=m.to_team_id ORDER BY m.effective_on DESC LIMIT 500`),
     rows(db, `SELECT p.*, c.name AS competition_name, s.name AS season_name,
       COALESCE(pr.phase_kind, CASE WHEN p.phase_type='regular' THEN 'regular_season' ELSE p.phase_type END) AS phase_kind,
+      COALESCE(p.phase_order, p.order_index) AS phase_order,
       pr.bracket_size, pr.best_of, pr.wins_required, pr.carry_over_enabled,
       pr.carry_over_source_phase_id, source_phase.name AS carry_over_source_name,
       pr.settings_json AS rule_settings_json
@@ -595,7 +764,7 @@ export async function getLeagueAdminSnapshot() {
       JOIN league_seasons s ON s.id=c.season_id
       LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
       LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
-      ORDER BY s.name DESC, c.name, p.order_index`),
+      ORDER BY s.name DESC, c.name, COALESCE(p.phase_order, p.order_index), p.id`),
     rows(db, `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name FROM league_games g JOIN league_teams ht ON ht.id=g.home_team_id JOIN league_teams at ON at.id=g.away_team_id LEFT JOIN league_phases p ON p.id=g.phase_id ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`),
   ]);
 
@@ -1467,7 +1636,9 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       "SELECT id FROM league_competitions WHERE season_id=? AND slug=?",
     ).bind(competition.seasonId, competition.slug).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη διοργάνωση με αυτή την ονομασία στη συγκεκριμένη σεζόν.");
-    await db.prepare(`INSERT INTO league_competitions (id,season_id,name,slug,type,description,status) VALUES (?,?,?,?,?,?,?)`)
+    await db.prepare(`INSERT INTO league_competitions
+      (id,season_id,name,slug,type,description,status,custom_type_label,logo_url)
+      VALUES (?,?,?,?,?,?,?,?,?)`)
       .bind(
         id,
         competition.seasonId,
@@ -1476,6 +1647,8 @@ export async function createLeagueEntity(resource: string, input: Record<string,
         competition.type,
         competition.description,
         competition.legacyStatus,
+        competition.customTypeLabel,
+        competition.logoUrl,
       ).run();
     await saveCompetitionDetails(db, id, competition);
 
@@ -1491,16 +1664,21 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       for (const sourcePhase of sourcePhases) {
         const phaseId = createEntityId("phase");
         copiedIds.set(String(sourcePhase.id), phaseId);
+        const sourceFormat = String(sourcePhase.format ?? sourcePhase.phase_kind ?? "standings");
+        const sourceOrder = Number(sourcePhase.phase_order ?? sourcePhase.order_index ?? 1);
+        const sourcePhaseOrder = Number.isFinite(sourceOrder) && sourceOrder > 0 ? sourceOrder : 1;
         await db.prepare(`INSERT INTO league_phases
-          (id,competition_id,name,slug,phase_type,order_index,settings_json)
-          VALUES (?,?,?,?,?,?,?)`)
+          (id,competition_id,name,slug,phase_type,format,order_index,phase_order,settings_json)
+          VALUES (?,?,?,?,?,?,?,?,?)`)
           .bind(
             phaseId,
             id,
             sourcePhase.name,
             sourcePhase.slug,
             sourcePhase.phase_type,
+            sourceFormat,
             sourcePhase.order_index,
+            sourcePhaseOrder,
             sourcePhase.settings_json ?? "{}",
           ).run();
         await db.prepare(`INSERT INTO league_phase_rules
@@ -1662,9 +1840,21 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       "SELECT id FROM league_phases WHERE competition_id=? AND slug=?",
     ).bind(phase.competitionId, phase.slug).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη φάση με αυτή την ονομασία στη διοργάνωση.");
-    await db.prepare(`INSERT INTO league_phases (id,competition_id,name,slug,phase_type,order_index) VALUES (?,?,?,?,?,?)`)
-      .bind(id, phase.competitionId, phase.name, phase.slug, phase.legacyPhaseType, phase.orderIndex).run();
+    await db.prepare(`INSERT INTO league_phases
+      (id,competition_id,name,slug,phase_type,format,order_index,phase_order)
+      VALUES (?,?,?,?,?,?,?,?)`)
+      .bind(
+        id,
+        phase.competitionId,
+        phase.name,
+        phase.slug,
+        phase.legacyPhaseType,
+        phase.phaseFormat,
+        phase.orderIndex,
+        phase.orderIndex,
+      ).run();
     await savePhaseRules(db, id, phase);
+    await normalizeCompetitionPhaseOrder(db, phase.competitionId);
   } else if (resource === "games") {
     await db.prepare(`INSERT INTO league_games (id,competition_id,phase_id,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(id, input.competitionId, input.phaseId || null, input.roundLabel || "", input.scheduledAt || null, input.venue || "", input.homeTeamId, input.awayTeamId, input.homeScore ?? null, input.awayScore ?? null, input.status || "scheduled").run();
@@ -2077,13 +2267,15 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
     ).bind(competition.seasonId, competition.slug, id).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη άλλη διοργάνωση με αυτή την ονομασία στη συγκεκριμένη σεζόν.");
     await db.prepare(`UPDATE league_competitions SET
-      season_id=?, name=?, slug=?, type=?, description=?, status=?, updated_at=CURRENT_TIMESTAMP
+      season_id=?, name=?, slug=?, type=?, description=?, custom_type_label=?, logo_url=?, status=?, updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).bind(
         competition.seasonId,
         competition.name,
         competition.slug,
         competition.type,
         competition.description,
+        competition.customTypeLabel,
+        competition.logoUrl,
         competition.legacyStatus,
         id,
       ).run();
@@ -2111,9 +2303,19 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
     ).bind(phase.competitionId, phase.slug, id).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη άλλη φάση με αυτή την ονομασία στη διοργάνωση.");
     await db.prepare(`UPDATE league_phases SET competition_id=?, name=?, slug=?,
-      phase_type=?, order_index=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-      .bind(phase.competitionId, phase.name, phase.slug, phase.legacyPhaseType, phase.orderIndex, id).run();
+      phase_type=?, format=?, order_index=?, phase_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .bind(
+        phase.competitionId,
+        phase.name,
+        phase.slug,
+        phase.legacyPhaseType,
+        phase.phaseFormat,
+        phase.orderIndex,
+        phase.orderIndex,
+        id,
+      ).run();
     await savePhaseRules(db, id, phase);
+    await normalizeCompetitionPhaseOrder(db, phase.competitionId);
     await db.prepare(`INSERT INTO league_audit_log
       (id,actor_email,action,entity_type,entity_id,details_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).bind(
