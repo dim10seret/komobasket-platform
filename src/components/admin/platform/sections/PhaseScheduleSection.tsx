@@ -32,24 +32,40 @@ export function PhaseFields({
   competitionId,
   editing,
   onExplicitSave,
+  onContinueSeries,
+  initialName,
+  initialFormat,
+  lockedFormat,
+  lockedSeriesSourcePhaseId,
+  lockedSeriesRangeFrom,
+  lockedSeriesRangeTo,
+  isContinuationSeries,
 }: {
   data: Snapshot;
   phase?: Row;
   competitionId?: string;
   editing?: boolean;
   onExplicitSave?: (event: MouseEvent<HTMLButtonElement>) => Promise<void> | void;
+  onContinueSeries?: () => void;
+  initialName?: string;
+  initialFormat?: string;
+  lockedFormat?: boolean;
+  lockedSeriesSourcePhaseId?: string;
+  lockedSeriesRangeFrom?: number;
+  lockedSeriesRangeTo?: number;
+  isContinuationSeries?: boolean;
 }) {
   const canonicalFormat = (value: string) => {
     const normalized = String(value ?? "").trim().toLowerCase();
     return normalized === "knockout" ? "series" : normalized;
   };
-  const [selectedFormat,setSelectedFormat]=useState(canonicalFormat(String(phase?.format ?? phase?.phase_kind ?? "standings")));
-  const [phaseNameInput, setPhaseNameInput] = useState(String(phase?.name ?? ""));
+  const [selectedFormat,setSelectedFormat]=useState(canonicalFormat(String(String(phase?.format ?? phase?.phase_kind ?? initialFormat ?? "standings"))));
+  const [phaseNameInput, setPhaseNameInput] = useState(String(initialName ?? phase?.name ?? ""));
   const [isSaving, setIsSaving] = useState(false);
   const rules = parseStandingsRules(phase?.rule_settings_json);
   const [tieBreakers,setTieBreakers]=useState<string[]>(() => normalizeStandingsTieBreakers(rules.tieBreakers));
   const [activeStep,setActiveStep]=useState(1);
-  const isC4Format = ["series","custom"].includes(selectedFormat);
+  const isC4Format = ["series"].includes(selectedFormat);
   const shouldUseStepper = Boolean(editing && isC4Format);
   const canGoPrevious = activeStep > 1;
 
@@ -104,6 +120,16 @@ export function PhaseFields({
     setPhaseNameInput(String(phase?.name ?? ""));
   }, [phase?.id, phase?.name]);
 
+  useEffect(() => {
+    if (initialName !== undefined) {
+      setPhaseNameInput(initialName);
+    } else if (!phase) {
+      setPhaseNameInput("");
+    }
+    const normalized = canonicalFormat(String(phase?.format ?? phase?.phase_kind ?? initialFormat ?? selectedFormat));
+    setSelectedFormat(lockedFormat ? "series" : normalized);
+  }, [initialFormat, initialName, lockedFormat, phase?.format, phase?.phase_kind]);
+
   const renderStepperHeader = () => {
     if (!shouldUseStepper) return null;
     const steps = ["1. Συμμετοχή", "2. Διασταυρώσεις", "3. Προεπισκόπηση"];
@@ -142,13 +168,27 @@ export function PhaseFields({
             className={inputClass}
           />
         </Field>
-        <Field label="Μορφή Φάσης"><select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>{phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}</select></Field>
+        <Field label="Μορφή Φάσης">
+          {lockedFormat ? (
+            <input type="text" readOnly value={phaseFormatOptions.find((format) => format.value === "series")?.label ?? "Σειρά αγώνων"} className={inputClass} />
+          ) : (
+            <select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>
+              {phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}
+            </select>
+          )}
+          <input type="hidden" name="format" value={selectedFormat} />
+        </Field>
         <input type="hidden" name="phaseEditStep" value="0" />
         <PhaseParticipantsBuilder
           data={data}
           phase={phase}
           competitionId={competitionId ?? String(phase?.competition_id ?? "")}
           selectedFormat={selectedFormat}
+          lockedSeriesSourcePhaseId={lockedSeriesSourcePhaseId}
+          lockedSeriesRangeFrom={lockedSeriesRangeFrom}
+          lockedSeriesRangeTo={lockedSeriesRangeTo}
+          seriesContinuationMode={Boolean(lockedSeriesSourcePhaseId) || Boolean(isContinuationSeries)}
+          onContinueSeries={onContinueSeries}
         />
         {selectedFormat === "standings" && <>
           <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="winPoints" defaultValue={rules.winPoints} className={inputClass}/></Field>
@@ -224,9 +264,14 @@ export function PhaseFields({
               />
             </Field>
             <Field label="Μορφή Φάσης">
-              <select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>
-                {phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}
-              </select>
+              {lockedFormat ? (
+                <input type="text" readOnly value={phaseFormatOptions.find((format) => format.value === "series")?.label ?? "Σειρά αγώνων"} className={inputClass} />
+              ) : (
+                <select name="format" value={selectedFormat} onChange={(event)=>setSelectedFormat(event.target.value)} className={inputClass}>
+                  {phaseFormatOptions.map((format)=><option key={format.value} value={format.value}>{format.label}</option>)}
+                </select>
+              )}
+              <input type="hidden" name="format" value={selectedFormat} />
             </Field>
           </>
         ) : (
@@ -247,6 +292,11 @@ export function PhaseFields({
           competitionId={competitionId ?? String(phase?.competition_id ?? "")}
           selectedFormat={selectedFormat}
           activeStep={activeStep}
+          lockedSeriesSourcePhaseId={lockedSeriesSourcePhaseId}
+          lockedSeriesRangeFrom={lockedSeriesRangeFrom}
+          lockedSeriesRangeTo={lockedSeriesRangeTo}
+          seriesContinuationMode={Boolean(lockedSeriesSourcePhaseId) || Boolean(isContinuationSeries)}
+          onContinueSeries={onContinueSeries}
         />
 
         {selectedFormat === "standings" && (
@@ -831,3 +881,6 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
 
   </>;
 }
+
+
+

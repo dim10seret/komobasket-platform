@@ -81,6 +81,40 @@ const PHASE_PARTICIPANT_SOURCE_TYPES = new Set([
   "manual",
 ]);
 
+const isDirectSourcePosition = (value: unknown) => /^direct:\d+$/.test(String(value ?? "").trim());
+const isStandingPositionValue = (value: unknown) => /^\d+$/.test(String(value ?? "").trim());
+
+const normalizeStandingPositionValue = (value: unknown) => {
+  const normalized = String(value ?? "").trim();
+  if (isDirectSourcePosition(normalized)) {
+    const directValue = normalized.replace(/^direct:/, "");
+    return `direct:${Number(directValue)}`;
+  }
+  if (!isStandingPositionValue(normalized)) return "";
+  return String(Number(normalized));
+};
+
+const countDirectSeriesOutputs = (candidate: unknown) => {
+  const parsed = parseJsonRecord(candidate);
+  const bracketConfig = parseJsonRecord(parsed.bracketConfiguration);
+  const matchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
+  const directMatches = new Set<string>();
+  for (const matchup of matchups) {
+    if (!matchup || typeof matchup !== "object") continue;
+    const candidateMatchup = parseJsonRecord(matchup);
+    const slotA = parseJsonRecord(candidateMatchup.slotA);
+    const slotB = parseJsonRecord(candidateMatchup.slotB);
+    const byeSlot = String(slotA.type ?? "") === "bye" ? slotA : String(slotB.type ?? "") === "bye" ? slotB : null;
+    if (!byeSlot) continue;
+    const otherSlot = byeSlot === slotA ? slotB : slotA;
+    const raw = normalizeStandingPositionValue(otherSlot.position);
+    if (raw && raw.startsWith("direct:")) {
+      directMatches.add(raw);
+    }
+  }
+  return directMatches.size;
+};
+
 const PHASE_MATCHUP_METHODS = new Set([
   "seeded_high_low",
   "random",
@@ -93,6 +127,7 @@ const PHASE_MATCHUP_SLOT_SOURCE_TYPES = new Set([
   "matchup_winner",
   "matchup_loser",
   "fixed_team",
+  "bye",
   "manual",
 ]);
 
@@ -455,6 +490,21 @@ function parseJsonRecord(input: unknown) {
   return {};
 }
 
+function parseJsonArray(input: unknown) {
+  if (Array.isArray(input)) return input;
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function parseJsonStringArray(input: unknown) {
   if (!input) return [];
   if (Array.isArray(input)) {
@@ -565,13 +615,18 @@ async function parsePhaseParticipantConfig(
     if (participantSourceType !== "manual" && participantSourcePhaseId && participantSourcePhaseId === String(current?.id ?? "")) {
       throw new Error("Η φάση προέλευσης δεν μπορεί να είναι η ίδια φάση.");
     }
-    const sourcePhase = await db.prepare("SELECT phase_order, order_index, format FROM league_phases WHERE id=? AND competition_id=?")
+    const sourcePhase = await db.prepare(`
+      SELECT p.phase_order, p.order_index, p.format, pr.phase_kind, pr.settings_json
+      FROM league_phases p
+      LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+      WHERE p.id=? AND p.competition_id=?
+    `)
       .bind(participantSourcePhaseId, competitionId).first<{ phase_order: number | null; order_index: number | null; format: string | null }>();
     if (!sourcePhase) throw new Error("Η φάση προέλευσης δεν ανήκει στην ίδια διοργάνωση.");
     if (participantSourceType === "standing_positions") {
       const sourceFormat = String(sourcePhase.format || "").trim().toLowerCase();
-      if (sourceFormat !== "standings") {
-        throw new Error("Η πηγή θέσεων απαιτεί προηγούμενη standings phase.");
+      if (sourceFormat !== "standings" && sourceFormat !== "series") {
+        throw new Error("Η πηγή θέσεων απαιτεί προηγούμενη standings ή series phase.");
       }
     }
     if ((participantSourceType === "matchup_winners" || participantSourceType === "matchup_losers") && !String(sourcePhase.format || "").trim()) {
@@ -590,18 +645,44 @@ async function parsePhaseParticipantConfig(
     : participantSourceType === "selected_teams"
       ? participantTeamIds.length
       : participantSourceType === "standing_positions"
-        ? Math.max(0, standingTo - standingFrom + 1)
+        ? await (async () => {
+          const sourcePhaseConfig = await db.prepare(`
+            SELECT p.format, pr.settings_json
+            FROM league_phases p
+            LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+            WHERE p.id=? AND p.competition_id=?
+          `).bind(participantSourcePhaseId, competitionId).first<{ format: string | null; settings_json: string | null }>();
+          if (!sourcePhaseConfig) return 0;
+          const sourceConfigFormat = String(sourcePhaseConfig.format || "").trim().toLowerCase();
+          if (sourceConfigFormat !== "series") {
+            return Math.max(0, standingTo - standingFrom + 1);
+          }
+          const sourceRuleSettings = parseJsonRecord(sourcePhaseConfig.settings_json);
+          const bracketConfig = parseJsonRecord(sourceRuleSettings.bracketConfiguration);
+          const sourceMatchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
+          let outputs = 0;
+          for (const sourceMatchup of sourceMatchups) {
+            const nextMatchup = parseJsonRecord(sourceMatchup);
+            const slotA = parseJsonRecord(nextMatchup.slotA);
+            const slotB = parseJsonRecord(nextMatchup.slotB);
+            const isByeA = String(slotA.type || "") === "bye";
+            const isByeB = String(slotB.type || "") === "bye";
+            outputs += isByeA || isByeB ? 1 : 1;
+          }
+          return outputs;
+        })()
         : sourceMatchupIds.length;
 
   const bracketMethod = String(
-    source.bracketMethod || input.bracketMethod || "seeded_high_low",
+    source.bracketMethod || input.bracketMethod || "manual",
   ).trim();
-  const validMethod = PHASE_MATCHUP_METHODS.has(bracketMethod) ? bracketMethod : "seeded_high_low";
-  if (String(phaseFormat).trim() === "series" && sourceTeamCount > 1 && sourceTeamCount % 2 === 1 && (validMethod === "seeded_high_low" || validMethod === "random")) {
-    throw new Error("Για μονή συμμετοχή απαιτείται χειροκίνητη διάταξη (BYE / wildcard / custom).");
+  const validMethod = String(phaseFormat).trim() === "series" ? "manual" : (PHASE_MATCHUP_METHODS.has(bracketMethod) ? bracketMethod : "seeded_high_low");
+
+  if (String(phaseFormat).trim() === "series" && sourceTeamCount < 2 && sourceTeamCount !== 0) {
+    throw new Error("Μια φάση ακολουθίας χρειάζεται τουλάχιστον 2 συμμετοχές.");
   }
 
-  const slotInputs = parseJsonRecord(source.matchups ?? input.matchups ?? "{}");
+  const slotInputs = parseJsonArray(source.matchups ?? input.matchups ?? "[]");
   const matchups = Array.isArray(slotInputs)
     ? slotInputs.filter((matchup) => matchup && typeof matchup === "object")
         .map((matchup) => ({
@@ -620,14 +701,39 @@ async function parsePhaseParticipantConfig(
         const type = String(slot.type || "").trim();
         if (!PHASE_MATCHUP_SLOT_SOURCE_TYPES.has(type)) return false;
         if (type === "standing_position") {
-          return Number.isFinite(Number(slot.position)) && Number(slot.position) >= 1;
+          const position = normalizeStandingPositionValue(slot.position);
+          return isDirectSourcePosition(position) || (isStandingPositionValue(position) && Number(position) >= 1);
         }
+        if (type === "bye") return true;
         if (type === "fixed_team") return Boolean(String(slot.teamId ?? "").trim());
         if (type === "matchup_winner" || type === "matchup_loser") return Boolean(String(slot.matchupId ?? "").trim());
         return true;
       };
       if (!isValidSlot(matchup.slotA) || !isValidSlot(matchup.slotB)) {
         throw new Error("Παρουσιάστηκε μη έγκυρη πηγή συμμετοχής μέσα σε matchup.");
+      }
+    }
+
+    const sourceTokenCounts = new Map<string, number>();
+    const toToken = (slot: Record<string, unknown>) => {
+      const type = String(slot.type || "").trim();
+      if (type === "standing_position") return normalizeStandingPositionValue(slot.position);
+      if (type === "matchup_winner" || type === "matchup_loser") return `${type}:${String(slot.matchupId ?? "")}`;
+      if (type === "manual") return `manual:${String(slot.teamId ?? "")}`;
+      return "";
+    };
+    for (const matchup of matchups) {
+      const slots = [matchup.slotA, matchup.slotB];
+      for (const slot of slots) {
+        const token = toToken(slot);
+        if (!token || String(slot.type || "") === "bye") continue;
+        const next = (sourceTokenCounts.get(token) ?? 0) + 1;
+        sourceTokenCounts.set(token, next);
+      }
+    }
+    for (const [token, count] of sourceTokenCounts.entries()) {
+      if (count > 1) {
+        throw new Error(`Το slot ${token} χρησιμοποιείται περισσότερες φορές.`);
       }
     }
   }

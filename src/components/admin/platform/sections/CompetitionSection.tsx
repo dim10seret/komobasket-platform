@@ -168,6 +168,7 @@ export function CompetitionWorkspaceManager({
   const [editingPhaseId, setEditingPhaseId] = useState<string | null>(null);
   const [activePhaseId, setActivePhaseId] = useState<string>("");
   const [showAddPhaseForm, setShowAddPhaseForm] = useState(false);
+  const [addPhaseChoice, setAddPhaseChoice] = useState<"continuations" | "new" | null>(null);
   const [activateLatestPhaseAfterAdd, setActivateLatestPhaseAfterAdd] = useState(false);
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
   const [teamRosterLoading,setTeamRosterLoading]=useState(false);
@@ -183,6 +184,7 @@ export function CompetitionWorkspaceManager({
   const [editingAthleteUploadBusy,setEditingAthleteUploadBusy]=useState(false);
   const [editingAthleteUploadMessage,setEditingAthleteUploadMessage]=useState("");
   const [editingAthleteShirtNumber,setEditingAthleteShirtNumber]=useState("");
+  const [seriesContinuationSeed,setSeriesContinuationSeed]=useState<{ sourcePhaseId: string; sourceName: string; from?: number; to?: number } | null>(null);
   const [rosterActionBusy,setRosterActionBusy]=useState(false);
 
   const rosterPlayers = useMemo(() => (teamRoster?.athletes ?? []).map((athlete,index)=>({ ...athlete, rowIndex:index + 1 })), [teamRoster?.athletes]);
@@ -193,6 +195,31 @@ export function CompetitionWorkspaceManager({
     const parsed = Number(normalized);
     if (!Number.isInteger(parsed) || parsed < 0) throw new Error("Μη έγκυρος αριθμός φανέλας.");
     return parsed;
+  };
+
+  const parsePhaseRuleSettings = (value: unknown) => {
+    if (!value) return {};
+    if (typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+      } catch {
+        return {};
+      }
+    }
+    if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    return {};
+  };
+
+  const formatParticipantRangeFromPhase = (phase: Row | undefined) => {
+    if (!phase) return { from: 1, to: 1 };
+    const settings = parsePhaseRuleSettings(phase.rule_settings_json);
+    const participantConfiguration = parsePhaseRuleSettings(settings.participantConfiguration);
+    const from = Number(participantConfiguration.standingFrom);
+    const to = Number(participantConfiguration.standingTo);
+    const safeFrom = Number.isFinite(from) ? Math.max(1, Math.floor(from)) : 1;
+    const safeTo = Number.isFinite(to) ? Math.max(safeFrom, Math.floor(to)) : safeFrom;
+    return { from: safeFrom, to: safeTo };
   };
 
   const showTeamRosterPopup = async (teamId:string, competitionId:string, seasonId:string) => {
@@ -315,6 +342,7 @@ export function CompetitionWorkspaceManager({
     setShowAddPhaseForm(false);
     setEditingPhaseId(null);
     setActivePhaseId("");
+    setSeriesContinuationSeed(null);
     setTeamRoster(null);
     setTeamRosterError("");
     setTeamRosterNotice("");
@@ -606,7 +634,11 @@ export function CompetitionWorkspaceManager({
                 {!showAddPhaseForm && (
                   <button
                     type="button"
-                    onClick={() => setShowAddPhaseForm(true)}
+                    onClick={() => {
+                      setSeriesContinuationSeed(null);
+                      setAddPhaseChoice(null);
+                      setShowAddPhaseForm(true);
+                    }}
                     disabled={!!editingPhaseId}
                     className={`rounded-full border px-4 py-2 text-sm font-black transition ${
                       editingPhaseId ? "cursor-not-allowed border-zinc-300 bg-zinc-50 text-zinc-400" : "border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-100"
@@ -618,31 +650,49 @@ export function CompetitionWorkspaceManager({
               </div>
               {showAddPhaseForm && (
                 <>
-                  <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
                     <p className="text-sm font-black text-zinc-700">Προσθήκη Φάσης</p>
                     <button
                       type="button"
-                      onClick={() => setShowAddPhaseForm(false)}
+                      onClick={() => {
+                        setShowAddPhaseForm(false);
+                        setAddPhaseChoice(null);
+                        setSeriesContinuationSeed(null);
+                      }}
                       className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                     >
                       Ακύρωση
                     </button>
                   </div>
-                  <form
-                    onSubmit={async (event) => {
-                      if (await submit("phases", event)) {
-                        setShowAddPhaseForm(false);
-                        setActivateLatestPhaseAfterAdd(true);
-                      }
-                    }}
-                    className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-                  >
-                    <input type="hidden" name="competitionId" value={String(selectedCompetition.id)} />
-                    <PhaseFields data={data} competitionId={String(selectedCompetition.id)} />
-                    <div className="flex items-center sm:col-span-2 xl:col-span-4">
-                      <button disabled={busy} className={buttonClass}>Προσθήκη Φάσης</button>
+                  {addPhaseChoice === null ? (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddPhaseChoice("continuations");
+                        }}
+                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
+                      >
+                        Προσθήκη Διασταυρώσεων
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddPhaseChoice("new");
+                        }}
+                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
+                      >
+                        Νέα Φάση
+                      </button>
                     </div>
-                  </form>
+                  ) : (
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
+                      <p className="font-black text-zinc-900">
+                        {addPhaseChoice === "continuations" ? "Προσθήκη Διασταυρώσεων" : "Νέα Φάση"}
+                      </p>
+                      <p className="mt-1 text-zinc-600">Η λειτουργία δημιουργίας θα ενεργοποιηθεί στο επόμενο βήμα.</p>
+                    </div>
+                  )}
                 </>
               )}
               {!selectedCompetitionPhases.length && <p className="text-sm text-zinc-500">Δεν έχουν δημιουργηθεί ακόμη Φάσεις.</p>}
@@ -653,7 +703,7 @@ export function CompetitionWorkspaceManager({
                 const isActivePhaseEditing = editingPhaseId === activePhaseIdValue;
                 const activePhaseOrder = Number(activePhase.phase_order ?? activePhase.order_index ?? 0) || selectedCompetitionPhases.findIndex((phase) => String(phase.id) === activePhaseIdValue) + 1;
                 const activePhaseFormat = String(activePhase.format ?? activePhase.phase_kind ?? "standings");
-                const shouldUseC4Save = ["series", "custom"].includes(activePhaseFormat);
+                const shouldUseC4Save = String(activePhaseFormat) === "series";
                 const handleActivePhaseSave = async (event: MouseEvent<HTMLButtonElement>) => {
                   const form = event.currentTarget.form;
                   if (!form) return;
@@ -662,8 +712,23 @@ export function CompetitionWorkspaceManager({
                     currentTarget: form,
                   } as unknown) as FormEvent<HTMLFormElement>;
                   if (await updateEntity("phases", activePhaseIdValue, syntheticEvent, "Η φάση ενημερώθηκε.")) {
-                    setEditingPhaseId(null);
+                    if (activePhaseFormat !== "series") {
+                      setEditingPhaseId(null);
+                    }
                   }
+                };
+                const handleActivePhaseContinue = () => {
+                  if (!isActivePhaseEditing) return;
+                  const { from, to } = formatParticipantRangeFromPhase(activePhase);
+                  setSeriesContinuationSeed({
+                    sourcePhaseId: activePhaseIdValue,
+                    sourceName: String(activePhase.name ?? ""),
+                    from,
+                    to,
+                  });
+                  setShowAddPhaseForm(true);
+                  setEditingPhaseId(null);
+                  setActivePhaseId(activePhaseIdValue);
                 };
 
                 return (
@@ -696,6 +761,7 @@ export function CompetitionWorkspaceManager({
                           competitionId={String(activePhase.competition_id ?? "")}
                           editing
                           onExplicitSave={shouldUseC4Save ? handleActivePhaseSave : undefined}
+                          onContinueSeries={shouldUseC4Save ? handleActivePhaseContinue : undefined}
                         />
                         <input type="hidden" name="competitionId" value={String(activePhase.competition_id ?? "")} />
                       </form>

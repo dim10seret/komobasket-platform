@@ -172,7 +172,6 @@ export const phaseFormatLabels:Record<string, string> = {
 export const phaseFormatOptions = [
   { value: "standings", label: "Βαθμολογική" },
   { value: "series", label: "Σειρά αγώνων" },
-  { value: "custom", label: "Custom" },
 ] as const;
 
 export const phaseFormatLabel = (value: string | number | null) => {
