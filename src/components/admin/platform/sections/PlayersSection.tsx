@@ -23,6 +23,7 @@ import {
 
 
 export function Players({data}:{data:Snapshot}) {
+  const [registryPlayers, setRegistryPlayers] = useState<Row[]>(() => [...(data.players ?? [])]);
   const [selectedSeasonId, setSelectedSeasonId] = useState("");
   const [selectedCompetitionId, setSelectedCompetitionId] = useState("");
   const [selectedTeamId, setSelectedTeamId] = useState("");
@@ -83,6 +84,21 @@ export function Players({data}:{data:Snapshot}) {
   const [editingStaffCustomRoleLabel, setEditingStaffCustomRoleLabel] = useState("");
   const [editingStaffUploadBusy, setEditingStaffUploadBusy] = useState(false);
   const [editingStaffUploadMessage, setEditingStaffUploadMessage] = useState("");
+
+  const [showPlayerRegistry, setShowPlayerRegistry] = useState(false);
+  const [registrySearchText, setRegistrySearchText] = useState("");
+  const [registryPageSize, setRegistryPageSize] = useState(20);
+  const [registryPage, setRegistryPage] = useState(1);
+  const [registryEditingPlayerId, setRegistryEditingPlayerId] = useState<string>("");
+  const [registryEditingFirstName, setRegistryEditingFirstName] = useState("");
+  const [registryEditingLastName, setRegistryEditingLastName] = useState("");
+  const [registryEditingBirthDate, setRegistryEditingBirthDate] = useState("");
+  const [registryEditingPhotoUrl, setRegistryEditingPhotoUrl] = useState("");
+  const [registryEditingPhotoPreview, setRegistryEditingPhotoPreview] = useState("");
+  const [registryEditingPhotoFileName, setRegistryEditingPhotoFileName] = useState("");
+  const [registryEditingUploadBusy, setRegistryEditingUploadBusy] = useState(false);
+  const [registryEditingNotice, setRegistryEditingNotice] = useState("");
+  const [registryEditingBusy, setRegistryEditingBusy] = useState(false);
 
   const [athleteSort, setAthleteSort] = useState<SortState>({ key: "last_name", direction: "asc" });
   const [staffSort, setStaffSort] = useState<SortState>({ key: "staff_first_name", direction: "asc" });
@@ -211,6 +227,64 @@ export function Players({data}:{data:Snapshot}) {
     return list;
   }, [staffWithIndex, staffSort]);
 
+  const normalizedRegistrySearch = registrySearchText.trim().toLocaleLowerCase("el-GR");
+  const filteredRegistryPlayers = useMemo(() => {
+    const list = [...registryPlayers];
+    const filtered = normalizedRegistrySearch
+      ? list.filter((player) => {
+          const first = String(player.first_name ?? player.display_name ?? "").toLocaleLowerCase("el-GR");
+          const last = String(player.last_name ?? player.display_name ?? "").toLocaleLowerCase("el-GR");
+          return first.includes(normalizedRegistrySearch) || last.includes(normalizedRegistrySearch);
+        })
+      : list;
+    filtered.sort((left, right) => {
+      const leftLast = String(left.last_name ?? left.display_name ?? "");
+      const rightLast = String(right.last_name ?? right.display_name ?? "");
+      const surnameCompare = leftLast.localeCompare(rightLast, "el-GR", { sensitivity: "base" });
+      if (surnameCompare !== 0) return surnameCompare;
+      const firstCompare = String(left.first_name ?? left.display_name ?? "").localeCompare(String(right.first_name ?? right.display_name ?? ""), "el-GR", { sensitivity: "base" });
+      if (firstCompare !== 0) return firstCompare;
+      return String(left.player_id ?? left.id ?? "").localeCompare(String(right.player_id ?? right.id ?? ""));
+    });
+    return filtered;
+  }, [normalizedRegistrySearch, registryPlayers]);
+
+  const totalRegistryPages = Math.max(1, Math.ceil(filteredRegistryPlayers.length / registryPageSize));
+  const safeRegistryPage = Math.min(registryPage, totalRegistryPages);
+  const pagedRegistryPlayers = useMemo(() => {
+    const start = (safeRegistryPage - 1) * registryPageSize;
+    return filteredRegistryPlayers.slice(start, start + registryPageSize);
+  }, [filteredRegistryPlayers, registryPageSize, safeRegistryPage]);
+
+  useEffect(() => {
+    setRegistryPage(1);
+  }, [normalizedRegistrySearch]);
+
+  useEffect(() => {
+    setRegistryPage((current) => Math.min(Math.max(1, current), totalRegistryPages));
+  }, [totalRegistryPages, registryPageSize]);
+
+  useEffect(() => {
+    setRegistryPage(1);
+  }, [registryPageSize]);
+
+  useEffect(() => {
+    setRegistryPlayers([...(data.players ?? [])]);
+  }, [data.players]);
+
+  const registryEditingPlayer = useMemo(() => {
+    if (!registryEditingPlayerId) return null;
+    return [...(data.players ?? [])].find((player) => String(player.player_id ?? player.id ?? "") === registryEditingPlayerId) ?? null;
+  }, [data.players, registryEditingPlayerId]);
+
+  useEffect(() => {
+    if (!registryEditingPlayerId || !registryEditingPlayer) return;
+    setRegistryEditingFirstName(String(registryEditingPlayer.first_name ?? ""));
+    setRegistryEditingLastName(String(registryEditingPlayer.last_name ?? ""));
+    setRegistryEditingBirthDate(String(registryEditingPlayer.birth_date ?? ""));
+    setRegistryEditingPhotoUrl(String(registryEditingPlayer.photo_url ?? ""));
+  }, [registryEditingPlayerId, registryEditingPlayer]);
+
   const showActionNotice = (message:string) => {
     setNoticeMessage(message);
     window.setTimeout(() => {
@@ -224,6 +298,97 @@ export function Players({data}:{data:Snapshot}) {
     const parsed = Number(normalized);
     if (!Number.isInteger(parsed) || parsed < 0) throw new Error("Μη έγκυρος αριθμός φανέλας.");
     return parsed;
+  };
+
+  const formatRegistryBirthDate = (value: unknown) => {
+    const normalized = parseDateForDisplay(String(value ?? ""));
+    return normalized === "—" ? "—" : normalized;
+  };
+
+  const openRegistryEdit = (player: Row) => {
+    const playerId = String(player.player_id ?? player.id ?? "");
+    if (!playerId) return;
+    setRegistryEditingPlayerId(playerId);
+    setRegistryEditingPhotoPreview(String(player.photo_url ?? ""));
+    setRegistryEditingPhotoFileName("");
+    setRegistryEditingNotice("");
+  };
+
+  const closeRegistryEdit = () => {
+    clearBlobPreviewUrl(registryEditingPhotoPreview);
+    setRegistryEditingPlayerId("");
+    setRegistryEditingFirstName("");
+    setRegistryEditingLastName("");
+    setRegistryEditingBirthDate("");
+    setRegistryEditingPhotoUrl("");
+    setRegistryEditingPhotoPreview("");
+    setRegistryEditingPhotoFileName("");
+    setRegistryEditingUploadBusy(false);
+    setRegistryEditingNotice("");
+  };
+
+  const uploadRegistryPhoto = async (file: File) => {
+    clearBlobPreviewUrl(registryEditingPhotoPreview);
+    setRegistryEditingPhotoFileName(file.name);
+    setRegistryEditingPhotoPreview(URL.createObjectURL(file));
+    setRegistryEditingUploadBusy(true);
+    setRegistryEditingNotice("Φόρτωση εικόνας...");
+    try {
+      const fd = new FormData();
+      fd.append("logo", file);
+      fd.append("teamId", "");
+      const response = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Το upload απέτυχε.");
+      const logoUrl = String(payload.logoUrl ?? "");
+      if (!logoUrl) throw new Error("Λείπει το url.");
+      setRegistryEditingPhotoUrl(logoUrl);
+      setRegistryEditingNotice("Η φωτογραφία ανέβηκε.");
+    } catch (error) {
+      setRegistryEditingNotice(error instanceof Error ? error.message : "Το upload απέτυχε.");
+    } finally {
+      setRegistryEditingUploadBusy(false);
+    }
+  };
+
+  const saveRegistryPlayerEdits = async () => {
+    if (!registryEditingPlayer) return;
+    const playerId = String(registryEditingPlayer.player_id ?? registryEditingPlayer.id ?? "");
+    if (!playerId) return;
+    setRegistryEditingBusy(true);
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "updateAthleteCanonical",
+          playerId,
+          firstName: registryEditingFirstName.trim() || null,
+          lastName: registryEditingLastName.trim() || null,
+          birthDate: registryEditingBirthDate || null,
+          photoUrl: registryEditingPhotoUrl || null,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Η αποθήκευση απέτυχε.");
+      setRegistryPlayers((current) => current.map((player) => {
+        const currentId = String(player.player_id ?? player.id ?? "");
+        if (currentId !== playerId) return player;
+        return {
+          ...player,
+          first_name: registryEditingFirstName.trim() || null,
+          last_name: registryEditingLastName.trim() || null,
+          birth_date: registryEditingBirthDate || null,
+          photo_url: registryEditingPhotoUrl || null,
+        };
+      }));
+      showActionNotice("Ο παίκτης ενημερώθηκε.");
+      closeRegistryEdit();
+    } catch (error) {
+      setRegistryEditingNotice(error instanceof Error ? error.message : "Η αποθήκευση απέτυχε.");
+    } finally {
+      setRegistryEditingBusy(false);
+    }
   };
 
   const resetAddFormForAthlete = () => {
@@ -512,6 +677,188 @@ export function Players({data}:{data:Snapshot}) {
     <Panel title="Παίκτες & Ρόστερ"><p className="text-sm text-zinc-600">Διαχείριση αθλητών και Staff ανά ομάδα</p></Panel>
 
     {noticeMessage && <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-5 py-3 text-sm text-emerald-900">{noticeMessage}</div>}
+
+    <Panel title="Μητρώο Παικτών">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-zinc-600">Κεντρικό μητρώο όλων των παικτών της εφαρμογής, ανεξάρτητα από σεζόν, διοργάνωση ή ομάδα.</p>
+        <button
+          type="button"
+          onClick={() => setShowPlayerRegistry((current) => !current)}
+          className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 hover:text-zinc-950"
+        >
+          {showPlayerRegistry ? "Σύμπτυξη" : "Εμφάνιση"}
+        </button>
+      </div>
+
+      {showPlayerRegistry && (
+        <div className="mt-5 space-y-4">
+          {registryEditingPlayerId && registryEditingPlayer ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+              <div className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-6">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-black text-zinc-950">Επεξεργασία Παίκτη</h3>
+                    <p className="mt-1 text-sm text-zinc-600">
+                      Μητρώο Παικτών · επεξεργασία master player
+                      <span className="ml-2 font-black text-zinc-900">
+                        {String(registryEditingPlayer.first_name ?? "—")} {" "}
+                        {String(registryEditingPlayer.last_name ?? "—")}
+                      </span>
+                    </p>
+                  </div>
+                  <button type="button" onClick={closeRegistryEdit} className="rounded-xl border border-zinc-300 px-3 py-2 font-black">
+                    Ακύρωση
+                  </button>
+                </div>
+                {registryEditingNotice ? <p className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700">{registryEditingNotice}</p> : null}
+                <div className="mt-4 grid gap-4">
+                  <Field label="Όνομα">
+                    <input value={registryEditingFirstName} onChange={(event) => setRegistryEditingFirstName(event.target.value)} className={inputClass} />
+                  </Field>
+                  <Field label="Επώνυμο">
+                    <input value={registryEditingLastName} onChange={(event) => setRegistryEditingLastName(event.target.value)} className={inputClass} />
+                  </Field>
+                  <Field label="Ημερομηνία γέννησης">
+                    <input type="date" value={registryEditingBirthDate} onChange={(event) => setRegistryEditingBirthDate(event.target.value)} className={inputClass} />
+                  </Field>
+                  <Field label="Φωτογραφία">
+                    <div className="mt-1 flex items-center gap-3">
+                      <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                        {(registryEditingPhotoPreview || registryEditingPhotoUrl)
+                          ? <img src={registryEditingPhotoPreview || registryEditingPhotoUrl} alt="Προεπισκόπηση παίκτη" className="h-full w-full object-cover" />
+                          : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                      </div>
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                        <span>📷 {registryEditingPhotoPreview || registryEditingPhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            if (!file) return;
+                            void uploadRegistryPhoto(file);
+                          }}
+                        />
+                      </label>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">{registryEditingUploadBusy ? "Φόρτωση εικόνας..." : (registryEditingPhotoFileName ? `Επιλεγμένο αρχείο: ${registryEditingPhotoFileName}` : "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
+                  </Field>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className={buttonClass} onClick={() => void saveRegistryPlayerEdits()} disabled={registryEditingBusy}>
+                      Αποθήκευση
+                    </button>
+                    <button type="button" onClick={closeRegistryEdit} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">
+                      Ακύρωση
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 xl:grid-cols-3">
+            <Field label="Αναζήτηση">
+              <input
+                value={registrySearchText}
+                onChange={(event) => setRegistrySearchText(event.target.value)}
+                placeholder="Όνομα ή επώνυμο"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Εμφάνιση">
+              <select
+                value={registryPageSize}
+                onChange={(event) => setRegistryPageSize(Number(event.target.value) || 20)}
+                className={inputClass}
+              >
+                {[20, 50, 100, 500].map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+            </Field>
+            <div className="flex items-end">
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                {filteredRegistryPlayers.length ? `${filteredRegistryPlayers.length} παίκτες` : "—"}
+              </div>
+            </div>
+          </div>
+
+          {!registryPlayers.length ? (
+            <p className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-500">Δεν υπάρχουν καταχωρημένοι παίκτες.</p>
+          ) : !filteredRegistryPlayers.length ? (
+            <p className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-500">Δεν βρέθηκαν παίκτες με αυτά τα κριτήρια.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
+                <table className="w-full min-w-[880px] text-left text-sm">
+                  <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                    <tr>
+                      <th className="px-3 py-3">Επεξεργασία</th>
+                      <th className="px-3 py-3">Α/Α</th>
+                      <th className="px-3 py-3">Φωτο</th>
+                      <th className="px-3 py-3">Όνομα</th>
+                      <th className="px-3 py-3">Επώνυμο</th>
+                      <th className="px-3 py-3">Ημ. Γέννησης</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedRegistryPlayers.map((player, index) => {
+                      const playerId = String(player.player_id ?? player.id ?? "");
+                      const firstName = String(player.first_name ?? "").trim();
+                      const lastName = String(player.last_name ?? "").trim();
+                      const fallbackName = String(player.display_name ?? "").trim() || "—";
+                      const resolvedFirstName = firstName || (lastName ? "—" : fallbackName);
+                      const resolvedLastName = lastName || (firstName ? "—" : "—");
+                      return (
+                        <tr key={playerId} className="border-b border-zinc-100 last:border-0">
+                          <td className="px-3 py-3">
+                            <button
+                              type="button"
+                              onClick={() => openRegistryEdit(player)}
+                              className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-black text-zinc-800 transition hover:border-orange-500 hover:text-zinc-950"
+                            >
+                              ✏️
+                            </button>
+                          </td>
+                          <td className="px-3 py-3 font-black">{(safeRegistryPage - 1) * registryPageSize + index + 1}</td>
+                          <td className="px-3 py-3">
+                            {player.photo_url
+                              ? <img src={String(player.photo_url)} alt={firstName} className="h-9 w-9 rounded-full object-cover" />
+                              : <div className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-200 text-xs text-zinc-500">—</div>}
+                          </td>
+                          <td className="px-3 py-3">{resolvedFirstName}</td>
+                          <td className="px-3 py-3">{resolvedLastName}</td>
+                          <td className="px-3 py-3">{formatRegistryBirthDate(player.birth_date)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+                <button
+                  type="button"
+                  disabled={safeRegistryPage <= 1}
+                  onClick={() => setRegistryPage((current) => Math.max(1, current - 1))}
+                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 font-black text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Προηγούμενη
+                </button>
+                <span className="font-black">Σελίδα {safeRegistryPage} από {totalRegistryPages}</span>
+                <button
+                  type="button"
+                  disabled={safeRegistryPage >= totalRegistryPages}
+                  onClick={() => setRegistryPage((current) => Math.min(totalRegistryPages, current + 1))}
+                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 font-black text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Επόμενη
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </Panel>
 
     <Panel title="Επιλογή Ρόστερ Ομάδας">
       <div className="grid gap-3 xl:grid-cols-3">
@@ -1154,4 +1501,5 @@ export function Players({data}:{data:Snapshot}) {
     {teamRosterLoading && isSelectionComplete && <div className="rounded-2xl border border-zinc-200 bg-white p-6 text-center text-zinc-500">Φόρτωση ρόστερ…</div>}
   </>;
 }
+
 
