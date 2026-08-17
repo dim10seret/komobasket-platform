@@ -68,6 +68,11 @@ export type SeriesMatchupSummary = {
   output: string;
 };
 
+type SeriesDisplayContext = {
+  phaseById: Map<string, Row>;
+  resolvePhaseMatchups: (phase: Row | undefined) => BracketBuilderMatchup[];
+};
+
 const participantSourceOptions: SourceOption[] = [
   { value: "competition_participants", label: "Όλες οι ομάδες της διοργάνωσης" },
   { value: "standing_positions", label: "Θέσεις από προηγούμενη standings phase" },
@@ -189,7 +194,7 @@ const getSlotPreviewValue = (slot: SlotBuilderSource) => {
   return "—";
 };
 
-const getSeriesOutputOptions = (sourcePhase?: Row) => {
+const getSeriesOutputOptions = (sourcePhase?: Row, competitionPhases: Row[] = []) => {
   if (!sourcePhase) return [] as BracketOutputSource[];
   const format = String(sourcePhase.format ?? sourcePhase.phase_kind ?? "").trim().toLowerCase();
   const settings = getObjectInput(sourcePhase.rule_settings_json);
@@ -209,6 +214,7 @@ const getSeriesOutputOptions = (sourcePhase?: Row) => {
   }
 
   if (format === "series") {
+    const competitionMatchupIndex = buildSeriesCompetitionMatchupIndex(competitionPhases.length ? competitionPhases : [sourcePhase]);
     const bracketConfig = getObjectInput(settings.bracketConfiguration);
     const matchups = parseSlotArray(bracketConfig.matchups).map((entry) => ({
       id: entry.id,
@@ -222,14 +228,13 @@ const getSeriesOutputOptions = (sourcePhase?: Row) => {
       const byeSlot = slots.find((slot) => slot.type === "bye");
       if (!byeSlot) continue;
       const otherSlot = slots.find((slot) => slot !== byeSlot);
-      const preview = getSlotPreviewValue(otherSlot ?? { type: "manual", id: "", position: "", teamId: "", matchupId: "" });
       const value = otherSlot?.position ? otherSlot.position : otherSlot?.matchupId || otherSlot?.teamId || "";
       if (!value) continue;
       const normalized = `direct:${String(value).trim().replace(/^direct:/, "")}`;
       if (directFromStandings.some((entry) => entry.value === normalized)) continue;
       directFromStandings.push({
         value: normalized,
-        label: `${preview} · άνευ αγώνα`,
+        label: `${describeSeriesParticipantRef(otherSlot ?? { type: "manual", id: "", position: "", teamId: "", matchupId: "" }, competitionMatchupIndex)} · άνευ αγώνα`,
         sourceType: "standing_position",
       });
     }
@@ -238,7 +243,7 @@ const getSeriesOutputOptions = (sourcePhase?: Row) => {
       .filter((matchup) => matchup.id)
       .map((matchup) => ({
         value: `winner:${matchup.id}`,
-        label: `Winner ${getSlotPreviewValue(matchup.slotA)} — ${getSlotPreviewValue(matchup.slotB)}`,
+        label: `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
         sourceType: "matchup_winner" as SlotSourceType,
       }));
 
@@ -248,16 +253,75 @@ const getSeriesOutputOptions = (sourcePhase?: Row) => {
   return [];
 };
 
+type SeriesCompetitionMatchupIndexEntry = {
+  phaseId: string;
+  matchup: BracketBuilderMatchup;
+};
+
+const buildSeriesCompetitionMatchupIndex = (phases: Row[]) => {
+  const index = new Map<string, SeriesCompetitionMatchupIndexEntry>();
+  for (const currentPhase of phases) {
+    if (String(currentPhase.format ?? "").trim().toLowerCase() !== "series") continue;
+    const settings = {
+      ...getObjectInput((currentPhase as Row | undefined)?.settings_json),
+      ...getObjectInput(currentPhase.rule_settings_json),
+    };
+    const bracketConfig = getObjectInput(settings.bracketConfiguration);
+    for (const matchup of parseSlotArray(bracketConfig.matchups)) {
+      const matchupId = String(matchup.id ?? "").trim();
+      if (!matchupId) continue;
+      const existing = index.get(matchupId);
+      if (existing && existing.phaseId !== String(currentPhase.id ?? "")) continue;
+      index.set(matchupId, {
+        phaseId: String(currentPhase.id ?? ""),
+        matchup,
+      });
+    }
+  }
+  return index;
+};
+
+const describeSeriesParticipantRef = (
+  slot: SlotBuilderSource,
+  competitionMatchupIndex: Map<string, SeriesCompetitionMatchupIndexEntry>,
+  visitedMatchupIds = new Set<string>(),
+): string => {
+  if (slot.type === "standing_position" && slot.position) {
+    const value = String(slot.position).trim();
+    if (/^direct:\d+$/.test(value)) return `#${value.replace(/^direct:/, "")}`;
+    return `#${value}`;
+  }
+  if (slot.type === "bye") return "Προκρίνεται άνευ αγώνα";
+  if (slot.type === "manual") return slot.teamId || "—";
+  if (slot.type === "matchup_winner" || slot.type === "matchup_loser") {
+    const matchupId = String(slot.matchupId ?? "").trim();
+    if (!matchupId) return slot.type === "matchup_winner" ? "Winner —" : "Loser —";
+    if (visitedMatchupIds.has(matchupId)) return "—";
+    const source = competitionMatchupIndex.get(matchupId);
+    if (!source) return slot.type === "matchup_winner" ? "Winner —" : "Loser —";
+    visitedMatchupIds.add(matchupId);
+    const previousLabel = describeSeriesMatchupLabel(source.matchup, competitionMatchupIndex, visitedMatchupIds);
+    return slot.type === "matchup_winner" ? `Winner ${previousLabel}` : `Loser ${previousLabel}`;
+  }
+  return "—";
+};
+
+const describeSeriesMatchupLabel = (
+  matchup: BracketBuilderMatchup,
+  competitionMatchupIndex: Map<string, SeriesCompetitionMatchupIndexEntry>,
+  visitedMatchupIds = new Set<string>(),
+): string => {
+  const slotA = describeSeriesParticipantRef(matchup.slotA, competitionMatchupIndex, visitedMatchupIds);
+  const slotB = describeSeriesParticipantRef(matchup.slotB, competitionMatchupIndex, visitedMatchupIds);
+  if (matchup.slotA.type === "bye" && matchup.slotB.type !== "bye") return `${slotB} → Προκρίνεται άνευ αγώνα`;
+  if (matchup.slotB.type === "bye" && matchup.slotA.type !== "bye") return `${slotA} → Προκρίνεται άνευ αγώνα`;
+  return `${slotA} — ${slotB}`;
+};
+
 export const describeSeriesMatchupsFromPhase = (data: Snapshot, phase?: Row): SeriesMatchupSummary[] => {
   if (!phase) return [];
 
-  const phaseById = new Map(data.phases.map((entry) => [String(entry.id), entry] as const));
-  const getPreviousPhaseId = (currentPhase?: Row) => String(
-    (currentPhase as Record<string, unknown> | undefined)?.previous_phase_id
-    ?? (currentPhase as Record<string, unknown> | undefined)?.previousPhaseId
-    ?? "",
-  ).trim();
-  const resolvePhaseMatchups = (currentPhase: Row | undefined): BracketBuilderMatchup[] => {
+  const parsePhaseMatchups = (currentPhase: Row | undefined): BracketBuilderMatchup[] => {
     if (!currentPhase) return [];
     const settings = {
       ...getObjectInput((currentPhase as Row | undefined)?.settings_json),
@@ -267,70 +331,16 @@ export const describeSeriesMatchupsFromPhase = (data: Snapshot, phase?: Row): Se
     return parseSlotArray(bracketConfig.matchups);
   };
 
-  const describeMatchupLabel = (ownerPhase: Row | undefined, matchup: BracketBuilderMatchup, visited = new Set<string>()): string => {
-    const ownerPhaseId = String(ownerPhase?.id ?? "");
-    if (ownerPhaseId && visited.has(ownerPhaseId)) return "—";
-    if (ownerPhaseId) visited.add(ownerPhaseId);
-
-    const describeSlot = (slot: SlotBuilderSource): string => {
-      if (slot.type === "standing_position" && slot.position) {
-        const value = String(slot.position).trim();
-        if (/^direct:\d+$/.test(value)) return `#${value.replace(/^direct:/, "")}`;
-        return `#${value}`;
-      }
-      if (slot.type === "bye") return "Προκρίνεται άνευ αγώνα";
-      if (slot.type === "manual") return slot.teamId || "—";
-      if (slot.type === "matchup_winner" || slot.type === "matchup_loser") {
-        const previousPhaseId = getPreviousPhaseId(ownerPhase);
-        const previousPhase = previousPhaseId ? phaseById.get(previousPhaseId) : undefined;
-        const previousMatchupIds = resolvePhaseMatchups(previousPhase).map((entry) => String(entry.id));
-        const normalizedSlotMatchupId = String(slot.matchupId ?? "");
-        const sourceMatchup = resolvePhaseMatchups(previousPhase).find((entry) => String(entry.id) === normalizedSlotMatchupId);
-        if (!sourceMatchup) return slot.type === "matchup_winner" ? "Winner —" : "Loser —";
-        const previousLabel = describeMatchupLabel(previousPhase, sourceMatchup, visited);
-        return slot.type === "matchup_winner" ? `Winner ${previousLabel}` : `Loser ${previousLabel}`;
-      }
-      return "—";
-    };
-
-    const slotA = describeSlot(matchup.slotA);
-    const slotB = describeSlot(matchup.slotB);
-    if (matchup.slotA.type === "bye" && matchup.slotB.type !== "bye") {
-      return `${slotB} → Προκρίνεται άνευ αγώνα`;
-    }
-    if (matchup.slotB.type === "bye" && matchup.slotA.type !== "bye") {
-      return `${slotA} → Προκρίνεται άνευ αγώνα`;
-    }
-    return `${slotA} — ${slotB}`;
-  };
-
-  const describeSlot = (slot: SlotBuilderSource, ownerPhase: Row | undefined): string => {
-    if (slot.type === "standing_position" && slot.position) {
-      const value = String(slot.position).trim();
-      if (/^direct:\d+$/.test(value)) return `#${value.replace(/^direct:/, "")}`;
-      return `#${value}`;
-    }
-    if (slot.type === "bye") return "Προκρίνεται άνευ αγώνα";
-    if (slot.type === "manual") return slot.teamId || "—";
-    if (slot.type === "matchup_winner" || slot.type === "matchup_loser") {
-      const previousPhaseId = getPreviousPhaseId(ownerPhase);
-      const previousPhase = previousPhaseId ? phaseById.get(previousPhaseId) : undefined;
-      const sourceMatchup = resolvePhaseMatchups(previousPhase).find((entry) => String(entry.id) === String(slot.matchupId ?? ""));
-      if (!sourceMatchup) return slot.type === "matchup_winner" ? "Winner —" : "Loser —";
-      const previousLabel = describeMatchupLabel(previousPhase, sourceMatchup);
-      return slot.type === "matchup_winner" ? `Winner ${previousLabel}` : `Loser ${previousLabel}`;
-    }
-    return "—";
-  };
-
-  return resolvePhaseMatchups(phase).map((matchup) => ({
+  const competitionMatchupIndex = buildSeriesCompetitionMatchupIndex(data.phases);
+  const activeMatchups = parsePhaseMatchups(phase);
+  return activeMatchups.map((matchup) => ({
     id: String(matchup.id),
-    label: describeMatchupLabel(phase, matchup),
+    label: describeSeriesMatchupLabel(matchup, competitionMatchupIndex),
     output: matchup.slotA.type === "bye"
-      ? describeSlot(matchup.slotB, phase)
+      ? describeSeriesParticipantRef(matchup.slotB, competitionMatchupIndex)
       : matchup.slotB.type === "bye"
-        ? describeSlot(matchup.slotA, phase)
-        : `Winner ${describeMatchupLabel(phase, matchup)}`,
+        ? describeSeriesParticipantRef(matchup.slotA, competitionMatchupIndex)
+        : `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
   }));
 };
 
@@ -478,7 +488,7 @@ export function PhaseParticipantsBuilder({
   const isSeriesMode = String(selectedFormat) === "series";
   const sourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === participantSourcePhaseId), [phaseList, participantSourcePhaseId]);
   const sourceIsSeries = String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series";
-  const sourceOutputPool = useMemo(() => getSeriesOutputOptions(sourcePhase), [sourcePhase]);
+  const sourceOutputPool = useMemo(() => getSeriesOutputOptions(sourcePhase, phaseList), [sourcePhase, phaseList]);
   const persistedSourcePhaseId = String(config?.participantSourcePhaseId ?? "").trim();
   const persistedSourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === persistedSourcePhaseId), [phaseList, persistedSourcePhaseId]);
   const sourceRangeSlots = useMemo(() => {
