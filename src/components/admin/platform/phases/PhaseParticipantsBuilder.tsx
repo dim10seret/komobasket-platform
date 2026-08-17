@@ -62,6 +62,12 @@ type BracketOutputSource = {
   sourceType: SlotSourceType;
 };
 
+export type SeriesMatchupSummary = {
+  id: string;
+  label: string;
+  output: string;
+};
+
 const participantSourceOptions: SourceOption[] = [
   { value: "competition_participants", label: "Όλες οι ομάδες της διοργάνωσης" },
   { value: "standing_positions", label: "Θέσεις από προηγούμενη standings phase" },
@@ -232,7 +238,7 @@ const getSeriesOutputOptions = (sourcePhase?: Row) => {
       .filter((matchup) => matchup.id)
       .map((matchup) => ({
         value: `winner:${matchup.id}`,
-        label: `Winner(${matchup.id})`,
+        label: `Winner ${getSlotPreviewValue(matchup.slotA)} — ${getSlotPreviewValue(matchup.slotB)}`,
         sourceType: "matchup_winner" as SlotSourceType,
       }));
 
@@ -240,6 +246,92 @@ const getSeriesOutputOptions = (sourcePhase?: Row) => {
   }
 
   return [];
+};
+
+export const describeSeriesMatchupsFromPhase = (data: Snapshot, phase?: Row): SeriesMatchupSummary[] => {
+  if (!phase) return [];
+
+  const phaseById = new Map(data.phases.map((entry) => [String(entry.id), entry] as const));
+  const getPreviousPhaseId = (currentPhase?: Row) => String(
+    (currentPhase as Record<string, unknown> | undefined)?.previous_phase_id
+    ?? (currentPhase as Record<string, unknown> | undefined)?.previousPhaseId
+    ?? "",
+  ).trim();
+  const resolvePhaseMatchups = (currentPhase: Row | undefined): BracketBuilderMatchup[] => {
+    if (!currentPhase) return [];
+    const settings = {
+      ...getObjectInput((currentPhase as Row | undefined)?.settings_json),
+      ...getObjectInput(currentPhase.rule_settings_json),
+    };
+    const bracketConfig = getObjectInput(settings.bracketConfiguration);
+    return parseSlotArray(bracketConfig.matchups);
+  };
+
+  const describeMatchupLabel = (ownerPhase: Row | undefined, matchup: BracketBuilderMatchup, visited = new Set<string>()): string => {
+    const ownerPhaseId = String(ownerPhase?.id ?? "");
+    if (ownerPhaseId && visited.has(ownerPhaseId)) return "—";
+    if (ownerPhaseId) visited.add(ownerPhaseId);
+
+    const describeSlot = (slot: SlotBuilderSource): string => {
+      if (slot.type === "standing_position" && slot.position) {
+        const value = String(slot.position).trim();
+        if (/^direct:\d+$/.test(value)) return `#${value.replace(/^direct:/, "")}`;
+        return `#${value}`;
+      }
+      if (slot.type === "bye") return "Προκρίνεται άνευ αγώνα";
+      if (slot.type === "manual") return slot.teamId || "—";
+      if (slot.type === "matchup_winner" || slot.type === "matchup_loser") {
+        const previousPhaseId = getPreviousPhaseId(ownerPhase);
+        const previousPhase = previousPhaseId ? phaseById.get(previousPhaseId) : undefined;
+        const previousMatchupIds = resolvePhaseMatchups(previousPhase).map((entry) => String(entry.id));
+        const normalizedSlotMatchupId = String(slot.matchupId ?? "");
+        const sourceMatchup = resolvePhaseMatchups(previousPhase).find((entry) => String(entry.id) === normalizedSlotMatchupId);
+        if (!sourceMatchup) return slot.type === "matchup_winner" ? "Winner —" : "Loser —";
+        const previousLabel = describeMatchupLabel(previousPhase, sourceMatchup, visited);
+        return slot.type === "matchup_winner" ? `Winner ${previousLabel}` : `Loser ${previousLabel}`;
+      }
+      return "—";
+    };
+
+    const slotA = describeSlot(matchup.slotA);
+    const slotB = describeSlot(matchup.slotB);
+    if (matchup.slotA.type === "bye" && matchup.slotB.type !== "bye") {
+      return `${slotB} → Προκρίνεται άνευ αγώνα`;
+    }
+    if (matchup.slotB.type === "bye" && matchup.slotA.type !== "bye") {
+      return `${slotA} → Προκρίνεται άνευ αγώνα`;
+    }
+    return `${slotA} — ${slotB}`;
+  };
+
+  const describeSlot = (slot: SlotBuilderSource, ownerPhase: Row | undefined): string => {
+    if (slot.type === "standing_position" && slot.position) {
+      const value = String(slot.position).trim();
+      if (/^direct:\d+$/.test(value)) return `#${value.replace(/^direct:/, "")}`;
+      return `#${value}`;
+    }
+    if (slot.type === "bye") return "Προκρίνεται άνευ αγώνα";
+    if (slot.type === "manual") return slot.teamId || "—";
+    if (slot.type === "matchup_winner" || slot.type === "matchup_loser") {
+      const previousPhaseId = getPreviousPhaseId(ownerPhase);
+      const previousPhase = previousPhaseId ? phaseById.get(previousPhaseId) : undefined;
+      const sourceMatchup = resolvePhaseMatchups(previousPhase).find((entry) => String(entry.id) === String(slot.matchupId ?? ""));
+      if (!sourceMatchup) return slot.type === "matchup_winner" ? "Winner —" : "Loser —";
+      const previousLabel = describeMatchupLabel(previousPhase, sourceMatchup);
+      return slot.type === "matchup_winner" ? `Winner ${previousLabel}` : `Loser ${previousLabel}`;
+    }
+    return "—";
+  };
+
+  return resolvePhaseMatchups(phase).map((matchup) => ({
+    id: String(matchup.id),
+    label: describeMatchupLabel(phase, matchup),
+    output: matchup.slotA.type === "bye"
+      ? describeSlot(matchup.slotB, phase)
+      : matchup.slotB.type === "bye"
+        ? describeSlot(matchup.slotA, phase)
+        : `Winner ${describeMatchupLabel(phase, matchup)}`,
+  }));
 };
 
 const normalizeMatchupForComparison = (matchup: BracketBuilderMatchup) => ({
@@ -370,7 +462,7 @@ export function PhaseParticipantsBuilder({
     normalizeParticipantSourceType(String(config?.participantSourceType || phase?.format === "series" ? "standing_positions" : "competition_participants"), "competition_participants"),
   );
   const [participantSourcePhaseId, setParticipantSourcePhaseId] = useState(
-    String(lockedSeriesSourcePhaseId?.trim() || config?.participantSourcePhaseId || ""),
+    String(lockedSeriesSourcePhaseId?.trim() || phase?.previous_phase_id || config?.participantSourcePhaseId || ""),
   );
   const [standingFrom, setStandingFrom] = useState(asInt(lockedSeriesRangeFrom ?? config?.standingFrom, 1));
   const [standingTo, setStandingTo] = useState(asInt(lockedSeriesRangeTo ?? config?.standingTo, asInt(config?.standingFrom, 1)));
@@ -421,7 +513,7 @@ export function PhaseParticipantsBuilder({
       "competition_participants",
     );
     setParticipantSourceType(isSeriesMode ? "standing_positions" : normalizedSourceType);
-    setParticipantSourcePhaseId(String(lockedSeriesSourcePhaseId?.trim() || cfg?.participantSourcePhaseId || ""));
+    setParticipantSourcePhaseId(String(lockedSeriesSourcePhaseId?.trim() || phase?.previous_phase_id || cfg?.participantSourcePhaseId || ""));
     setStandingFrom(asInt(lockedSeriesRangeFrom ?? cfg?.standingFrom, 1));
     setStandingTo(asInt(lockedSeriesRangeTo ?? cfg?.standingTo, asInt(cfg?.standingFrom, 1)));
     setSelectedTeamIds(cfg?.selectedTeamIds ?? []);
@@ -439,10 +531,6 @@ export function PhaseParticipantsBuilder({
       setParticipantSourceType("standing_positions");
     }
   }, [isSeriesMode, participantSourceType]);
-
-  useEffect(() => {
-    if (standingFrom > standingTo) setStandingTo(standingFrom);
-  }, [standingFrom, standingTo]);
 
   const estimatedParticipantCount = useMemo(() => {
     if (participantSourceType === "competition_participants") return competitionTeams.length;
@@ -468,8 +556,9 @@ export function PhaseParticipantsBuilder({
   const persistedMatchups = useMemo(() => parseSlotArray(bracketConfig?.matchups), [bracketConfig?.matchups]);
   const persistedSeriesSourceFrom = asInt(config?.standingFrom, 1);
   const persistedSeriesSourceTo = asInt(config?.standingTo, persistedSeriesSourceFrom);
+  const persistedCanonicalSourcePhaseId = String(phase?.previous_phase_id ?? config?.participantSourcePhaseId ?? "").trim();
   const persistedSeriesParticipantConfig = useMemo(() => ({
-    participantSourcePhaseId: persistedSourcePhaseId,
+    participantSourcePhaseId: persistedCanonicalSourcePhaseId,
     standingFrom: persistedSeriesSourceFrom,
     standingTo: persistedSeriesSourceTo,
     selectedTeamIds: (config?.selectedTeamIds ?? []).slice(),
@@ -490,7 +579,7 @@ export function PhaseParticipantsBuilder({
     phase?.format,
     phase?.wins_required,
     persistedMatchups,
-    persistedSourcePhaseId,
+    persistedCanonicalSourcePhaseId,
     persistedSeriesSourceFrom,
     persistedSeriesSourceTo,
   ]);
@@ -544,9 +633,10 @@ export function PhaseParticipantsBuilder({
   const canContinueSeries = isSeriesMode ? (isSeriesConfigPersisted ? persistedSeriesEligibility.eligible : false) : false;
 
   const sourcePhaseOptions = useMemo(() => {
-    if (isSeriesMode) return phaseList.filter((entry) => String(entry.format ?? entry.phase_kind ?? "") === "standings");
     return phaseList;
-  }, [isSeriesMode, phaseList]);
+  }, [phaseList]);
+
+  const sourcePoolCount = sourceIsSeries ? sourceOutputPool.length : availableStandingSlots.length;
 
   const currentPhaseSourceTokens = useMemo(() => {
     const counts = new Map<string, number>();
@@ -599,11 +689,10 @@ export function PhaseParticipantsBuilder({
     setSourceValidationMessages(matchupErrors);
   }, [matchupErrors]);
 
-  const standingToOptions = useMemo(() => {
-    const maxOption = Math.max(...competitionTeams.length ? [availableStandingSlots.length + standingFrom - 1] : [0], 1);
-    const upper = maxOption > standingFrom ? maxOption : standingFrom;
-    return Array.from({ length: Math.max(1, upper) }, (_, index) => String(index + 1));
-  }, [competitionTeams.length, availableStandingSlots.length, standingFrom]);
+  const standingOptionMax = Math.max(availableStandingSlots.length, competitionTeams.length, standingFrom, standingTo, 1);
+  const standingRangeOptions = useMemo(() => {
+    return Array.from({ length: standingOptionMax }, (_, index) => String(index + 1));
+  }, [standingOptionMax]);
 
   const toggleTeam = (teamId: string, checked: boolean) => {
     setSelectedTeamIds((previous) => {
@@ -673,21 +762,53 @@ export function PhaseParticipantsBuilder({
   };
 
   const renderSeriesParticipantSelect = (slot: SlotBuilderSource, slotRefId: string, allowBye: boolean) => {
-    const options = availableStandingSlots;
+    const options = sourceIsSeries ? sourceOutputPool : availableStandingSlots;
     const isSlotA = slotRefId.endsWith("-a");
     const currentToken = getSlotToken(slot);
 
     return (
       <select
-        value={slot.type === "bye" ? "__bye__" : slot.position}
+        value={sourceIsSeries
+          ? (slot.type === "bye"
+              ? "__bye__"
+              : slot.type === "matchup_winner"
+                ? `winner:${slot.matchupId}`
+                : slot.position)
+          : (slot.type === "bye" ? "__bye__" : slot.position)}
         onChange={(event) => {
           const selected = event.target.value;
           const matchupId = slotRefId.split("-").slice(0, -1).join("-");
           const key: "slotA" | "slotB" = isSlotA ? "slotA" : "slotB";
 
+          if (sourceIsSeries) {
+            if (selected === "__bye__" && !isSlotA) {
+              changeSlotType(matchupId, key, "bye");
+              changeSlotValue(matchupId, key, "position", "");
+              changeSlotValue(matchupId, key, "matchupId", "");
+              changeSlotValue(matchupId, key, "teamId", "");
+              return;
+            }
+            if (selected.startsWith("winner:")) {
+              changeSlotType(matchupId, key, "matchup_winner");
+              changeSlotValue(matchupId, key, "matchupId", selected.replace(/^winner:/, ""));
+              changeSlotValue(matchupId, key, "position", "");
+              changeSlotValue(matchupId, key, "teamId", "");
+              return;
+            }
+            if (selected.startsWith("direct:")) {
+              changeSlotType(matchupId, key, "standing_position");
+              changeSlotValue(matchupId, key, "position", selected);
+              changeSlotValue(matchupId, key, "matchupId", "");
+              changeSlotValue(matchupId, key, "teamId", "");
+              return;
+            }
+          }
+
           if (selected === "__bye__" && !isSlotA) {
             changeSlotType(matchupId, key, "bye");
             changeSlotValue(matchupId, key, "position", "");
+            changeSlotValue(matchupId, key, "matchupId", "");
+            changeSlotValue(matchupId, key, "teamId", "");
             return;
           }
 
@@ -699,17 +820,28 @@ export function PhaseParticipantsBuilder({
         className={inputClass}
       >
         <option value="">Επιλογή</option>
-        {options.map((value) => {
-          const normalized = String(value);
-          const token = `standing:${normalized}`;
-          const isSelectedInCurrentSlot = token === currentToken;
-          const isDisabled = slot.type === "bye" ? false : (!isSelectedInCurrentSlot && isSeriesSlotValueUsedElsewhere(token, slot.id));
-          return (
-            <option key={`${slotRefId}-${normalized}`} value={normalized} disabled={isDisabled}>
-              #{normalized}
-            </option>
-          );
-        })}
+        {sourceIsSeries
+          ? sourceOutputPool.map((entry) => {
+            const normalized = String(entry.value);
+            const isSelectedInCurrentSlot = normalized === currentToken;
+            const isDisabled = !isSelectedInCurrentSlot && isSeriesSlotValueUsedElsewhere(normalized, slot.id);
+            return (
+              <option key={`${slotRefId}-${normalized}`} value={normalized} disabled={isDisabled}>
+                {entry.label}
+              </option>
+            );
+          })
+          : options.map((value) => {
+            const normalized = String(value);
+            const token = `standing:${normalized}`;
+            const isSelectedInCurrentSlot = token === currentToken;
+            const isDisabled = slot.type === "bye" ? false : (!isSelectedInCurrentSlot && isSeriesSlotValueUsedElsewhere(token, slot.id));
+            return (
+              <option key={`${slotRefId}-${normalized}`} value={normalized} disabled={isDisabled}>
+                #{normalized}
+              </option>
+            );
+          })}
         {allowBye ? <option value="__bye__">Προκρίνεται άνευ αγώνα</option> : null}
       </select>
     );
@@ -734,7 +866,7 @@ export function PhaseParticipantsBuilder({
       {isSeriesMode ? (
         <>
           <Field label="Φάση προέλευσης">
-            {seriesContinuationMode || lockedSeriesSourcePhaseId ? (
+            {seriesContinuationMode || lockedSeriesSourcePhaseId || String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series" ? (
               <input readOnly value={sourcePhase?.name || "—"} className={inputClass} />
             ) : (
               <select
@@ -748,7 +880,9 @@ export function PhaseParticipantsBuilder({
                 className={inputClass}
               >
                 <option value="">Επιλογή φάσης</option>
-                {sourcePhaseOptions.map((entry) => {
+                {sourcePhaseOptions
+                  .filter((entry) => Number(entry.phase_order ?? entry.order_index ?? 0) < Number(phase?.phase_order ?? 0))
+                  .map((entry) => {
                   const id = String(entry.id);
                   const order = Number(entry.phase_order ?? entry.order_index ?? 0);
                   return <option key={id} value={id}>{`${order}. ${entry.name}`}</option>;
@@ -756,34 +890,35 @@ export function PhaseParticipantsBuilder({
               </select>
             )}
           </Field>
-          {!seriesContinuationMode ? (
+          {!seriesContinuationMode && String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") !== "series" ? (
             <>
               <Field label="Από θέση">
-                <input
-                  type="number"
-                  min={1}
+                <select
                   name="standingFrom"
                   value={standingFrom}
                   onChange={(event) => setStandingFrom(asInt(event.target.value, 1))}
                   className={inputClass}
-                />
+                >
+                  <option value="">Επιλογή</option>
+                  {standingRangeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
               </Field>
               <Field label="Έως θέση">
                 <select
                   name="standingTo"
                   value={standingTo}
-                  onChange={(event) => setStandingTo(asInt(event.target.value, standingFrom))}
+                  onChange={(event) => setStandingTo(asInt(event.target.value, standingTo))}
                   className={inputClass}
                 >
                   <option value="">Επιλογή</option>
-                  {standingToOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                  {standingRangeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
                 </select>
               </Field>
             </>
           ) : null}
-          {seriesContinuationMode ? (
+          {seriesContinuationMode || String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series" ? (
             <Field label="Διαθεσιμότητα">
-              <input readOnly value={`${Math.max(availableStandingSlots.length, estimatedParticipantCount)} διαθέσιμες slots από προηγούμενη φάση`} className={inputClass} />
+              <input readOnly value={`${sourcePoolCount} διαθέσιμα slots από προηγούμενη φάση`} className={inputClass} />
             </Field>
           ) : null}
         </>
@@ -837,7 +972,7 @@ export function PhaseParticipantsBuilder({
           )}
           {isSeriesMode ? (
             <Field label="Διαθεσιμότητα">
-              <input readOnly value={`${Math.max(availableStandingSlots.length, estimatedParticipantCount)} διαθέσιμες ομάδες`} className={inputClass} />
+              <input readOnly value={`${sourcePoolCount} διαθέσιμα slots`} className={inputClass} />
             </Field>
           ) : (
             <Field label="Διαθεσιμότητα">
@@ -1042,25 +1177,17 @@ export function PhaseParticipantsBuilder({
           <p><span className="font-black">Θέσεις:</span> {isSeriesMode ? `${standingFrom}–${standingTo}` : `${standingFrom}–${standingTo}`}</p>
           <p><span className="font-black">Τρόπος:</span> Manual</p>
           {isSeriesMode && <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>}
-          <p><span className="font-black">Διαθέσιμα slots:</span> {estimatedParticipantCount}</p>
+          <p><span className="font-black">Διαθέσιμα slots:</span> {isSeriesMode ? sourcePoolCount : estimatedParticipantCount}</p>
           <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>
           <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>
         </div>
       </div>
       <div className="mt-4 space-y-2">
-        {matchups.length ? matchups.map((matchup, index) => {
-          const output =
-            matchup.slotA.type === "bye"
-              ? getSlotPreviewValue(matchup.slotB)
-              : matchup.slotB.type === "bye"
-                ? getSlotPreviewValue(matchup.slotA)
-                : `Νικητής(matchup ${index + 1})`;
+        {matchups.length ? describeSeriesMatchupsFromPhase(data, phase).map((summary, index) => {
           return (
-            <div key={matchup.id} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
-              <p>
-                Matchup {index + 1}: {getSlotPreviewValue(matchup.slotA)} — {getSlotPreviewValue(matchup.slotB)}
-              </p>
-              <p className="text-xs text-zinc-500">Έξοδος: {output}</p>
+            <div key={summary.id} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
+              <p>{summary.label}</p>
+              <p className="text-xs text-zinc-500">Έξοδος: {summary.output}</p>
             </div>
           );
         }) : <p className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν υπάρχουν manual slots.</p>}

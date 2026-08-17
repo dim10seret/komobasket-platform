@@ -1,7 +1,9 @@
 import { requireAdmin } from "@/lib/admin-auth";
 import {
   createLeagueEntity,
+  cleanupLeagueCompetition,
   deleteLeagueCompetition,
+  deleteLeaguePhase,
   deleteLeagueSeason,
   deleteLeagueTeam,
   deleteLeagueParticipation,
@@ -48,6 +50,11 @@ export async function POST(
 
   try {
     const input = (await request.json()) as Record<string, unknown>;
+
+    if (resource === "competitions" && String(input.action ?? "").trim() === "cleanup") {
+      const result = await cleanupLeagueCompetition(input, authorization.identity.email);
+      return Response.json(result);
+    }
 
     const result = await createLeagueEntity(
       resource,
@@ -131,6 +138,7 @@ export async function DELETE(
     && resource !== "competitions"
     && resource !== "participations"
     && resource !== "teams"
+    && resource !== "phases"
   ) {
     return Response.json(
       { error: "Η διαγραφή δεν υποστηρίζεται για αυτή την κατηγορία." },
@@ -144,6 +152,8 @@ export async function DELETE(
       ? await deleteLeagueSeason(input, authorization.identity.email)
       : resource === "competitions"
         ? await deleteLeagueCompetition(input, authorization.identity.email)
+        : resource === "phases"
+          ? await deleteLeaguePhase(input, authorization.identity.email)
         : resource === "teams"
           ? await deleteLeagueTeam(input, authorization.identity.email)
           : await deleteLeagueParticipation(input, authorization.identity.email);

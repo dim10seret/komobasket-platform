@@ -27,6 +27,7 @@ import {
   clearBlobPreviewUrl,
 } from "../shared/admin-core";
 import { PhaseFields, StandingsPhasePreview } from "./PhaseScheduleSection";
+import { describeSeriesMatchupsFromPhase } from "../phases/PhaseParticipantsBuilder";
 
 export function CompetitionFields({
   competition,
@@ -50,7 +51,7 @@ export function CompetitionFields({
     {selectedType === "custom" && (
       <Field label="Ονομασία τύπου"><input name="customTypeLabel" defaultValue={String(competition?.custom_type_label ?? "")} placeholder="Παραδείγματος χάρη: Βασιλικό Κύπελλο" className={inputClass}/></Field>
     )}
-    {includeStatus && <Field label="Κατάσταση"><select name="lifecycleStatus" defaultValue={String(competition?.lifecycle_status === "complete" ? "online" : competition?.lifecycle_status ?? "under_construction")} className={inputClass}><option value="under_construction">Under Construction</option><option value="online">Online</option></select></Field>}
+    {includeStatus && <Field label="Κατάσταση"><select name="lifecycleStatus" defaultValue={String(competition?.lifecycle_status ?? "under_construction")} className={inputClass}><option value="under_construction">Under Construction</option><option value="online">Online</option><option value="complete">Complete</option></select></Field>}
     <Field label="Αναμενόμενες ομάδες"><input name="expectedTeamCount" type="number" min="2" defaultValue={String(competition?.expected_team_count ?? "")} placeholder="16" className={inputClass}/></Field>
   </>;
 }
@@ -121,6 +122,7 @@ export function CompetitionWorkspaceManager({
   setWorkspaceCompetitionId,
   workspaceMode,
   setWorkspaceMode,
+  onRefreshCompetitionData,
 }: {
   data: Snapshot;
   submit: (r:string, e:FormEvent<HTMLFormElement>) => Promise<boolean>;
@@ -131,6 +133,7 @@ export function CompetitionWorkspaceManager({
   setWorkspaceCompetitionId: (value: string) => void;
   workspaceMode: CompetitionWorkspaceMode;
   setWorkspaceMode: (value: CompetitionWorkspaceMode) => void;
+  onRefreshCompetitionData?: () => Promise<void> | void;
 }) {
   const [selectedExistingSeasonId, setSelectedExistingSeasonId] = useState("");
   const [showNewCompetitionForm, setShowNewCompetitionForm] = useState(false);
@@ -170,6 +173,9 @@ export function CompetitionWorkspaceManager({
   const [showAddPhaseForm, setShowAddPhaseForm] = useState(false);
   const [addPhaseChoice, setAddPhaseChoice] = useState<"continuations" | "new" | null>(null);
   const [activateLatestPhaseAfterAdd, setActivateLatestPhaseAfterAdd] = useState(false);
+  const [newPhaseName, setNewPhaseName] = useState("");
+  const [newPhaseFormat, setNewPhaseFormat] = useState<"standings" | "series">("standings");
+  const [newPhasePreviousId, setNewPhasePreviousId] = useState("");
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
   const [teamRosterLoading,setTeamRosterLoading]=useState(false);
   const [teamRosterError,setTeamRosterError]=useState("");
@@ -186,6 +192,9 @@ export function CompetitionWorkspaceManager({
   const [editingAthleteShirtNumber,setEditingAthleteShirtNumber]=useState("");
   const [seriesContinuationSeed,setSeriesContinuationSeed]=useState<{ sourcePhaseId: string; sourceName: string; from?: number; to?: number } | null>(null);
   const [rosterActionBusy,setRosterActionBusy]=useState(false);
+  const [cleanupBusy,setCleanupBusy]=useState(false);
+  const [cleanupNotice,setCleanupNotice]=useState("");
+  const [cleanupError,setCleanupError]=useState("");
 
   const rosterPlayers = useMemo(() => (teamRoster?.athletes ?? []).map((athlete,index)=>({ ...athlete, rowIndex:index + 1 })), [teamRoster?.athletes]);
 
@@ -371,6 +380,13 @@ export function CompetitionWorkspaceManager({
   }, [activePhaseId, activateLatestPhaseAfterAdd, selectedCompetitionPhases]);
 
   useEffect(() => {
+    if (!showAddPhaseForm || addPhaseChoice !== "new") return;
+    if (newPhasePreviousId && selectedCompetitionPhases.some((phase) => String(phase.id) === newPhasePreviousId)) return;
+    const fallbackPrevious = selectedCompetitionPhases[selectedCompetitionPhases.length - 1];
+    setNewPhasePreviousId(fallbackPrevious ? String(fallbackPrevious.id) : "");
+  }, [addPhaseChoice, newPhasePreviousId, selectedCompetitionPhases, showAddPhaseForm]);
+
+  useEffect(() => {
     if (workspaceCompetitionId) {
       const current = data.competitions.find((competition)=>String(competition.id)===workspaceCompetitionId);
       setEditCompetitionLogoUrl(String(current?.logo_url ?? ""));
@@ -550,7 +566,6 @@ export function CompetitionWorkspaceManager({
             <button type="button" onClick={() => setWorkspaceMode("settings")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "settings" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Ρύθμιση Διοργάνωσης</button>
             <button type="button" onClick={() => setWorkspaceMode("phases")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "phases" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Φάσεις & Πρόγραμμα</button>
           </div>
-          <p className="text-sm text-zinc-600">Κατάσταση: {competitionLifecycleLabels[String(selectedCompetition.lifecycle_status ?? "under_construction")] ?? "Under Construction"}</p>
           {workspaceMode === "settings" ? (
             <form
               onSubmit={(event)=>{ if (!window.confirm("Θέλεις να αποθηκεύσεις τις αλλαγές στη ρύθμιση της διοργάνωσης;")) return; void updateEntity("competitions", workspaceCompetitionId, event, "Η ρύθμιση της διοργάνωσης αποθηκεύτηκε."); }}
@@ -606,6 +621,59 @@ export function CompetitionWorkspaceManager({
                   Διαγραφή
                 </button>
               </div>
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:col-span-2 xl:col-span-4">
+                <p className="text-sm font-black text-zinc-900">Καθαρισμός δεδομένων διοργάνωσης</p>
+                <p className="mt-2 text-sm text-zinc-700">
+                  Ο καθαρισμός αφαιρεί μόνο τις συμμετοχές και τα roster αυτής της διοργάνωσης. Οι ομάδες και οι παίκτες παραμένουν στο Μητρώο τους.
+                </p>
+                <p className="mt-2 text-sm text-zinc-700">
+                  Πριν τον καθαρισμό πρέπει να έχουν διαγραφεί όλες οι Φάσεις. Διοργάνωση με αγώνες ή στατιστικά δεν μπορεί να καθαριστεί από αυτή τη λειτουργία.
+                </p>
+                {cleanupError && <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{cleanupError}</p>}
+                {cleanupNotice && <p className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">{cleanupNotice}</p>}
+                {String(selectedCompetition.lifecycle_status ?? "under_construction") === "under_construction" ? (
+                  <button
+                    type="button"
+                    disabled={busy || cleanupBusy}
+                    onClick={async () => {
+                      if (!workspaceCompetitionId || busy || cleanupBusy) return;
+                      const competitionName = String(selectedCompetition.name ?? "");
+                      if (!window.confirm(
+                        `Θέλετε να καθαρίσετε τα δεδομένα της διοργάνωσης «${competitionName}»;\n\n` +
+                        "Θα αφαιρεθούν μόνο οι συμμετοχές ομάδων και τα roster/συσχετίσεις αυτής της διοργάνωσης.\n" +
+                        "Οι ομάδες και οι παίκτες στο Μητρώο παραμένουν.\n" +
+                        "Η διοργάνωση η ίδια παραμένει.",
+                      )) return;
+                      setCleanupBusy(true);
+                      setCleanupError("");
+                      setCleanupNotice("");
+                      try {
+                        const response = await fetch("/api/admin/league/competitions", {
+                          method: "POST",
+                          headers: { "content-type": "application/json" },
+                          body: JSON.stringify({ id: workspaceCompetitionId, action: "cleanup" }),
+                        });
+                        const payload = await response.json();
+                        if (!response.ok) throw new Error(payload.error || "Ο καθαρισμός απέτυχε.");
+                        const removed = payload?.removed ?? {};
+                        setCleanupNotice(`Ο καθαρισμός ολοκληρώθηκε: αφαιρέθηκαν ${Number(removed.competitionTeams ?? 0)} συμμετοχές ομάδων και ${Number(removed.rosterMemberships ?? 0)} εγγραφές roster.`);
+                        await onRefreshCompetitionData?.();
+                      } catch (caught) {
+                        setCleanupError(caught instanceof Error ? caught.message : "Ο καθαρισμός απέτυχε.");
+                      } finally {
+                        setCleanupBusy(false);
+                      }
+                    }}
+                    className="mt-3 rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-sm font-black text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Καθαρισμός δεδομένων διοργάνωσης
+                  </button>
+                ) : (
+                  <p className="mt-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-600">
+                    Ο καθαρισμός είναι διαθέσιμος μόνο όταν η διοργάνωση είναι Under Construction και έχει αποθηκευτεί πρώτα.
+                  </p>
+                )}
+              </div>
             </form>
           ) : (
             <article className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
@@ -636,7 +704,7 @@ export function CompetitionWorkspaceManager({
                     type="button"
                     onClick={() => {
                       setSeriesContinuationSeed(null);
-                      setAddPhaseChoice(null);
+                      setAddPhaseChoice("new");
                       setShowAddPhaseForm(true);
                     }}
                     disabled={!!editingPhaseId}
@@ -664,32 +732,87 @@ export function CompetitionWorkspaceManager({
                       Ακύρωση
                     </button>
                   </div>
-                  {addPhaseChoice === null ? (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAddPhaseChoice("continuations");
+                  {addPhaseChoice === "new" ? (
+                      <form
+                        onSubmit={async (event) => {
+                          event.preventDefault();
+                          const ok = await submit("phases", event);
+                          if (!ok) return;
+                          setShowAddPhaseForm(false);
+                          setAddPhaseChoice(null);
+                          setSeriesContinuationSeed(null);
+                          setNewPhaseName("");
+                          setNewPhaseFormat("standings");
+                          setNewPhasePreviousId("");
+                          setActivateLatestPhaseAfterAdd(true);
                         }}
-                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
+                        className="grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2"
                       >
-                        Προσθήκη Διασταυρώσεων
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAddPhaseChoice("new");
-                        }}
-                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
-                      >
-                        Νέα Φάση
-                      </button>
-                    </div>
+                        <input type="hidden" name="competitionId" value={String(workspaceCompetitionId)} />
+                        <Field label="Ονομασία">
+                          <input
+                            required
+                            name="name"
+                            value={newPhaseName}
+                            onChange={(event) => setNewPhaseName(event.target.value)}
+                            className={inputClass}
+                            placeholder="Προημιτελικά"
+                          />
+                        </Field>
+                        <Field label="Μορφή">
+                          <select
+                            name="format"
+                            value={newPhaseFormat}
+                            onChange={(event) => setNewPhaseFormat(event.target.value === "series" ? "series" : "standings")}
+                            className={inputClass}
+                          >
+                            <option value="standings">Βαθμολογική</option>
+                            <option value="series">Σειρά αγώνων</option>
+                          </select>
+                        </Field>
+                        <Field label="Ακολουθεί τη Φάση">
+                          <select
+                            name="previousPhaseId"
+                            value={newPhasePreviousId}
+                            onChange={(event) => setNewPhasePreviousId(event.target.value)}
+                            className={inputClass}
+                          >
+                            <option value="">Κανονική Περίοδος</option>
+                            {selectedCompetitionPhases.map((phase) => (
+                              <option key={String(phase.id)} value={String(phase.id)}>
+                                {phase.name}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <input
+                          type="hidden"
+                          name="orderIndex"
+                          value={String((Number(selectedCompetitionPhases[selectedCompetitionPhases.length - 1]?.phase_order ?? selectedCompetitionPhases[selectedCompetitionPhases.length - 1]?.order_index ?? 0) + 1))}
+                        />
+                        <div className="flex flex-wrap gap-3 sm:col-span-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAddPhaseForm(false);
+                              setAddPhaseChoice(null);
+                              setSeriesContinuationSeed(null);
+                              setNewPhaseName("");
+                              setNewPhaseFormat("standings");
+                              setNewPhasePreviousId("");
+                            }}
+                            className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                          >
+                            Ακύρωση
+                          </button>
+                          <button type="submit" disabled={busy} className={buttonClass}>
+                            Δημιουργία Φάσης
+                          </button>
+                        </div>
+                      </form>
                   ) : (
                     <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
-                      <p className="font-black text-zinc-900">
-                        {addPhaseChoice === "continuations" ? "Προσθήκη Διασταυρώσεων" : "Νέα Φάση"}
-                      </p>
+                      <p className="font-black text-zinc-900">Νέα Φάση</p>
                       <p className="mt-1 text-zinc-600">Η λειτουργία δημιουργίας θα ενεργοποιηθεί στο επόμενο βήμα.</p>
                     </div>
                   )}
@@ -704,6 +827,11 @@ export function CompetitionWorkspaceManager({
                 const activePhaseOrder = Number(activePhase.phase_order ?? activePhase.order_index ?? 0) || selectedCompetitionPhases.findIndex((phase) => String(phase.id) === activePhaseIdValue) + 1;
                 const activePhaseFormat = String(activePhase.format ?? activePhase.phase_kind ?? "standings");
                 const shouldUseC4Save = String(activePhaseFormat) === "series";
+                const fallbackActivePhaseId = (() => {
+                  const currentIndex = selectedCompetitionPhases.findIndex((phase) => String(phase.id) === activePhaseIdValue);
+                  if (currentIndex > 0) return String(selectedCompetitionPhases[currentIndex - 1].id);
+                  return String(selectedCompetitionPhases[0]?.id ?? "");
+                })();
                 const handleActivePhaseSave = async (event: MouseEvent<HTMLButtonElement>) => {
                   const form = event.currentTarget.form;
                   if (!form) return;
@@ -743,7 +871,7 @@ export function CompetitionWorkspaceManager({
                         onClick={() => setEditingPhaseId(isActivePhaseEditing ? null : activePhaseIdValue)}
                         className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500"
                       >
-                        {isActivePhaseEditing ? "Ακύρωση" : "Edit Φάσης"}
+                        {isActivePhaseEditing ? "Αρχικό μενού Φάσεων" : "Edit Φάσης"}
                       </button>
                     </div>
                     {isActivePhaseEditing && (
@@ -762,10 +890,54 @@ export function CompetitionWorkspaceManager({
                           editing
                           onExplicitSave={shouldUseC4Save ? handleActivePhaseSave : undefined}
                           onContinueSeries={shouldUseC4Save ? handleActivePhaseContinue : undefined}
+                          onCancel={() => setEditingPhaseId(null)}
                         />
                         <input type="hidden" name="competitionId" value={String(activePhase.competition_id ?? "")} />
+                        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                          <p className="text-sm font-black text-red-800">Επικίνδυνες ενέργειες</p>
+                          <p className="mt-1 text-sm text-red-700">Η διαγραφή επιτρέπεται μόνο όταν δεν υπάρχουν επόμενες φάσεις που εξαρτώνται από αυτή.</p>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={async () => {
+                              const phaseName = String(activePhase.name ?? "");
+                              if (!window.confirm(`Θέλετε σίγουρα να διαγράψετε τη φάση «${phaseName}»;`)) return;
+                              if (await deleteEntity("phases", activePhaseIdValue, `Η φάση «${phaseName}» διαγράφηκε.`)) {
+                                setEditingPhaseId(null);
+                                setActivePhaseId(fallbackActivePhaseId);
+                              }
+                            }}
+                            className="mt-3 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Διαγραφή Φάσης
+                          </button>
+                        </div>
                       </form>
                     )}
+                    {!isActivePhaseEditing && activePhaseFormat === "series" && (() => {
+                      const rawActivePhase = data.phases.find((phase) => String(phase.id) === activePhaseIdValue) ?? activePhase;
+                      const seriesSummaryPhase = {
+                        ...rawActivePhase,
+                        previous_phase_id: String(
+                          (rawActivePhase as Record<string, unknown>).previous_phase_id
+                          ?? (rawActivePhase as Record<string, unknown>).previousPhaseId
+                          ?? "",
+                        ).trim(),
+                      };
+                      const summaries = describeSeriesMatchupsFromPhase(data, seriesSummaryPhase);
+                      return (
+                        <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                          <p className="text-sm font-black text-zinc-900">Διασταυρώσεις</p>
+                          <div className="mt-3 space-y-2">
+                            {summaries.length ? summaries.map((summary) => (
+                              <div key={summary.id} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
+                                <p>{summary.label}</p>
+                              </div>
+                            )) : <p className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν έχουν οριστεί ακόμη διασταυρώσεις.</p>}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {activePhaseFormat === "standings" && (
                       <StandingsPhasePreview data={data} phase={activePhase} openTeamRoster={showTeamRosterPopup} />
                     )}

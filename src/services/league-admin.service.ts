@@ -935,6 +935,35 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
       .bind(sourcePhaseId, competitionId).first<{ id: string }>();
     if (!source) throw new Error("Η φάση προέλευσης πρέπει να ανήκει στην ίδια διοργάνωση.");
   }
+  const previousPhaseIdInput = String(input.previousPhaseId ?? input.previous_phase_id ?? "").trim() || null;
+  const previousPhaseId = previousPhaseIdInput || null;
+  if (previousPhaseId) {
+    if (previousPhaseId === String(current?.id ?? "")) {
+      throw new Error("Η προηγούμενη φάση δεν μπορεί να είναι η ίδια η φάση.");
+    }
+    const previousPhase = await db.prepare(`
+      SELECT id, competition_id, previous_phase_id
+      FROM league_phases
+      WHERE id=?
+    `).bind(previousPhaseId).first<{ id: string; competition_id: string; previous_phase_id: string | null }>();
+    if (!previousPhase || String(previousPhase.competition_id ?? "") !== competitionId) {
+      throw new Error("Η προηγούμενη φάση πρέπει να ανήκει στην ίδια διοργάνωση.");
+    }
+    const visited = new Set<string>([String(current?.id ?? "")].filter(Boolean));
+    let cursor: string | null = previousPhaseId;
+    while (cursor) {
+      if (visited.has(cursor)) {
+        throw new Error("Η προηγούμενη φάση δημιουργεί κυκλική εξάρτηση.");
+      }
+      visited.add(cursor);
+      const parent: { previous_phase_id: string | null } | null = await db.prepare(`
+        SELECT previous_phase_id
+        FROM league_phases
+        WHERE id=? AND competition_id=?
+      `).bind(cursor, competitionId).first<{ previous_phase_id: string | null }>();
+      cursor = parent?.previous_phase_id ? String(parent.previous_phase_id) : null;
+    }
+  }
   const currentRuleSettings = parsePhaseRuleJson(current?.rule_settings_json);
   const participantConfig = await parsePhaseParticipantConfig(
     db,
@@ -986,6 +1015,7 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
     winsRequired,
     carryOverEnabled: booleanValue(input.carryOverEnabled),
     carryOverSourcePhaseId: sourcePhaseId,
+    previousPhaseId,
     settingsJson: JSON.stringify({
       ...currentRuleSettings,
       winPoints,
@@ -1117,6 +1147,7 @@ export async function getLeagueAdminSnapshot() {
     rows(db, `SELECT p.*, c.name AS competition_name, s.name AS season_name,
       COALESCE(pr.phase_kind, CASE WHEN p.phase_type='regular' THEN 'regular_season' ELSE p.phase_type END) AS phase_kind,
       COALESCE(p.phase_order, p.order_index) AS phase_order,
+      p.previous_phase_id,
       pr.bracket_size, pr.best_of, pr.wins_required, pr.carry_over_enabled,
       pr.carry_over_source_phase_id, source_phase.name AS carry_over_source_name,
       pr.settings_json AS rule_settings_json
@@ -2207,8 +2238,8 @@ export async function createLeagueEntity(resource: string, input: Record<string,
     ).bind(phase.competitionId, phase.slug).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη φάση με αυτή την ονομασία στη διοργάνωση.");
     await db.prepare(`INSERT INTO league_phases
-      (id,competition_id,name,slug,phase_type,format,order_index,phase_order)
-      VALUES (?,?,?,?,?,?,?,?)`)
+      (id,competition_id,name,slug,phase_type,format,order_index,phase_order,previous_phase_id)
+      VALUES (?,?,?,?,?,?,?,?,?)`)
       .bind(
         id,
         phase.competitionId,
@@ -2218,6 +2249,7 @@ export async function createLeagueEntity(resource: string, input: Record<string,
         phase.phaseFormat,
         phase.orderIndex,
         phase.orderIndex,
+        phase.previousPhaseId,
       ).run();
     await savePhaseRules(db, id, phase);
     await normalizeCompetitionPhaseOrder(db, phase.competitionId);
@@ -2362,6 +2394,106 @@ export async function deleteLeagueCompetition(input: Record<string, unknown>, ac
   return { id };
 }
 
+export async function cleanupLeagueCompetition(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Ο καθαρισμός διοργάνωσης είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε διοργάνωση για καθαρισμό.");
+
+  const current = await db.prepare(`
+    SELECT c.id, c.name,
+      COALESCE(cp.lifecycle_status, CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END) AS lifecycle_status
+    FROM league_competitions c
+    LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
+    WHERE c.id=?
+  `)
+    .bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η διοργάνωση.");
+
+  const lifecycleStatus = String(current.lifecycle_status ?? "");
+  if (lifecycleStatus !== "under_construction") {
+    throw new Error("Ο καθαρισμός επιτρέπεται μόνο για διοργάνωση σε κατάσταση Under Construction.");
+  }
+
+  const dependencyCounts = await db.prepare(`SELECT
+    COUNT(*) AS phases,
+    (
+      SELECT COUNT(*)
+      FROM league_games
+      WHERE competition_id=?
+    ) AS games,
+    (
+      SELECT COUNT(*)
+      FROM league_player_game_stats AS stats
+      INNER JOIN league_games AS games ON games.id=stats.game_id
+      WHERE games.competition_id=?
+    ) AS player_stats
+  FROM league_phases
+  WHERE competition_id=?`)
+    .bind(id, id, id).first<DbRow>();
+
+  const phasesCount = Number(dependencyCounts?.phases ?? 0);
+  const gamesCount = Number(dependencyCounts?.games ?? 0);
+  const playerStatsCount = Number(dependencyCounts?.player_stats ?? 0);
+
+  if (phasesCount > 0) {
+    throw new Error("Ο καθαρισμός δεν επιτρέπεται επειδή υπάρχουν φάσεις στη διοργάνωση.");
+  }
+  if (gamesCount > 0 || playerStatsCount > 0) {
+    throw new Error("Ο καθαρισμός δεν επιτρέπεται επειδή υπάρχουν αγώνες ή στατιστικά αγώνων στη διοργάνωση.");
+  }
+
+  const [rosterMemberships, competitionTeams, publicationRows, formatRows] = await Promise.all([
+    db.prepare("SELECT COUNT(*) AS count FROM league_roster_memberships WHERE competition_id=?").bind(id).first<DbRow>(),
+    db.prepare("SELECT COUNT(*) AS count FROM league_competition_teams WHERE competition_id=?").bind(id).first<DbRow>(),
+    db.prepare("SELECT COUNT(*) AS count FROM league_competition_publication WHERE competition_id=?").bind(id).first<DbRow>(),
+    db.prepare("SELECT COUNT(*) AS count FROM league_competition_formats WHERE competition_id=?").bind(id).first<DbRow>(),
+  ]);
+
+  const rosterMembershipsCount = Number(rosterMemberships?.count ?? 0);
+  const competitionTeamsCount = Number(competitionTeams?.count ?? 0);
+  const publicationCount = Number(publicationRows?.count ?? 0);
+  const formatCount = Number(formatRows?.count ?? 0);
+
+  await db.batch([
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`)
+      .bind(
+        createEntityId("audit"),
+        actor,
+        "cleanup",
+        "competitions",
+        id,
+        JSON.stringify({
+          competition: { id, name: current.name, lifecycle_status: current.lifecycle_status },
+          removed: {
+            roster_memberships: rosterMembershipsCount,
+            competition_teams: competitionTeamsCount,
+            publication_rows: publicationCount,
+            format_rows: formatCount,
+          },
+        }),
+        new Date().toISOString(),
+      ),
+    db.prepare("DELETE FROM league_roster_memberships WHERE competition_id=?").bind(id),
+    db.prepare("DELETE FROM league_competition_teams WHERE competition_id=?").bind(id),
+    db.prepare("DELETE FROM league_competition_publication WHERE competition_id=?").bind(id),
+    db.prepare("DELETE FROM league_competition_formats WHERE competition_id=?").bind(id),
+  ]);
+
+  return {
+    id,
+    removed: {
+      rosterMemberships: rosterMembershipsCount,
+      competitionTeams: competitionTeamsCount,
+      publicationRows: publicationCount,
+      formatRows: formatCount,
+    },
+  };
+}
+
 export async function deleteLeagueParticipation(input: Record<string, unknown>, actor: string) {
   const db = await database();
   if (!db) throw new Error("Η διαγραφή συμμετοχής είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
@@ -2424,6 +2556,51 @@ export async function deleteLeagueParticipation(input: Record<string, unknown>, 
       actor,
       "delete",
       "participations",
+      id,
+      JSON.stringify({ deleted: current }),
+    ).run();
+
+  return { id };
+}
+
+export async function deleteLeaguePhase(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή φάσης είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε φάση για διαγραφή.");
+
+  const current = await db.prepare(`
+    SELECT p.id, p.competition_id, p.name, c.name AS competition_name
+    FROM league_phases p
+    JOIN league_competitions c ON c.id=p.competition_id
+    WHERE p.id=?
+  `).bind(id).first<{ id: string; competition_id: string; name: string; competition_name: string }>();
+  if (!current) throw new Error("Δεν βρέθηκε η φάση.");
+
+  const downstream = await db.prepare(`
+    SELECT id, name
+    FROM league_phases
+    WHERE competition_id=? AND previous_phase_id=?
+    ORDER BY COALESCE(phase_order, order_index, 0), id
+    LIMIT 1
+  `).bind(String(current.competition_id), id).first<{ id: string; name: string }>();
+  if (downstream) {
+    throw new Error(`Η φάση δεν μπορεί να διαγραφεί επειδή χρησιμοποιείται από τη φάση «${String(downstream.name ?? "")}».`);
+  }
+
+  await db.prepare("DELETE FROM league_phase_rules WHERE phase_id=?").bind(id).run();
+  await db.prepare("DELETE FROM league_phases WHERE id=?").bind(id).run();
+  await normalizeCompetitionPhaseOrder(db, String(current.competition_id));
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "delete",
+      "phases",
       id,
       JSON.stringify({ deleted: current }),
     ).run();
@@ -2670,7 +2847,7 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
     ).bind(phase.competitionId, phase.slug, id).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη άλλη φάση με αυτή την ονομασία στη διοργάνωση.");
     await db.prepare(`UPDATE league_phases SET competition_id=?, name=?, slug=?,
-      phase_type=?, format=?, order_index=?, phase_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      phase_type=?, format=?, order_index=?, phase_order=?, previous_phase_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
       .bind(
         phase.competitionId,
         phase.name,
@@ -2679,6 +2856,7 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
         phase.phaseFormat,
         phase.orderIndex,
         phase.orderIndex,
+        phase.previousPhaseId,
         id,
       ).run();
     await savePhaseRules(db, id, phase);

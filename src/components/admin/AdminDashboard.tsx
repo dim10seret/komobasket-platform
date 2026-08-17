@@ -332,6 +332,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
                 setWorkspaceCompetitionId={setWorkspaceCompetitionId}
                 workspaceMode={competitionWorkspaceMode}
                 setWorkspaceMode={setCompetitionWorkspaceMode}
+                onRefreshCompetitionData={load}
               />
             )}
             {tab === "teams" && (

@@ -106,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_staff_memberships_team
 CREATE TABLE IF NOT EXISTS league_phases (
   id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
   name TEXT NOT NULL, slug TEXT NOT NULL, phase_type TEXT NOT NULL DEFAULT 'regular', format TEXT NOT NULL DEFAULT 'standings' CHECK (format IN ('standings','series','knockout','custom')), order_index INTEGER NOT NULL DEFAULT 0, phase_order INTEGER,
+  previous_phase_id TEXT REFERENCES league_phases(id) ON DELETE RESTRICT,
 
   settings_json TEXT NOT NULL DEFAULT '{}', UNIQUE(competition_id, slug)
 );

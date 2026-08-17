@@ -33,6 +33,7 @@ export function PhaseFields({
   editing,
   onExplicitSave,
   onContinueSeries,
+  onCancel,
   initialName,
   initialFormat,
   lockedFormat,
@@ -47,6 +48,7 @@ export function PhaseFields({
   editing?: boolean;
   onExplicitSave?: (event: MouseEvent<HTMLButtonElement>) => Promise<void> | void;
   onContinueSeries?: () => void;
+  onCancel?: () => void;
   initialName?: string;
   initialFormat?: string;
   lockedFormat?: boolean;
@@ -354,6 +356,7 @@ export function PhaseFields({
         )}
 
         <div className="flex flex-wrap justify-end gap-2 border-t border-zinc-200 pt-4">
+          <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => onCancel?.()}>Ακύρωση</button>
           {canGoPrevious && <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.max(1, current - 1))}>Προηγούμενο</button>}
           {showSave ? (
             <button
@@ -664,7 +667,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
           return <article key={id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div><p className="text-xs font-black uppercase tracking-wider text-orange-600">{phase.season_name} · {phase.competition_name}</p><h3 className="mt-1 text-lg font-black text-zinc-950">{phase.name}</h3><p className="mt-2 text-sm text-zinc-600">{phaseFormatLabel(phaseFormat)} · σειρά {phase.order_index ?? 0}</p></div>
-              <button type="button" onClick={()=>setEditingPhaseId(isEditing?null:id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing?"Ακύρωση":"Edit"}</button>
+              <button type="button" onClick={()=>setEditingPhaseId(isEditing?null:id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing?"Αρχικό μενού Φάσεων":"Edit"}</button>
             </div>
             {!isEditing && phaseFormat === "standings" && <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />}
             {isEditing && <form
@@ -679,6 +682,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                 competitionId={String(phase.competition_id)}
                 editing
                 onExplicitSave={handlePhaseSave}
+                onCancel={() => setEditingPhaseId(null)}
               />
             </form>}
           </article>;
