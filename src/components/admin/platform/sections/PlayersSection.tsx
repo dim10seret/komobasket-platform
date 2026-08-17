@@ -42,10 +42,21 @@ export function Players({data}:{data:Snapshot}) {
   const [searchError, setSearchError] = useState("");
   const [searchResults, setSearchResults] = useState<(SearchAthleteResult | SearchStaffResult)[]>([]);
 
-  const [addMode, setAddMode] = useState<"existing" | "new">("existing");
+  const [addMode, setAddMode] = useState<"existing" | "bulk" | "new">("existing");
   const [showAddRosterModal, setShowAddRosterModal] = useState(false);
   const [selectedRosterAthlete, setSelectedRosterAthlete] = useState<SearchAthleteResult | null>(null);
   const [selectedRosterAthleteShirtNumber, setSelectedRosterAthleteShirtNumber] = useState("");
+  const [bulkRosterSelectedAthlete, setBulkRosterSelectedAthlete] = useState<SearchAthleteResult | null>(null);
+  const [bulkRosterSelectedShirtNumber, setBulkRosterSelectedShirtNumber] = useState("");
+  const [bulkRosterEntries, setBulkRosterEntries] = useState<Array<{
+    playerId: string;
+    displayName: string;
+    birthDate: string | null;
+    shirtNumber: string;
+    photoUrl: string | null;
+  }>>([]);
+  const [bulkRosterNotice, setBulkRosterNotice] = useState("");
+  const [bulkRosterError, setBulkRosterError] = useState("");
   const [newAthleteFirstName, setNewAthleteFirstName] = useState("");
   const [newAthleteLastName, setNewAthleteLastName] = useState("");
   const [newAthleteBirthDate, setNewAthleteBirthDate] = useState("");
@@ -415,6 +426,29 @@ export function Players({data}:{data:Snapshot}) {
     setNewAthleteUploadBusy(false);
   };
 
+  const resetBulkRosterForm = () => {
+    setSearchText("");
+    setSearchResults([]);
+    setSearchError("");
+    setBulkRosterSelectedAthlete(null);
+    setBulkRosterSelectedShirtNumber("");
+    setBulkRosterEntries([]);
+    setBulkRosterNotice("");
+    setBulkRosterError("");
+    setNewAthleteFirstName("");
+    setNewAthleteLastName("");
+    setNewAthleteBirthDate("");
+    setNewAthletePhotoUrl("");
+    clearBlobPreviewUrl(newAthletePhotoPreview);
+    setNewAthletePhotoPreview("");
+    setNewAthletePhotoFileName("");
+    setNewAthleteShirtNumber("");
+    setNewAthleteDuplicateMatches([]);
+    setConfirmCreateDifferentAthlete(false);
+    setNewAthleteUploadMessage("");
+    setNewAthleteUploadBusy(false);
+  };
+
   const resetAddFormForStaff = () => {
     setSearchText("");
     setSearchResults([]);
@@ -451,6 +485,7 @@ export function Players({data}:{data:Snapshot}) {
     setShowAddRosterModal(false);
     setSearchMode("athlete");
     clearSelectedRosterAthlete();
+    resetBulkRosterForm();
     resetAddFormForAthlete();
     resetAddFormForStaff();
   };
@@ -584,6 +619,93 @@ export function Players({data}:{data:Snapshot}) {
     }, "Ο αθλητής προστέθηκε στο ρόστερ.");
     closeAddRosterModal();
   }
+
+  const bulkRosterPlayerAlreadyExists = (playerId: string) => {
+    return (selectedTeamRoster?.athletes ?? []).some((athlete) => String(athlete.player_id ?? "") === playerId);
+  };
+
+  const rosterConflictFromSearchResult = (candidate: SearchAthleteResult) => {
+    const currentSeason = String(selectedTeamRoster?.seasonName ?? "").trim();
+    const currentCompetition = String(selectedTeamRoster?.competitionName ?? "").trim();
+    if (!currentSeason || !currentCompetition) return null;
+    return candidate.career_history.find((entry) =>
+      String(entry.season_name ?? "").trim() === currentSeason &&
+      String(entry.competition_name ?? "").trim() === currentCompetition
+    ) ?? null;
+  };
+
+  const clearBulkRosterSelection = () => {
+    setBulkRosterSelectedAthlete(null);
+    setBulkRosterSelectedShirtNumber("");
+    setBulkRosterNotice("");
+    setBulkRosterError("");
+  };
+
+  const stageBulkRosterAthlete = () => {
+    if (!bulkRosterSelectedAthlete) return;
+    const playerId = String(bulkRosterSelectedAthlete.player_id ?? "");
+    if (!playerId) return;
+    if (bulkRosterEntries.some((entry) => entry.playerId === playerId)) {
+      setBulkRosterError("Ο αθλητής έχει ήδη προστεθεί στη λίστα.");
+      return;
+    }
+    if (bulkRosterPlayerAlreadyExists(playerId)) {
+      setBulkRosterError("Ο αθλητής βρίσκεται ήδη στο συγκεκριμένο ρόστερ.");
+      return;
+    }
+    setBulkRosterEntries((current) => [
+      ...current,
+      {
+        playerId,
+        displayName: athleteResultDisplayName(bulkRosterSelectedAthlete),
+        birthDate: bulkRosterSelectedAthlete.birth_date ? String(bulkRosterSelectedAthlete.birth_date) : null,
+        shirtNumber: bulkRosterSelectedShirtNumber.trim(),
+        photoUrl: bulkRosterSelectedAthlete.career_history.length >= 0 ? null : null,
+      },
+    ]);
+    clearBulkRosterSelection();
+    setSearchText("");
+    setSearchResults([]);
+    setBulkRosterNotice("");
+    setBulkRosterError("");
+  };
+
+  const removeBulkRosterEntry = (playerId: string) => {
+    setBulkRosterEntries((current) => current.filter((entry) => entry.playerId !== playerId));
+  };
+
+  const submitBulkRosterEntries = async () => {
+    if (!bulkRosterEntries.length) return;
+    setActionBusy(true);
+    setBulkRosterError("");
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "bulkAddExistingAthletes",
+          seasonId: selectedSeasonId,
+          competitionId: selectedCompetitionId,
+          teamId: selectedTeamId,
+          items: bulkRosterEntries.map((entry) => ({
+            playerId: entry.playerId,
+            shirtNumber: entry.shirtNumber || null,
+          })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Η μαζική προσθήκη απέτυχε.");
+      showActionNotice(`Προστέθηκαν ${bulkRosterEntries.length} αθλητές στο ρόστερ.`);
+      setBulkRosterEntries([]);
+      clearBulkRosterSelection();
+      closeAddRosterModal();
+      await refreshSelectedRoster();
+    } catch (error) {
+      setBulkRosterError(error instanceof Error ? error.message : "Η μαζική προσθήκη απέτυχε.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
 
   async function createAthleteWithRosterRow() {
     if (!newAthleteFirstName.trim() || !newAthleteLastName.trim()) {
@@ -951,11 +1073,30 @@ export function Players({data}:{data:Snapshot}) {
               onClick={() => {
                 setShowAddRosterModal(true);
                 setSearchMode("athlete");
+                setAddMode("existing");
+                clearSelectedRosterAthlete();
+                clearBulkRosterSelection();
+                setBulkRosterEntries([]);
               }}
               className={buttonClass}
               disabled={actionBusy}
             >
               + Προσθήκη
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowAddRosterModal(true);
+                setSearchMode("athlete");
+                setAddMode("bulk");
+                clearSelectedRosterAthlete();
+                clearBulkRosterSelection();
+                setBulkRosterEntries([]);
+              }}
+              className={buttonClass}
+              disabled={actionBusy}
+            >
+              + Μαζική Προσθήκη
             </button>
           </div>
         </Panel>
@@ -1160,7 +1301,7 @@ export function Players({data}:{data:Snapshot}) {
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
             <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-4 sm:p-6">
               <div className="mb-5 flex items-center justify-between">
-                <h3 className="text-lg font-black text-zinc-950">Προσθήκη στο ρόστερ</h3>
+                <h3 className="text-lg font-black text-zinc-950">{addMode === "bulk" ? "Μαζική Προσθήκη στο Ρόστερ" : "Προσθήκη στο ρόστερ"}</h3>
                 <button type="button" onClick={() => void closeAddRosterModal()} className="rounded-xl border border-zinc-300 px-3 py-2">Κλείσιμο</button>
               </div>
               <div className="mb-5 flex flex-wrap gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-1">
@@ -1180,10 +1321,12 @@ export function Players({data}:{data:Snapshot}) {
                 </button>
               </div>
 
-              <div className="mb-5 flex flex-wrap gap-2">
-                <button type="button" onClick={() => setAddMode("existing")} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "existing" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Υπάρχον</button>
-                <button type="button" onClick={() => setAddMode("new")} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "new" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Νέο</button>
-              </div>
+              {addMode !== "bulk" && (
+                <div className="mb-5 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => { setAddMode("existing"); clearBulkRosterSelection(); setBulkRosterEntries([]); }} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "existing" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Υπάρχον</button>
+                  <button type="button" onClick={() => { setAddMode("new"); clearBulkRosterSelection(); setBulkRosterEntries([]); }} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "new" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Νέο</button>
+                </div>
+              )}
 
               {searchMode === "athlete" && addMode === "existing" && !selectedRosterAthlete && (
                 <div className="grid gap-3">
@@ -1281,6 +1424,169 @@ export function Players({data}:{data:Snapshot}) {
                     disabled={actionBusy}
                   >
                     Συνέχεια
+                  </button>
+                </div>
+              )}
+
+              {searchMode === "athlete" && addMode === "bulk" && !bulkRosterSelectedAthlete && (
+                <div className="grid gap-3">
+                  <Field label="Αναζήτηση αθλητή">
+                    <div className="flex gap-2">
+                      <input value={searchText} onChange={(event)=>setSearchText(event.target.value)} className={`${inputClass} flex-1`} />
+                      <button type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</button>
+                    </div>
+                  </Field>
+                  {searchError && <p className="text-sm font-bold text-red-600">{searchError}</p>}
+                  <div className="mt-2 grid gap-3">
+                    {searchResults.map((candidate) => (
+                      <article key={(candidate as SearchAthleteResult).player_id} className="rounded-xl border border-zinc-200 p-3">
+                        <p className="font-black">{athleteResultDisplayName(candidate as SearchAthleteResult)}</p>
+                        <p className="mt-1 text-sm text-zinc-600">
+                          {formatAthleteDob((candidate as SearchAthleteResult).birth_date)}
+                        </p>
+                        <div className="mt-3">
+                          <p className="text-xs font-black uppercase tracking-wide text-zinc-500">Ιστορικό συμμετοχών</p>
+                          <ul className="mt-2 space-y-1 text-sm text-zinc-700">
+                            {(candidate as SearchAthleteResult).career_history.map((entry) => (
+                              <li key={`${(candidate as SearchAthleteResult).player_id}-${entry.season_name}-${entry.team_name}`}>
+                                Σεζόν {entry.season_name} — {entry.team_name}
+                              </li>
+                            ))}
+                            {!((candidate as SearchAthleteResult).career_history.length) && (
+                              <li className="text-zinc-500">Δεν υπάρχουν διαθέσιμα ιστορικά συμμετοχών.</li>
+                            )}
+                          </ul>
+                        </div>
+                        {(() => {
+                          const conflict = rosterConflictFromSearchResult(candidate as SearchAthleteResult);
+                          if (!conflict) return null;
+                          const conflictTeamName = String(conflict.team_name ?? "").trim();
+                          const currentTeamName = String(selectedTeamRoster?.teamName ?? "").trim();
+                          return (
+                            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-900">
+                              {conflictTeamName === currentTeamName
+                                ? "Ο αθλητής βρίσκεται ήδη στο ρόστερ αυτής της ομάδας."
+                                : `Ο αθλητής ανήκει ήδη στην ομάδα «${conflictTeamName || "—"}» στη συγκεκριμένη διοργάνωση.`}
+                            </p>
+                          );
+                        })()}
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            className={buttonClass}
+                            onClick={() => {
+                              const conflict = rosterConflictFromSearchResult(candidate as SearchAthleteResult);
+                              if (conflict) {
+                                setBulkRosterError(String(conflict.team_name ?? "").trim() === String(selectedTeamRoster?.teamName ?? "").trim()
+                                  ? "Ο αθλητής βρίσκεται ήδη στο ρόστερ αυτής της ομάδας."
+                                  : `Ο αθλητής ανήκει ήδη στην ομάδα «${String(conflict.team_name ?? "").trim() || "—"}» στη συγκεκριμένη διοργάνωση.`);
+                                return;
+                              }
+                              setBulkRosterSelectedAthlete(candidate as SearchAthleteResult);
+                              setBulkRosterSelectedShirtNumber("");
+                              setBulkRosterNotice("");
+                              setBulkRosterError("");
+                            }}
+                            disabled={actionBusy}
+                          >
+                            Χρήση υπάρχοντος αθλητή
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                    {!searchResults.length && !isSearching && <p className="text-sm text-zinc-500">Δεν βρέθηκαν αποτελέσματα.</p>}
+                  </div>
+                </div>
+              )}
+
+              {searchMode === "athlete" && addMode === "bulk" && bulkRosterSelectedAthlete && (
+                <div className="grid gap-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wide text-zinc-500">Επιλεγμένος αθλητής</p>
+                      <p className="mt-1 text-lg font-black text-zinc-950">{athleteResultDisplayName(bulkRosterSelectedAthlete)}</p>
+                      <p className="mt-1 text-sm text-zinc-600">{formatAthleteDob(bulkRosterSelectedAthlete.birth_date)}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
+                      onClick={clearBulkRosterSelection}
+                      disabled={actionBusy}
+                    >
+                      Αλλαγή αθλητή
+                    </button>
+                  </div>
+                  <Field label="No. Φανέλας (προαιρετικό)">
+                    <input
+                      value={bulkRosterSelectedShirtNumber}
+                      onChange={(event)=>setBulkRosterSelectedShirtNumber(event.target.value)}
+                      className={inputClass}
+                    />
+                  </Field>
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={stageBulkRosterAthlete}
+                    disabled={actionBusy}
+                  >
+                    Προσθήκη στη λίστα
+                  </button>
+                </div>
+              )}
+
+              {searchMode === "athlete" && addMode === "bulk" && (
+                <div className="grid gap-4">
+                  {bulkRosterError ? <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{bulkRosterError}</p> : null}
+                  {bulkRosterNotice ? <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-700">{bulkRosterNotice}</p> : null}
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-black">Προς προσθήκη</p>
+                      <span className="text-sm text-zinc-500">{bulkRosterEntries.length} αθλητές</span>
+                    </div>
+                    {bulkRosterEntries.length ? (
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full min-w-[640px] text-left text-sm">
+                          <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500">
+                            <tr>
+                              <th className="px-3 py-2">Α/Α</th>
+                              <th className="px-3 py-2">Αθλητής</th>
+                              <th className="px-3 py-2">Ημ. Γέννησης</th>
+                              <th className="px-3 py-2">No. Φανέλας</th>
+                              <th className="px-3 py-2">Ενέργεια</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {bulkRosterEntries.map((entry, index) => (
+                              <tr key={entry.playerId} className="border-b border-zinc-100 last:border-0">
+                                <td className="px-3 py-2 font-black">{index + 1}</td>
+                                <td className="px-3 py-2">{entry.displayName}</td>
+                                <td className="px-3 py-2">{formatRegistryBirthDate(entry.birthDate)}</td>
+                                <td className="px-3 py-2">{entry.shirtNumber || "—"}</td>
+                                <td className="px-3 py-2">
+                                  <button
+                                    type="button"
+                                    className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-black text-zinc-800 transition hover:bg-zinc-100"
+                                    onClick={() => removeBulkRosterEntry(entry.playerId)}
+                                  >
+                                    Αφαίρεση
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-sm text-zinc-500">Δεν έχουν προστεθεί αθλητές στη λίστα.</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => void submitBulkRosterEntries()}
+                    disabled={actionBusy || !bulkRosterEntries.length}
+                  >
+                    Προσθήκη στο Ρόστερ ({bulkRosterEntries.length})
                   </button>
                 </div>
               )}
@@ -1623,5 +1929,6 @@ export function Players({data}:{data:Snapshot}) {
     {teamRosterLoading && isSelectionComplete && <div className="rounded-2xl border border-zinc-200 bg-white p-6 text-center text-zinc-500">Φόρτωση ρόστερ…</div>}
   </>;
 }
+
 
 

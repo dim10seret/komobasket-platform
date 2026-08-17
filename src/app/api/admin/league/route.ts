@@ -5,9 +5,11 @@ import {
   searchStaffForRosterFoundation,
   createAthleteWithRoster,
   addExistingAthleteToRoster,
+  bulkAddExistingAthletesToRoster,
   updateAthleteCanonical,
   updateRosterShirtNumber,
   removeAthleteFromRoster,
+  transferAthleteBetweenTeams,
   createStaffWithRoster,
   addExistingStaffToRoster,
   updateStaffCanonical,
@@ -86,6 +88,29 @@ export async function PATCH(request: Request) {
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
         shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+      }));
+    }
+    if (action === "transferAthlete") {
+      return Response.json(await transferAthleteBetweenTeams({
+        playerId: String(input.playerId ?? ""),
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        fromTeamId: String(input.fromTeamId ?? ""),
+        toTeamId: String(input.toTeamId ?? ""),
+        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+        effectiveOn: input.effectiveOn ? String(input.effectiveOn) : null,
+        note: input.note ? String(input.note) : null,
+      }));
+    }
+    if (action === "bulkAddExistingAthletes") {
+      return Response.json(await bulkAddExistingAthletesToRoster({
+        seasonId: String(input.seasonId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+        items: Array.isArray(input.items) ? input.items.map((item) => ({
+          playerId: String((item as Record<string, unknown>).playerId ?? ""),
+          shirtNumber: (item as Record<string, unknown>).shirtNumber ? Number((item as Record<string, unknown>).shirtNumber) : null,
+        })) : [],
       }));
     }
     if (action === "updateAthleteCanonical") {

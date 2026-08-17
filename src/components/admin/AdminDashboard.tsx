@@ -250,9 +250,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     }
   };
 
-  const depart = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = event.currentTarget;
+  const depart = async (payload: Record<string, unknown>) => {
     setBusy(true);
     setError("");
     setNotice("");
@@ -260,15 +258,39 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch("/api/admin/league", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "departure", ...Object.fromEntries(new FormData(form).entries()) }),
+        body: JSON.stringify({ action: "departure", ...payload }),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Η αποχώρηση απέτυχε.");
+      const responsePayload = await response.json();
+      if (!response.ok) throw new Error(responsePayload.error || "Η αποχώρηση απέτυχε.");
       setNotice("Η αποχώρηση καταγράφηκε χωρίς να διαγραφεί το ιστορικό του παίκτη.");
-      form.reset();
       await load();
+      return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Η αποχώρηση απέτυχε.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const transfer = async (payload: Record<string, unknown>) => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "transferAthlete", ...payload }),
+      });
+      const payloadResponse = await response.json();
+      if (!response.ok) throw new Error(payloadResponse.error || "Η μεταγραφή απέτυχε.");
+      setNotice("Η μεταγραφή ολοκληρώθηκε.");
+      await load();
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Η μεταγραφή απέτυχε.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -350,7 +372,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
               />
             )}
             {tab === "players" && <Players data={data} />}
-            {tab === "movements" && <Movements data={data} depart={depart} busy={busy} />}
+            {tab === "movements" && <Movements data={data} depart={depart} transfer={transfer} busy={busy} />}
           </>
         )}
       </main>
