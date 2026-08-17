@@ -20,6 +20,7 @@ import {
   staffRoleLabels,
   clearBlobPreviewUrl,
 } from "../shared/admin-core";
+import { normalizePlayerName } from "@/lib/player-matching";
 
 
 export function Players({data}:{data:Snapshot}) {
@@ -43,6 +44,8 @@ export function Players({data}:{data:Snapshot}) {
 
   const [addMode, setAddMode] = useState<"existing" | "new">("existing");
   const [showAddRosterModal, setShowAddRosterModal] = useState(false);
+  const [selectedRosterAthlete, setSelectedRosterAthlete] = useState<SearchAthleteResult | null>(null);
+  const [selectedRosterAthleteShirtNumber, setSelectedRosterAthleteShirtNumber] = useState("");
   const [newAthleteFirstName, setNewAthleteFirstName] = useState("");
   const [newAthleteLastName, setNewAthleteLastName] = useState("");
   const [newAthleteBirthDate, setNewAthleteBirthDate] = useState("");
@@ -50,6 +53,8 @@ export function Players({data}:{data:Snapshot}) {
   const [newAthletePhotoPreview, setNewAthletePhotoPreview] = useState("");
   const [newAthletePhotoFileName, setNewAthletePhotoFileName] = useState("");
   const [newAthleteShirtNumber, setNewAthleteShirtNumber] = useState("");
+  const [newAthleteDuplicateMatches, setNewAthleteDuplicateMatches] = useState<Row[]>([]);
+  const [confirmCreateDifferentAthlete, setConfirmCreateDifferentAthlete] = useState(false);
   const [newAthleteUploadMessage, setNewAthleteUploadMessage] = useState("");
   const [newAthleteUploadBusy, setNewAthleteUploadBusy] = useState(false);
   const [newStaffFirstName, setNewStaffFirstName] = useState("");
@@ -404,6 +409,8 @@ export function Players({data}:{data:Snapshot}) {
     setNewAthletePhotoPreview("");
     setNewAthletePhotoFileName("");
     setNewAthleteShirtNumber("");
+    setNewAthleteDuplicateMatches([]);
+    setConfirmCreateDifferentAthlete(false);
     setNewAthleteUploadMessage("");
     setNewAthleteUploadBusy(false);
   };
@@ -426,9 +433,24 @@ export function Players({data}:{data:Snapshot}) {
     setNewStaffUploadBusy(false);
   };
 
+  const clearSelectedRosterAthlete = () => {
+    setSelectedRosterAthlete(null);
+    setSelectedRosterAthleteShirtNumber("");
+  };
+
+  const findDuplicateRegistryPlayers = (firstName: string, lastName: string) => {
+    const normalizedTarget = normalizePlayerName(`${firstName} ${lastName}`.trim());
+    return registryPlayers.filter((player) => {
+      const canonical = `${String(player.first_name ?? "").trim()} ${String(player.last_name ?? "").trim()}`.trim();
+      if (!canonical) return false;
+      return normalizePlayerName(canonical) === normalizedTarget;
+    });
+  };
+
   const closeAddRosterModal = () => {
     setShowAddRosterModal(false);
     setSearchMode("athlete");
+    clearSelectedRosterAthlete();
     resetAddFormForAthlete();
     resetAddFormForStaff();
   };
@@ -566,6 +588,12 @@ export function Players({data}:{data:Snapshot}) {
   async function createAthleteWithRosterRow() {
     if (!newAthleteFirstName.trim() || !newAthleteLastName.trim()) {
       setSearchError("Απαιτείται όνομα και επώνυμο.");
+      return;
+    }
+    const duplicates = findDuplicateRegistryPlayers(newAthleteFirstName, newAthleteLastName);
+    if (duplicates.length > 0 && !confirmCreateDifferentAthlete) {
+      setNewAthleteDuplicateMatches(duplicates);
+      setNewAthleteUploadMessage("");
       return;
     }
     await runRosterPatch("createAthleteWithRoster", {
@@ -1157,16 +1185,13 @@ export function Players({data}:{data:Snapshot}) {
                 <button type="button" onClick={() => setAddMode("new")} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "new" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Νέο</button>
               </div>
 
-              {searchMode === "athlete" && addMode === "existing" && (
+              {searchMode === "athlete" && addMode === "existing" && !selectedRosterAthlete && (
                 <div className="grid gap-3">
                   <Field label="Αναζήτηση αθλητή">
                     <div className="flex gap-2">
                       <input value={searchText} onChange={(event)=>setSearchText(event.target.value)} className={`${inputClass} flex-1`} />
                       <button type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</button>
                     </div>
-                  </Field>
-                  <Field label="Αριθμός Φανέλας (προαιρετικό)">
-                    <input value={newAthleteShirtNumber} onChange={(event)=>setNewAthleteShirtNumber(event.target.value)} className={inputClass} />
                   </Field>
                   {searchError && <p className="text-sm font-bold text-red-600">{searchError}</p>}
                   <div className="mt-2 grid gap-3">
@@ -1193,7 +1218,10 @@ export function Players({data}:{data:Snapshot}) {
                           <button
                             type="button"
                             className={buttonClass}
-                            onClick={() => void addExistingAthleteRow((candidate as SearchAthleteResult).player_id, newAthleteShirtNumber)}
+                            onClick={() => {
+                              setSelectedRosterAthlete(candidate as SearchAthleteResult);
+                              setSelectedRosterAthleteShirtNumber("");
+                            }}
                             disabled={actionBusy}
                           >
                             Χρήση υπάρχοντος αθλητή
@@ -1222,6 +1250,41 @@ export function Players({data}:{data:Snapshot}) {
                 </div>
               )}
 
+              {searchMode === "athlete" && addMode === "existing" && selectedRosterAthlete && (
+                <div className="grid gap-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wide text-zinc-500">Επιλεγμένος αθλητής</p>
+                      <p className="mt-1 text-lg font-black text-zinc-950">{athleteResultDisplayName(selectedRosterAthlete)}</p>
+                      <p className="mt-1 text-sm text-zinc-600">{formatAthleteDob(selectedRosterAthlete.birth_date)}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
+                      onClick={clearSelectedRosterAthlete}
+                      disabled={actionBusy}
+                    >
+                      Αλλαγή αθλητή
+                    </button>
+                  </div>
+                  <Field label="No. Φανέλας (προαιρετικό)">
+                    <input
+                      value={selectedRosterAthleteShirtNumber}
+                      onChange={(event)=>setSelectedRosterAthleteShirtNumber(event.target.value)}
+                      className={inputClass}
+                    />
+                  </Field>
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => void addExistingAthleteRow(selectedRosterAthlete.player_id, selectedRosterAthleteShirtNumber)}
+                    disabled={actionBusy}
+                  >
+                    Συνέχεια
+                  </button>
+                </div>
+              )}
+
               {searchMode === "athlete" && addMode === "new" && (
                 <div className="grid gap-4">
                   <Field label="Όνομα">
@@ -1236,6 +1299,65 @@ export function Players({data}:{data:Snapshot}) {
                   <Field label="Αριθμός Φανέλας (προαιρετικό)">
                     <input value={newAthleteShirtNumber} onChange={(event)=>setNewAthleteShirtNumber(event.target.value)} className={inputClass} />
                   </Field>
+                  {newAthleteDuplicateMatches.length > 0 && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                      <p className="font-black text-amber-900">Βρέθηκε ήδη αθλητής με το ίδιο ονοματεπώνυμο</p>
+                      <div className="mt-3 grid gap-3">
+                        {newAthleteDuplicateMatches.map((match) => (
+                          <article key={String(match.player_id ?? match.id ?? "")} className="rounded-xl border border-amber-200 bg-white p-3">
+                            <p className="font-black text-zinc-950">
+                              {String(match.first_name ?? match.display_name ?? "—")} {String(match.last_name ?? "").trim()}
+                            </p>
+                            <p className="mt-1 text-sm text-zinc-600">
+                              {formatRegistryBirthDate(match.birth_date)} · {String(match.photo_url ?? "") ? "📷" : "—"}
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className={buttonClass}
+                                onClick={() => {
+                                  const playerId = String(match.player_id ?? match.id ?? "");
+                                  if (!playerId) return;
+                                  setSearchMode("athlete");
+                                  setAddMode("existing");
+                                  setSearchText("");
+                                  setSearchResults([]);
+                                  clearSelectedRosterAthlete();
+                                  setSelectedRosterAthlete({
+                                    player_id: playerId,
+                                    first_name: String(match.first_name ?? "") || null,
+                                    last_name: String(match.last_name ?? "") || null,
+                                    display_name: String(match.display_name ?? ""),
+                                    birth_date: String(match.birth_date ?? "") || null,
+                                    last_team_name: null,
+                                    last_season_name: null,
+                                    career_history: [],
+                                  });
+                                  setConfirmCreateDifferentAthlete(false);
+                                }}
+                                disabled={actionBusy}
+                              >
+                                Χρήση υπάρχοντος αθλητή
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black text-zinc-800 transition hover:bg-zinc-100"
+                                onClick={() => setConfirmCreateDifferentAthlete(true)}
+                                disabled={actionBusy}
+                              >
+                                Δημιουργία διαφορετικού αθλητή
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {confirmCreateDifferentAthlete && newAthleteDuplicateMatches.length > 0 && (
+                    <p className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-bold text-zinc-700">
+                      Επιβεβαιώθηκε διαφορετικός αθλητής με το ίδιο ονοματεπώνυμο. Η δημιουργία θα συνεχιστεί με νέο μοναδικό σύντομο όνομα.
+                    </p>
+                  )}
                   <Field label="Φωτογραφία">
                     <div className="mt-1 flex items-center gap-3">
                       <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
@@ -1265,7 +1387,7 @@ export function Players({data}:{data:Snapshot}) {
                     onClick={() => void createAthleteWithRosterRow()}
                     disabled={actionBusy}
                   >
-                    Δημιουργία νέου αθλητή
+                    {confirmCreateDifferentAthlete && newAthleteDuplicateMatches.length > 0 ? "Δημιουργία διαφορετικού αθλητή" : "Δημιουργία νέου αθλητή"}
                   </button>
                 </div>
               )}

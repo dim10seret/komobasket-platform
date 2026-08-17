@@ -1695,11 +1695,26 @@ export async function createAthleteCanonical(input: {
   const id = createEntityId("player");
   const birthDate = input.birthDate ? String(input.birthDate) : null;
   const photoUrl = input.photoUrl ? String(input.photoUrl) : null;
+  const baseSlug = slugify(displayName);
+  const existingSlugs = await rows<{ slug: string }>(
+    db,
+    `SELECT slug FROM league_players WHERE slug = ? OR slug LIKE ?`,
+    [baseSlug, `${baseSlug}-%`],
+  );
+  const occupied = new Set(existingSlugs.map((row) => String(row.slug ?? "").trim()).filter(Boolean));
+  let slug = baseSlug;
+  if (occupied.has(slug)) {
+    let suffix = 2;
+    while (occupied.has(`${baseSlug}-${suffix}`)) {
+      suffix += 1;
+    }
+    slug = `${baseSlug}-${suffix}`;
+  }
 
   await db.prepare(`INSERT INTO league_players
     (id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active, slug)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`)
-    .bind(id, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, slugify(displayName))
+    .bind(id, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, slug)
     .run();
 
   return { playerId: id };
