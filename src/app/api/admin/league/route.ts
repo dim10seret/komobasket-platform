@@ -16,6 +16,7 @@ import {
   updateStaffMembership,
   removeStaffFromRoster,
   copyPreviousRosterForTeam,
+  bulkScheduleGames,
   getLeagueAdminSnapshot,
   getTeamRosterManagementView,
 } from "@/services/league-admin.service";
@@ -178,6 +179,18 @@ export async function PATCH(request: Request) {
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
       }));
+    }
+    if (action === "bulkScheduleGames") {
+      return Response.json(await bulkScheduleGames({
+        competitionId: String(input.competitionId ?? ""),
+        gameIds: Array.isArray(input.gameIds) ? input.gameIds : [],
+        scheduledDateMode: String(input.scheduledDateMode ?? input.scheduled_date_mode ?? "keep"),
+        scheduledDate: input.scheduledDate ?? input.scheduled_date ?? null,
+        scheduledTimeMode: String(input.scheduledTimeMode ?? input.scheduled_time_mode ?? "keep"),
+        scheduledTime: input.scheduledTime ?? input.scheduled_time ?? null,
+        venueMode: String(input.venueMode ?? input.venue_mode ?? "keep"),
+        venueId: input.venueId ?? input.venue_id ?? null,
+      }, authorization.identity.email));
     }
     if (action === "departPlayerLegacy") {
       return Response.json(await departPlayer(input, authorization.identity.email));

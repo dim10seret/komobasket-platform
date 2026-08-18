@@ -296,6 +296,29 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     }
   };
 
+  const bulkScheduleGames = async (payload: Record<string, unknown>) => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "bulkScheduleGames", ...payload }),
+      });
+      const responsePayload = await response.json();
+      if (!response.ok) throw new Error(responsePayload.error || "Η ενημέρωση προγράμματος απέτυχε.");
+      setNotice("Οι αγώνες ενημερώθηκαν επιτυχώς.");
+      await load();
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Η ενημέρωση προγράμματος απέτυχε.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!data || !competitionWorkspaceId) return;
     if (data.competitions.some((competition) => String(competition.id) === competitionWorkspaceId)) return;
@@ -349,6 +372,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
                 submit={submit}
                 updateEntity={updateEntity}
                 deleteEntity={deleteEntity}
+                bulkScheduleGames={bulkScheduleGames}
                 busy={busy}
                 workspaceCompetitionId={competitionWorkspaceId}
                 setWorkspaceCompetitionId={setWorkspaceCompetitionId}

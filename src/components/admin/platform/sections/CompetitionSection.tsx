@@ -118,6 +118,7 @@ export function CompetitionWorkspaceManager({
   submit,
   updateEntity,
   deleteEntity,
+  bulkScheduleGames,
   busy,
   workspaceCompetitionId,
   setWorkspaceCompetitionId,
@@ -129,6 +130,7 @@ export function CompetitionWorkspaceManager({
   submit: (r:string, e:FormEvent<HTMLFormElement>) => Promise<boolean>;
   updateEntity: UpdateEntity;
   deleteEntity: DeleteEntity;
+  bulkScheduleGames: (payload: Record<string, unknown>) => Promise<boolean>;
   busy: boolean;
   workspaceCompetitionId: string;
   setWorkspaceCompetitionId: (value: string) => void;
@@ -1091,6 +1093,7 @@ export function CompetitionWorkspaceManager({
               submit={submit}
               updateEntity={updateEntity}
               deleteEntity={deleteEntity}
+              bulkScheduleGames={bulkScheduleGames}
               busy={busy}
             />
           )}

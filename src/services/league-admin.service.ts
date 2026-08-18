@@ -483,6 +483,14 @@ function competitionVenueInput(input: Record<string, unknown>, current?: DbRow) 
   };
 }
 
+type SchedulingMode = "keep" | "set" | "clear";
+
+function schedulingModeValue(input: unknown, label: string): SchedulingMode {
+  const mode = String(input ?? "keep").trim().toLowerCase();
+  if (mode === "keep" || mode === "set" || mode === "clear") return mode;
+  throw new Error(`${label} έχει μη έγκυρη κατάσταση.`);
+}
+
 function phaseFormatValue(input: Record<string, unknown>, fallback = "standings") {
   const raw = String(input.format ?? input.phaseKind ?? input.phaseType ?? fallback);
   const normalized = String(raw).trim().toLowerCase();
@@ -2992,6 +3000,102 @@ export async function deleteLeagueCompetitionVenue(input: Record<string, unknown
     ).run();
 
   return { id };
+}
+
+export async function bulkScheduleGames(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η επεξεργασία προγραμματισμού είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const competitionId = String(input.competitionId ?? "").trim();
+  if (!competitionId) throw new Error("Δεν επιλέχθηκε διοργάνωση.");
+
+  const rawGameIds = Array.isArray(input.gameIds) ? input.gameIds : [];
+  const gameIds = rawGameIds.map((value) => String(value ?? "").trim()).filter(Boolean);
+  if (!gameIds.length) throw new Error("Δεν επιλέχθηκαν αγώνες.");
+  if (new Set(gameIds).size !== gameIds.length) throw new Error("Η επιλογή αγώνων περιέχει διπλότυπα.");
+
+  const dateMode = schedulingModeValue(input.scheduledDateMode ?? input.scheduled_date_mode, "Ημερομηνία");
+  const timeMode = schedulingModeValue(input.scheduledTimeMode ?? input.scheduled_time_mode, "Ώρα");
+  const venueMode = schedulingModeValue(input.venueMode ?? input.venue_mode, "Γήπεδο");
+
+  const placeholders = gameIds.map(() => "?").join(", ");
+  const games = await db.prepare(`SELECT * FROM league_games WHERE id IN (${placeholders})`).bind(...gameIds).all<DbRow>();
+  const gameRows = games.results ?? [];
+  if (gameRows.length !== gameIds.length) throw new Error("Ένας ή περισσότεροι αγώνες δεν βρέθηκαν.");
+  const gameMap = new Map(gameRows.map((game) => [String(game.id ?? ""), game]));
+  for (const gameId of gameIds) {
+    const game = gameMap.get(gameId);
+    if (!game) throw new Error("Ένας ή περισσότεροι αγώνες δεν βρέθηκαν.");
+    if (String(game.competition_id ?? "") !== competitionId) {
+      throw new Error("Ένας ή περισσότεροι αγώνες ανήκουν σε άλλη διοργάνωση.");
+    }
+  }
+
+  const dateValue = dateMode === "set"
+    ? validateIsoDate(input.scheduledDate ?? input.scheduled_date ?? null, "Ημερομηνία αγώνα")
+    : null;
+  const timeValue = timeMode === "set"
+    ? validateHmTime(input.scheduledTime ?? input.scheduled_time ?? null, "Ώρα αγώνα")
+    : null;
+
+  let venueName = "";
+  if (venueMode === "set") {
+    const venueId = String(input.venueId ?? input.venue_id ?? "").trim();
+    if (!venueId) throw new Error("Δεν επιλέχθηκε γήπεδο.");
+    const venue = await db.prepare(
+      "SELECT id, name FROM league_competition_venues WHERE id=? AND competition_id=?",
+    ).bind(venueId, competitionId).first<DbRow>();
+    if (!venue) throw new Error("Το επιλεγμένο γήπεδο δεν ανήκει στη συγκεκριμένη διοργάνωση.");
+    venueName = String(venue.name ?? "").trim();
+    if (!venueName) throw new Error("Το επιλεγμένο γήπεδο δεν είναι έγκυρο.");
+  }
+
+  const updates = gameIds.map((gameId) => {
+    const current = gameMap.get(gameId);
+    if (!current) throw new Error("Ένας ή περισσότεροι αγώνες δεν βρέθηκαν.");
+    const currentDate = trimmedTextOrNull(current.scheduled_date);
+    const currentTime = trimmedTextOrNull(current.scheduled_time);
+    const currentVenue = String(current.venue ?? "").trim();
+
+    const nextDate = dateMode === "keep" ? currentDate : dateMode === "clear" ? null : dateValue;
+    const nextTime = timeMode === "keep" ? currentTime : timeMode === "clear" ? null : timeValue;
+    const nextVenue = venueMode === "keep" ? currentVenue : venueMode === "clear" ? "" : venueName;
+
+    if (!nextDate && nextTime) {
+      throw new Error("Η ώρα αγώνα δεν μπορεί να οριστεί χωρίς ημερομηνία.");
+    }
+
+    return { id: gameId, scheduledDate: nextDate, scheduledTime: nextTime, venue: nextVenue };
+  });
+
+  await db.batch(updates.map((update) => db.prepare(`UPDATE league_games SET
+    scheduled_date=?, scheduled_time=?, venue=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).bind(update.scheduledDate, update.scheduledTime, update.venue, update.id)));
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "update",
+      "games",
+      gameIds.join(","),
+      JSON.stringify({
+        competitionId,
+        gameIds,
+        scheduling: {
+          scheduledDateMode: dateMode,
+          scheduledTimeMode: timeMode,
+          venueMode,
+          scheduledDate: dateValue,
+          scheduledTime: timeValue,
+          venueName: venueMode === "set" ? venueName : null,
+        },
+      }),
+    ).run();
+
+  return { updatedCount: gameIds.length, gameIds };
 }
 
 export async function generateRoundRobinGamesForSchedule(input: Record<string, unknown>, actor: string) {
