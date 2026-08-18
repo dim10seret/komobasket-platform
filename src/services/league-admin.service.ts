@@ -131,6 +131,8 @@ const PHASE_MATCHUP_SLOT_SOURCE_TYPES = new Set([
   "manual",
 ]);
 
+const SCHEDULE_LIFECYCLE_STATUSES = new Set(["draft", "published"]);
+
 type LegacyKnockoutPhase = {
   id: string;
   name: string;
@@ -244,6 +246,11 @@ function withLimit(limit: unknown, fallback = 25) {
   const parsed = Number(limit);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) return fallback;
   return Math.min(parsed, 100);
+}
+
+function createResourceEntityId(resource: string) {
+  if (resource === "phase-schedules") return createEntityId("phase_schedule");
+  return createEntityId(resource.replace(/s$/, ""));
 }
 
 function normalizeLookupOrder(left: SeasonSortInfo, right: SeasonSortInfo) {
@@ -1117,7 +1124,7 @@ export async function getLeagueAdminSnapshot() {
     };
   }
 
-  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, games] = await Promise.all([
+  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, games] = await Promise.all([
     rows(db, "SELECT * FROM league_seasons ORDER BY name DESC"),
     rows(db, `SELECT c.*, s.name AS season_name,
       COALESCE(cp.lifecycle_status,
@@ -1157,6 +1164,18 @@ export async function getLeagueAdminSnapshot() {
       LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
       LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
       ORDER BY s.name DESC, c.name, COALESCE(p.phase_order, p.order_index), p.id`),
+    rows(db, `SELECT ps.*, p.name AS phase_name, p.format AS phase_format,
+      p.phase_type, COALESCE(p.phase_order, p.order_index) AS phase_order,
+      pr.phase_kind, pr.bracket_size, pr.best_of, pr.wins_required,
+      pr.carry_over_enabled, pr.carry_over_source_phase_id,
+      source_phase.name AS carry_over_source_name,
+      c.name AS competition_name
+      FROM league_phase_schedules ps
+      JOIN league_phases p ON p.id=ps.phase_id
+      JOIN league_competitions c ON c.id=ps.competition_id
+      LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+      LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
+      ORDER BY c.name, COALESCE(p.phase_order, p.order_index), p.id`),
     rows(db, `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name FROM league_games g JOIN league_teams ht ON ht.id=g.home_team_id JOIN league_teams at ON at.id=g.away_team_id LEFT JOIN league_phases p ON p.id=g.phase_id ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`),
   ]);
   const phases = rawPhases.map((phase) => ({
@@ -1166,7 +1185,7 @@ export async function getLeagueAdminSnapshot() {
 
   return {
     mode: "database" as const, seasons, competitions, teams, participations, players, rosters,
-    movements, phases, games,
+    movements, phases, phaseSchedules, games,
     counts: {
       seasons: seasons.length, competitions: competitions.length,
       teams: teams.length, players: players.length,
@@ -2140,7 +2159,7 @@ export async function removeStaffFromRoster(input: { membershipId: string }) {
 export async function createLeagueEntity(resource: string, input: Record<string, unknown>, actor: string) {
   const db = await database();
   if (!db) throw new Error("Η αποθήκευση διοργανώσεων είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
-  let id = createEntityId(resource.replace(/s$/, ""));
+  let id = createResourceEntityId(resource);
   const now = new Date().toISOString();
   await auditAndConvertLegacyKnockoutFormats(db);
 
@@ -2400,6 +2419,26 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       ).run();
     await savePhaseRules(db, id, phase);
     await normalizeCompetitionPhaseOrder(db, phase.competitionId);
+  } else if (resource === "phase-schedules") {
+    const competitionId = String(input.competitionId ?? "").trim();
+    const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+    if (!competitionId || !phaseId) {
+      throw new Error("Η φάση και η διοργάνωση είναι υποχρεωτικές.");
+    }
+    const phaseExists = await db.prepare(`
+      SELECT p.id
+      FROM league_phases p
+      WHERE p.id=? AND p.competition_id=?
+    `).bind(phaseId, competitionId).first<{ id: string }>();
+    if (!phaseExists) throw new Error("Δεν βρέθηκε η επιλεγμένη φάση.");
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_phase_schedules WHERE phase_id=?",
+    ).bind(phaseId).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη πρόγραμμα για αυτή τη φάση.");
+    await db.prepare(`INSERT INTO league_phase_schedules
+      (id, competition_id, phase_id, lifecycle_status)
+      VALUES (?,?,?,'draft')`)
+      .bind(id, competitionId, phaseId).run();
   } else if (resource === "games") {
     await db.prepare(`INSERT INTO league_games (id,competition_id,phase_id,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(id, input.competitionId, input.phaseId || null, input.roundLabel || "", input.scheduledAt || null, input.venue || "", input.homeTeamId, input.awayTeamId, input.homeScore ?? null, input.awayScore ?? null, input.status || "scheduled").run();
@@ -2736,6 +2775,16 @@ export async function deleteLeaguePhase(input: Record<string, unknown>, actor: s
     throw new Error(`Η φάση δεν μπορεί να διαγραφεί επειδή χρησιμοποιείται από τη φάση «${String(downstream.name ?? "")}».`);
   }
 
+  const schedule = await db.prepare(`
+    SELECT id, lifecycle_status
+    FROM league_phase_schedules
+    WHERE phase_id=?
+    LIMIT 1
+  `).bind(id).first<{ id: string; lifecycle_status: string }>();
+  if (schedule) {
+    throw new Error("Η φάση δεν μπορεί να διαγραφεί επειδή έχει δημιουργηθεί πρόγραμμα αγώνων. Διαγράψτε πρώτα το πρόγραμμα της φάσης.");
+  }
+
   await db.prepare("DELETE FROM league_phase_rules WHERE phase_id=?").bind(id).run();
   await db.prepare("DELETE FROM league_phases WHERE id=?").bind(id).run();
   await normalizeCompetitionPhaseOrder(db, String(current.competition_id));
@@ -2751,6 +2800,51 @@ export async function deleteLeaguePhase(input: Record<string, unknown>, actor: s
       id,
       JSON.stringify({ deleted: current }),
     ).run();
+
+  return { id };
+}
+
+export async function deleteLeaguePhaseSchedule(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή προγράμματος είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε πρόγραμμα για διαγραφή.");
+
+  const current = await db.prepare(`
+    SELECT ps.id, ps.phase_id, ps.competition_id, ps.lifecycle_status,
+      p.name AS phase_name, c.name AS competition_name
+    FROM league_phase_schedules ps
+    JOIN league_phases p ON p.id=ps.phase_id
+    JOIN league_competitions c ON c.id=ps.competition_id
+    WHERE ps.id=?
+  `).bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε το πρόγραμμα.");
+  if (String(current.lifecycle_status ?? "draft") !== "draft") {
+    throw new Error("Μόνο τα πρόχειρα προγράμματα μπορούν να διαγραφούν.");
+  }
+
+  const games = await db.prepare(
+    "SELECT COUNT(*) AS count FROM league_games WHERE phase_id=?",
+  ).bind(String(current.phase_id ?? "")).first<DbRow>();
+  if (Number(games?.count ?? 0) > 0) {
+    throw new Error("Το πρόγραμμα δεν μπορεί να διαγραφεί επειδή έχουν ήδη δημιουργηθεί αγώνες.");
+  }
+
+  await db.batch([
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+      .bind(
+        createEntityId("audit"),
+        actor,
+        "delete",
+        "phase-schedules",
+        id,
+        JSON.stringify({ deleted: current }),
+      ),
+    db.prepare("DELETE FROM league_phase_schedules WHERE id=?").bind(id),
+  ]);
 
   return { id };
 }
@@ -3015,10 +3109,12 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
       ).run();
     await savePhaseRules(db, id, phase);
     await normalizeCompetitionPhaseOrder(db, phase.competitionId);
+    await db.prepare("UPDATE league_phase_schedules SET competition_id=?, updated_at=CURRENT_TIMESTAMP WHERE phase_id=?")
+      .bind(phase.competitionId, id).run();
     await db.prepare(`INSERT INTO league_audit_log
       (id,actor_email,action,entity_type,entity_id,details_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).bind(
-        createEntityId("audit"), actor, "update", resource, id,
+      createEntityId("audit"), actor, "update", resource, id,
         JSON.stringify({ before: current, after: phase }), new Date().toISOString(),
       ).run();
     return { id };

@@ -4,6 +4,7 @@ import {
   cleanupLeagueCompetition,
   deleteLeagueCompetition,
   deleteLeaguePhase,
+  deleteLeaguePhaseSchedule,
   deleteLeagueSeason,
   deleteLeagueTeam,
   deleteLeagueParticipation,
@@ -18,6 +19,7 @@ const resources = new Set([
   "players",
   "rosters",
   "phases",
+  "phase-schedules",
   "games",
 ]);
 
@@ -27,6 +29,7 @@ const editableResources = new Set([
   "teams",
   "participations",
   "phases",
+  "phase-schedules",
 ]);
 
 export async function POST(
@@ -139,6 +142,7 @@ export async function DELETE(
     && resource !== "participations"
     && resource !== "teams"
     && resource !== "phases"
+    && resource !== "phase-schedules"
   ) {
     return Response.json(
       { error: "Η διαγραφή δεν υποστηρίζεται για αυτή την κατηγορία." },
@@ -154,6 +158,8 @@ export async function DELETE(
         ? await deleteLeagueCompetition(input, authorization.identity.email)
         : resource === "phases"
           ? await deleteLeaguePhase(input, authorization.identity.email)
+        : resource === "phase-schedules"
+          ? await deleteLeaguePhaseSchedule(input, authorization.identity.email)
         : resource === "teams"
           ? await deleteLeagueTeam(input, authorization.identity.email)
           : await deleteLeagueParticipation(input, authorization.identity.email);

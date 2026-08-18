@@ -14,6 +14,7 @@ export type Snapshot = {
   rosters: Row[];
   movements: Row[];
   phases: Row[];
+  phaseSchedules: Row[];
   games: Row[];
   counts: { seasons:number; competitions:number; teams:number; players:number };
 };
@@ -122,7 +123,7 @@ export type UpdateEntity = (resource:string,id:string,event:FormEvent<HTMLFormEl
 export type DeleteEntity = (resource:string,id:string,successMessage:string)=>Promise<boolean>;
 export type CreateEntity = (resource:string,input:Record<string, unknown>)=>Promise<boolean>;
 
-export type CompetitionWorkspaceMode = "settings" | "phases";
+export type CompetitionWorkspaceMode = "settings" | "phases" | "program";
 
 export type StandingsRuleSettings = {
   winPoints: number;
@@ -147,6 +148,11 @@ export const competitionLifecycleLabels:Record<string, string> = {
   under_construction: "Under Construction",
   online: "Online",
   complete: "Published",
+};
+
+export const scheduleLifecycleLabels:Record<string, string> = {
+  draft: "Πρόχειρο",
+  published: "Δημοσιευμένο",
 };
 
 export const competitionTypeLabels:Record<string, string> = {

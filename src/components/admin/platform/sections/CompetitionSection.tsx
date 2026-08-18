@@ -28,6 +28,7 @@ import {
 } from "../shared/admin-core";
 import { PhaseFields, StandingsPhasePreview } from "./PhaseScheduleSection";
 import { describeSeriesMatchupsFromPhase } from "../phases/PhaseParticipantsBuilder";
+import { ProgramGamesSection } from "./ProgramGamesSection";
 
 export function CompetitionFields({
   competition,
@@ -565,7 +566,8 @@ export function CompetitionWorkspaceManager({
           <p className="text-sm text-zinc-700">{selectedCompetition.name} — {selectedSeason?.name ?? "—"}</p>
           <div className="mt-4 mb-4 flex gap-2 border-b border-zinc-200 pb-4">
             <button type="button" onClick={() => setWorkspaceMode("settings")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "settings" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Ρύθμιση Διοργάνωσης</button>
-            <button type="button" onClick={() => setWorkspaceMode("phases")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "phases" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Φάσεις & Πρόγραμμα</button>
+            <button type="button" onClick={() => setWorkspaceMode("phases")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "phases" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Φάσεις</button>
+            <button type="button" onClick={() => setWorkspaceMode("program")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "program" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Πρόγραμμα & Αγώνες</button>
           </div>
           {workspaceMode === "settings" ? (
             <form
@@ -676,7 +678,7 @@ export function CompetitionWorkspaceManager({
                 )}
               </div>
             </form>
-          ) : (
+          ) : workspaceMode === "phases" ? (
             <article className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
               <div className="mb-4 flex flex-wrap gap-2 border-b border-zinc-200 pb-3">
                 {selectedCompetitionPhases.map((phase, index) => {
@@ -1082,6 +1084,14 @@ export function CompetitionWorkspaceManager({
                 </div>
               )}
             </article>
+          ) : (
+            <ProgramGamesSection
+              data={data}
+              competitionId={workspaceCompetitionId}
+              submit={submit}
+              deleteEntity={deleteEntity}
+              busy={busy}
+            />
           )}
         </Panel>
       )}
