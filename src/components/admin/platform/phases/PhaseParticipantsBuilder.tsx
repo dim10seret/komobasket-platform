@@ -641,6 +641,13 @@ export function PhaseParticipantsBuilder({
   }, [isSeriesMode, localSeriesConfigState, phase?.id, persistedSeriesParticipantConfig]);
 
   const canContinueSeries = isSeriesMode ? (isSeriesConfigPersisted ? persistedSeriesEligibility.eligible : false) : false;
+  const carryOverSourcePhase = useMemo(
+    () => phaseList.find((entry) => String(entry.id ?? "") === carryOverSourcePhaseId),
+    [carryOverSourcePhaseId, phaseList],
+  );
+  const seriesMaxTotalResults = Math.max(0, (asInt(winsRequired, 2) * 2) - 1);
+  const countedPreviousResults = carryOverEnabled && carryOverSourcePhase ? 1 : 0;
+  const maxNewGamesToSchedule = Math.max(0, seriesMaxTotalResults - countedPreviousResults);
 
   const sourcePhaseOptions = useMemo(() => {
     return phaseList;
@@ -1187,6 +1194,15 @@ export function PhaseParticipantsBuilder({
           <p><span className="font-black">Θέσεις:</span> {isSeriesMode ? `${standingFrom}–${standingTo}` : `${standingFrom}–${standingTo}`}</p>
           <p><span className="font-black">Τρόπος:</span> Manual</p>
           {isSeriesMode && <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>}
+          {isSeriesMode && (
+            <p><span className="font-black">Μεταφορά προηγούμενου αγώνα:</span> {carryOverEnabled ? "Ναι" : "Όχι"}</p>
+          )}
+          {isSeriesMode && (
+            <p><span className="font-black">Φάση προέλευσης:</span> {carryOverEnabled ? (carryOverSourcePhase?.name || "—") : "—"}</p>
+          )}
+          {isSeriesMode && <p><span className="font-black">Μέγιστο συνολικό πλήθος αποτελεσμάτων σειράς:</span> {seriesMaxTotalResults}</p>}
+          {isSeriesMode && <p><span className="font-black">Προηγούμενοι αγώνες που προσμετρώνται:</span> {countedPreviousResults}</p>}
+          {isSeriesMode && <p><span className="font-black">Μέγιστοι νέοι αγώνες προς προγραμματισμό:</span> {maxNewGamesToSchedule}</p>}
           <p><span className="font-black">Διαθέσιμα slots:</span> {isSeriesMode ? sourcePoolCount : estimatedParticipantCount}</p>
           <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>
           <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>
@@ -1227,6 +1243,8 @@ export function PhaseParticipantsBuilder({
       )}
     </div>
     <input type="hidden" name="carryOverEnabled" value={carryOverEnabled ? "true" : "false"} />
+    <input type="hidden" name="carryOverSourcePhaseId" value={carryOverSourcePhaseId} />
+    <input type="hidden" name="winsRequired" value={winsRequired} />
     <input
       type="hidden"
       name="participantConfiguration"
