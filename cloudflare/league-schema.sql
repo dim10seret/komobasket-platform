@@ -113,13 +113,20 @@ CREATE TABLE IF NOT EXISTS league_phases (
 
 CREATE TABLE IF NOT EXISTS league_games (
   id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
-  phase_id TEXT REFERENCES league_phases(id) ON DELETE SET NULL, round_label TEXT NOT NULL DEFAULT '',
+  phase_id TEXT REFERENCES league_phases(id) ON DELETE SET NULL,
+  schedule_id TEXT REFERENCES league_phase_schedules(id) ON DELETE RESTRICT,
+  cycle_number INTEGER,
+  round_number INTEGER,
+  game_order INTEGER,
+  round_label TEXT NOT NULL DEFAULT '',
   scheduled_at TEXT, venue TEXT NOT NULL DEFAULT '', home_team_id TEXT NOT NULL REFERENCES league_teams(id),
   away_team_id TEXT NOT NULL REFERENCES league_teams(id), home_score INTEGER, away_score INTEGER,
   status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','completed','postponed','cancelled')),
   external_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_games_schedule ON league_games(scheduled_at, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_games_schedule_slot
+  ON league_games(schedule_id, round_number, game_order);
 
 CREATE TABLE IF NOT EXISTS league_player_game_stats (
   id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES league_games(id) ON DELETE CASCADE,

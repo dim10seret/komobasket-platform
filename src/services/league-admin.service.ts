@@ -8,6 +8,7 @@ import {
   findAutomaticPlayerMatch,
   normalizePlayerName,
 } from "@/lib/player-matching";
+import { generateRoundRobinDryRun } from "@/services/round-robin-generator";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
 const HISTORICAL_SEASONS = [
@@ -2440,8 +2441,26 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       VALUES (?,?,?,'draft')`)
       .bind(id, competitionId, phaseId).run();
   } else if (resource === "games") {
-    await db.prepare(`INSERT INTO league_games (id,competition_id,phase_id,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(id, input.competitionId, input.phaseId || null, input.roundLabel || "", input.scheduledAt || null, input.venue || "", input.homeTeamId, input.awayTeamId, input.homeScore ?? null, input.awayScore ?? null, input.status || "scheduled").run();
+    await db.prepare(`INSERT INTO league_games
+      (id,competition_id,phase_id,schedule_id,cycle_number,round_number,game_order,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(
+        id,
+        input.competitionId,
+        input.phaseId || null,
+        input.scheduleId || input.schedule_id || null,
+        input.cycleNumber ?? input.cycle_number ?? null,
+        input.roundNumber ?? input.round_number ?? null,
+        input.gameOrder ?? input.game_order ?? null,
+        input.roundLabel || "",
+        input.scheduledAt || null,
+        input.venue || "",
+        input.homeTeamId,
+        input.awayTeamId,
+        input.homeScore ?? null,
+        input.awayScore ?? null,
+        input.status || "scheduled",
+      ).run();
   } else {
     throw new Error("Μη υποστηριζόμενη ενέργεια.");
   }
@@ -2825,8 +2844,8 @@ export async function deleteLeaguePhaseSchedule(input: Record<string, unknown>, 
   }
 
   const games = await db.prepare(
-    "SELECT COUNT(*) AS count FROM league_games WHERE phase_id=?",
-  ).bind(String(current.phase_id ?? "")).first<DbRow>();
+    "SELECT COUNT(*) AS count FROM league_games WHERE schedule_id=?",
+  ).bind(String(current.id ?? "")).first<DbRow>();
   if (Number(games?.count ?? 0) > 0) {
     throw new Error("Το πρόγραμμα δεν μπορεί να διαγραφεί επειδή έχουν ήδη δημιουργηθεί αγώνες.");
   }
@@ -2847,6 +2866,137 @@ export async function deleteLeaguePhaseSchedule(input: Record<string, unknown>, 
   ]);
 
   return { id };
+}
+
+export async function generateRoundRobinGamesForSchedule(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η δημιουργία αγώνων είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const scheduleId = String(input.scheduleId ?? input.id ?? "").trim();
+  if (!scheduleId) throw new Error("Δεν επιλέχθηκε πρόγραμμα για δημιουργία αγώνων.");
+
+  const schedule = await db.prepare(`
+    SELECT
+      ps.id,
+      ps.competition_id,
+      ps.phase_id,
+      ps.lifecycle_status,
+      ps.published_at,
+      p.name AS phase_name,
+      p.format AS phase_format,
+      p.phase_type,
+      pr.settings_json AS phase_rule_settings_json,
+      pr.settings_json AS canonical_rule_settings_json
+    FROM league_phase_schedules ps
+    JOIN league_phases p ON p.id=ps.phase_id
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE ps.id=?
+  `).bind(scheduleId).first<DbRow>();
+  if (!schedule) throw new Error("Δεν βρέθηκε το πρόγραμμα.");
+  if (String(schedule.lifecycle_status ?? "draft") !== "draft") {
+    throw new Error("Δεν μπορείτε να δημιουργήσετε αγώνες σε δημοσιευμένο πρόγραμμα.");
+  }
+
+  const existingGames = await db.prepare("SELECT COUNT(*) AS count FROM league_games WHERE schedule_id=?")
+    .bind(scheduleId).first<{ count: number }>();
+  if (Number(existingGames?.count ?? 0) > 0) {
+    throw new Error("Οι αγώνες για αυτή τη φάση έχουν ήδη δημιουργηθεί.");
+  }
+
+  const phaseFormat = String(schedule.phase_format ?? schedule.phase_type ?? "").trim().toLowerCase();
+  if (phaseFormat !== "standings") {
+    throw new Error("Η δημιουργία αγώνων υποστηρίζεται μόνο για βαθμολογικές φάσεις.");
+  }
+
+  const phaseRules = parseJsonRecord(schedule.canonical_rule_settings_json ?? schedule.phase_rule_settings_json ?? schedule.rule_settings_json);
+  const gamesPerPairing = parseStandingsRuleInt(phaseRules.gamesPerPairing, 1, "Αγώνες ανά ζευγάρι", 1);
+
+  const competitionParticipants = await rows<{ team_id: string; team_name: string }>(
+    db,
+    `SELECT st.team_id, COALESCE(st.display_name, t.name) AS team_name
+     FROM league_competition_teams ct
+     INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+     INNER JOIN league_teams t ON t.id=st.team_id
+     WHERE ct.competition_id=? AND ct.status='active'
+     ORDER BY COALESCE(ct.seed, 999), LOWER(TRIM(COALESCE(st.display_name, t.name))), st.id`,
+    [String(schedule.competition_id ?? "")],
+  );
+
+  const dryRun = generateRoundRobinDryRun({
+    competitionId: String(schedule.competition_id ?? ""),
+    phaseId: String(schedule.phase_id ?? ""),
+    scheduleId,
+    gamesPerPairing,
+    teams: competitionParticipants.map((team) => ({
+      id: String(team.team_id ?? ""),
+      name: String(team.team_name ?? "—"),
+    })),
+  });
+
+  if (!dryRun.ok) {
+    throw new Error(dryRun.errors.join(" "));
+  }
+
+  if (!dryRun.games.length) {
+    throw new Error("Δεν προέκυψαν αγώνες για δημιουργία.");
+  }
+
+  const gameInserts = dryRun.games.map((game) => db.prepare(`INSERT INTO league_games
+      (id,competition_id,phase_id,schedule_id,cycle_number,round_number,game_order,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(
+      createEntityId("game"),
+      game.competition_id,
+      game.phase_id,
+      game.schedule_id,
+      game.cycle_number,
+      game.round_number,
+      game.game_order,
+      game.round_label,
+      null,
+      "",
+      game.home_team_id,
+      game.away_team_id,
+      null,
+      null,
+      game.status,
+    ));
+
+  const auditId = createEntityId("audit");
+  await db.batch([
+    ...gameInserts,
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+      .bind(
+        auditId,
+        actor,
+        "create",
+        "league_games",
+        scheduleId,
+        JSON.stringify({
+          scheduleId,
+          phaseId: String(schedule.phase_id ?? ""),
+          competitionId: String(schedule.competition_id ?? ""),
+          games: dryRun.games.length,
+          rounds: dryRun.input.cycles * dryRun.input.roundsPerCycle,
+        }),
+      ),
+  ]);
+
+  const createdCount = await db.prepare("SELECT COUNT(*) AS count FROM league_games WHERE schedule_id=?")
+    .bind(scheduleId).first<{ count: number }>();
+  if (Number(createdCount?.count ?? 0) !== dryRun.games.length) {
+    throw new Error("Η δημιουργία αγώνων δεν ολοκληρώθηκε σωστά.");
+  }
+
+  return {
+    scheduleId,
+    competitionId: String(schedule.competition_id ?? ""),
+    phaseId: String(schedule.phase_id ?? ""),
+    gamesCreated: dryRun.games.length,
+    roundsCreated: dryRun.input.cycles * dryRun.input.roundsPerCycle,
+  };
 }
 
 export async function deleteLeagueTeam(input: Record<string, unknown>, actor: string) {
@@ -3090,6 +3240,22 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
       WHERE p.id=?`).bind(id).first<DbRow>();
     if (!current) throw new Error("Δεν βρέθηκε η φάση.");
     const phase = await phaseInput(db, input, current);
+    const generatedSchedule = await db.prepare(
+      "SELECT id FROM league_phase_schedules WHERE phase_id=? LIMIT 1",
+    ).bind(id).first<{ id: string }>();
+    if (generatedSchedule) {
+      const generatedGames = await db.prepare(
+        "SELECT COUNT(*) AS count FROM league_games WHERE schedule_id=?",
+      ).bind(generatedSchedule.id).first<{ count: number }>();
+      if (Number(generatedGames?.count ?? 0) > 0) {
+        const currentFormat = normalizeCanonicalFormat(String(current.format ?? ""), String(current.phase_kind ?? ""));
+        const nextFormat = normalizeCanonicalFormat(phase.phaseFormat, phase.legacyPhaseType);
+        const currentRules = JSON.stringify(parsePhaseRuleJson(current.rule_settings_json));
+        if (currentFormat !== nextFormat || currentRules !== phase.settingsJson) {
+          throw new Error("Η δομή της φάσης δεν μπορεί να αλλάξει επειδή έχουν ήδη δημιουργηθεί αγώνες.");
+        }
+      }
+    }
     const duplicate = await db.prepare(
       "SELECT id FROM league_phases WHERE competition_id=? AND slug=? AND id<>?",
     ).bind(phase.competitionId, phase.slug, id).first<{ id: string }>();

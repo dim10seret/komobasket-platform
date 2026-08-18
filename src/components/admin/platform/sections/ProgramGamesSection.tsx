@@ -31,6 +31,19 @@ type PhaseScheduleRow = Row & {
   carry_over_source_name: string | null;
 };
 
+type GeneratedGameRow = Row & {
+  id: string;
+  schedule_id: string | null;
+  round_number: number | string | null;
+  game_order: number | string | null;
+  round_label: string | null;
+  home_team_id: string | null;
+  away_team_id: string | null;
+  home_team_name: string | null;
+  away_team_name: string | null;
+  status: string | null;
+};
+
 const parseObject = (value: unknown) => {
   if (!value) return {};
   if (typeof value === "string") {
@@ -87,6 +100,33 @@ const buildPhaseSummary = (data: Snapshot, phase?: Row | null) => {
   return [`Τύπος: ${phaseFormatLabel(format)}`];
 };
 
+const buildGeneratedRounds = (games: GeneratedGameRow[], teams: { id: string; name: string }[]) => {
+  const byRound = new Map<number, GeneratedGameRow[]>();
+  for (const game of games) {
+    const roundNumber = Number(game.round_number ?? 0) || 0;
+    if (!byRound.has(roundNumber)) byRound.set(roundNumber, []);
+    byRound.get(roundNumber)?.push(game);
+  }
+  const rounds = [...byRound.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([roundNumber, roundGames]) => {
+      const sortedGames = [...roundGames].sort((left, right) => Number(left.game_order ?? 0) - Number(right.game_order ?? 0));
+      const usedTeams = new Set<string>();
+      for (const game of sortedGames) {
+        if (game.home_team_id) usedTeams.add(String(game.home_team_id));
+        if (game.away_team_id) usedTeams.add(String(game.away_team_id));
+      }
+      const byeTeam = teams.find((team) => !usedTeams.has(team.id)) ?? null;
+      return {
+        roundNumber,
+        roundLabel: String(sortedGames[0]?.round_label ?? `${roundNumber}η Αγωνιστική`),
+        games: sortedGames,
+        byeTeam,
+      };
+    });
+  return rounds;
+};
+
 export function ProgramGamesSection({
   data,
   competitionId,
@@ -126,9 +166,18 @@ export function ProgramGamesSection({
 
   const scheduledPhaseIds = useMemo(() => new Set(schedules.map((schedule) => String(schedule.phase_id ?? "")).filter(Boolean)), [schedules]);
   const availablePhases = useMemo(() => competitionPhases.filter((phase) => !scheduledPhaseIds.has(String(phase.id))), [competitionPhases, scheduledPhaseIds]);
+  const competitionTeams = useMemo(() => {
+    return getCompetitionTeamsForStandings(data, competitionId).map((team) => ({
+      id: String(team.team_id ?? ""),
+      name: String(team.team_name ?? "—"),
+    })).filter((team) => team.id && team.name);
+  }, [data, competitionId]);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedPhaseId, setSelectedPhaseId] = useState("");
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [selectedScheduleId, setSelectedScheduleId] = useState("");
+  const [selectedRoundByScheduleId, setSelectedRoundByScheduleId] = useState<Record<string, number>>({});
   const selectedPhase = availablePhases.find((phase) => String(phase.id) === selectedPhaseId) ?? availablePhases[0] ?? null;
 
   useEffect(() => {
@@ -146,12 +195,59 @@ export function ProgramGamesSection({
     setShowCreateModal(false);
   };
 
+  const selectedSchedule = schedules.find((schedule) => String(schedule.id) === selectedScheduleId) ?? null;
+
+  const selectedScheduleGames = useMemo(() => {
+    if (!selectedSchedule) return [] as GeneratedGameRow[];
+    return (data.games as GeneratedGameRow[])
+      .filter((game) => String(game.schedule_id ?? "") === String(selectedSchedule.id))
+      .sort((left, right) => {
+        const leftRound = Number(left.round_number ?? 0);
+        const rightRound = Number(right.round_number ?? 0);
+        if (leftRound !== rightRound) return leftRound - rightRound;
+        return Number(left.game_order ?? 0) - Number(right.game_order ?? 0);
+      });
+  }, [data.games, selectedSchedule]);
+
+  const selectedScheduleRounds = useMemo(() => {
+    return buildGeneratedRounds(selectedScheduleGames, competitionTeams);
+  }, [competitionTeams, selectedScheduleGames]);
+
+  useEffect(() => {
+    if (!selectedSchedule) return;
+    if (!selectedScheduleGames.length) return;
+    const currentRound = selectedRoundByScheduleId[String(selectedSchedule.id)] ?? Number(selectedScheduleGames[0]?.round_number ?? 0);
+    if (currentRound && selectedScheduleRounds.some((round) => round.roundNumber === currentRound)) return;
+    const firstRound = selectedScheduleRounds[0]?.roundNumber ?? 0;
+    if (firstRound) {
+      setSelectedRoundByScheduleId((current) => ({ ...current, [String(selectedSchedule.id)]: firstRound }));
+    }
+  }, [selectedSchedule, selectedScheduleGames.length, selectedScheduleRounds, selectedRoundByScheduleId]);
+
+  const openGenerateModal = (scheduleId: string) => {
+    setSelectedScheduleId(scheduleId);
+    setShowGenerateModal(true);
+  };
+
+  const closeGenerateModal = () => {
+    setShowGenerateModal(false);
+    setSelectedScheduleId("");
+  };
+
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const ok = await submit("phase-schedules", event);
     if (!ok) return;
     setShowCreateModal(false);
     setSelectedPhaseId("");
+  };
+
+  const handleGenerate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const ok = await submit("phase-schedules", event);
+    if (!ok) return;
+    setShowGenerateModal(false);
+    setSelectedScheduleId("");
   };
 
   return (
@@ -182,8 +278,20 @@ export function ProgramGamesSection({
           <div className="grid gap-4 xl:grid-cols-2">
             {schedules.map((schedule) => {
               const phase = competitionPhases.find((entry) => String(entry.id) === String(schedule.phase_id ?? "")) ?? null;
-              const summary = buildPhaseSummary(data, phase);
+              const phaseRules = parseStandingsRules(phase?.rule_settings_json);
+              const structure = roundRobinStructureFromTeams(competitionTeams.length, phaseRules.gamesPerPairing);
+              const scheduleGames = (data.games as GeneratedGameRow[]).filter((game) => String(game.schedule_id ?? "") === String(schedule.id));
+              const completedGames = scheduleGames.filter((game) => String(game.status ?? "") === "completed").length;
+              const generatedRounds = buildGeneratedRounds(scheduleGames, competitionTeams);
               const lifecycle = String(schedule.lifecycle_status ?? "draft");
+              const hasGames = scheduleGames.length > 0;
+              const activeRoundNumber = selectedRoundByScheduleId[String(schedule.id)] ?? generatedRounds[0]?.roundNumber ?? 0;
+              const activeRound = generatedRounds.find((round) => round.roundNumber === activeRoundNumber) ?? generatedRounds[0] ?? null;
+              const canGenerate = lifecycle === "draft" && !hasGames && String(phase?.format ?? phase?.phase_kind ?? "").toLowerCase() === "standings" && competitionTeams.length >= 2;
+              const totalGames = hasGames ? scheduleGames.length : structure.totalGames;
+              const statusLine = hasGames
+                ? `${totalGames} αγώνες • ${generatedRounds.length} αγωνιστικές • ${completedGames}/${totalGames} ολοκληρωμένοι`
+                : `${structure.totalGames} προβλεπόμενοι αγώνες • ${structure.rounds} αγωνιστικές`;
               return (
                 <article key={String(schedule.id)} className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -199,12 +307,75 @@ export function ProgramGamesSection({
                     </span>
                   </div>
                   <div className="mt-4 space-y-1.5 text-sm text-zinc-700">
-                    {summary.map((line) => <p key={line}>{line}</p>)}
-                    <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">
-                      {lifecycle === "published" ? "Δημοσιευμένο πρόγραμμα" : "Αναμονή δημιουργίας αγώνων"}
-                    </p>
+                    {buildPhaseSummary(data, phase).map((line) => <p key={line}>{line}</p>)}
+                    <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">{statusLine}</p>
+                    {hasGames ? (
+                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-sm font-black text-zinc-900">Αγωνιστικές</p>
+                          <select
+                            className={inputClass}
+                            value={String(activeRoundNumber || "")}
+                            onChange={(event) => setSelectedRoundByScheduleId((current) => ({
+                              ...current,
+                              [String(schedule.id)]: Number(event.target.value),
+                            }))}
+                          >
+                            {generatedRounds.map((round) => (
+                              <option key={round.roundNumber} value={round.roundNumber}>
+                                {round.roundLabel}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {activeRound ? (
+                          <div className="mt-4 space-y-2">
+                            {activeRound.games.map((game) => (
+                              <div key={String(game.id)} className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-800">
+                                <p className="font-black text-zinc-900">
+                                  {String(game.home_team_name ?? "—")} — {String(game.away_team_name ?? "—")}
+                                </p>
+                                <p className="mt-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+                                  {String(game.round_label ?? activeRound.roundLabel)} · αγώνας {String(game.game_order ?? "—")}
+                                </p>
+                              </div>
+                            ))}
+                            {activeRound.byeTeam ? (
+                              <div className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+                                Ρεπό: <span className="font-black text-zinc-900">{activeRound.byeTeam.name}</span>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+                        {lifecycle === "published" ? "Δημοσιευμένο πρόγραμμα" : "Αναμονή δημιουργίας αγώνων"}
+                      </p>
+                    )}
                   </div>
-                  {lifecycle === "draft" && (
+                  {canGenerate ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => openGenerateModal(String(schedule.id))}
+                        className="rounded-xl border border-orange-300 bg-white px-4 py-2.5 text-sm font-black text-orange-700 transition hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Δημιουργία Αγώνων
+                      </button>
+                    </div>
+                  ) : lifecycle === "draft" && hasGames ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-xl border border-red-200 bg-zinc-50 px-4 py-2.5 text-sm font-black text-red-400"
+                      >
+                        Το πρόγραμμα περιέχει αγώνες και δεν μπορεί να διαγραφεί.
+                      </button>
+                    </div>
+                  ) : lifecycle === "draft" ? (
                     <div className="mt-4 flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -219,7 +390,7 @@ export function ProgramGamesSection({
                         Διαγραφή Προχείρου
                       </button>
                     </div>
-                  )}
+                  ) : null}
                 </article>
               );
             })}
@@ -293,6 +464,51 @@ export function ProgramGamesSection({
           </div>
         </div>
       )}
+
+      {showGenerateModal && selectedSchedule && (() => {
+        const phase = competitionPhases.find((entry) => String(entry.id) === String(selectedSchedule.phase_id ?? "")) ?? null;
+        const phaseRules = parseStandingsRules(phase?.rule_settings_json);
+        const structure = roundRobinStructureFromTeams(competitionTeams.length, phaseRules.gamesPerPairing);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black text-zinc-950">Δημιουργία Αγώνων</h3>
+                  <p className="mt-1 text-sm text-zinc-600">
+                    Θα δημιουργηθούν {structure.totalGames} αγώνες σε {structure.rounds} αγωνιστικές.
+                  </p>
+                  <p className="mt-1 text-sm text-zinc-600">Οι αγώνες θα δημιουργηθούν χωρίς ημερομηνία, ώρα και γήπεδο.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeGenerateModal}
+                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                >
+                  Ακύρωση
+                </button>
+              </div>
+              <form onSubmit={handleGenerate} className="mt-5 space-y-4">
+                <input type="hidden" name="action" value="generateRoundRobinGames" />
+                <input type="hidden" name="scheduleId" value={selectedSchedule.id} />
+                <input type="hidden" name="id" value={selectedSchedule.id} />
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">
+                  <p className="font-black text-zinc-900">{String(selectedSchedule.phase_name ?? phase?.name ?? "—")}</p>
+                  <p className="mt-1">Πρόχειρο πρόγραμμα · {structure.totalGames} προβλεπόμενοι αγώνες · {structure.rounds} αγωνιστικές</p>
+                </div>
+                <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
+                  <button type="button" onClick={closeGenerateModal} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700">
+                    Ακύρωση
+                  </button>
+                  <button disabled={busy} className={buttonClass}>
+                    Δημιουργία Αγώνων
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
     </Panel>
   );
 }
