@@ -16,6 +16,7 @@ export type Snapshot = {
   phases: Row[];
   phaseSchedules: Row[];
   games: Row[];
+  competitionVenues: Row[];
   counts: { seasons:number; competitions:number; teams:number; players:number };
 };
 

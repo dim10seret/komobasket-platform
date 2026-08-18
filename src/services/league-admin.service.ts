@@ -385,6 +385,57 @@ function booleanValue(value: unknown) {
   return value === true || value === 1 || value === "1" || value === "true" || value === "on";
 }
 
+function trimmedTextOrNull(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+}
+
+function validateHttpUrl(value: unknown, label: string) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error();
+    }
+    return parsed.toString();
+  } catch {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρο URL.`);
+  }
+}
+
+function validateIsoDate(value: unknown, label: string) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρη ημερομηνία.`);
+  }
+  const [yearPart, monthPart, dayPart] = text.split("-").map((part) => Number(part));
+  const date = new Date(Date.UTC(yearPart, monthPart - 1, dayPart));
+  if (
+    Number.isNaN(date.getTime())
+    || date.getUTCFullYear() !== yearPart
+    || date.getUTCMonth() !== monthPart - 1
+    || date.getUTCDate() !== dayPart
+  ) {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρη ημερομηνία.`);
+  }
+  return text;
+}
+
+function validateHmTime(value: unknown, label: string) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  if (!/^\d{2}:\d{2}$/.test(text)) {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρη ώρα.`);
+  }
+  const [hours, minutes] = text.split(":").map((part) => Number(part));
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    throw new Error(`Το πεδίο «${label}» δεν είναι έγκυρη ώρα.`);
+  }
+  return text;
+}
+
 function teamInput(input: Record<string, unknown>, current?: DbRow) {
   const name = String(input.name ?? current?.name ?? "").trim();
   if (!name) throw new Error("Η ονομασία της ομάδας είναι υποχρεωτική.");
@@ -418,6 +469,18 @@ function lifecycleValue(input: Record<string, unknown>, fallback = "under_constr
     throw new Error("Η κατάσταση της διοργάνωσης δεν είναι έγκυρη.");
   }
   return normalized;
+}
+
+function competitionVenueInput(input: Record<string, unknown>, current?: DbRow) {
+  const name = String(input.name ?? current?.name ?? "").trim();
+  if (!name) throw new Error("Το όνομα του γηπέδου είναι υποχρεωτικό.");
+  return {
+    competitionId: String(input.competitionId ?? current?.competition_id ?? "").trim(),
+    name,
+    address: trimmedTextOrNull(input.address ?? current?.address ?? null),
+    mapUrl: validateHttpUrl(input.mapUrl ?? input.map_url ?? current?.map_url ?? null, "Σύνδεσμος χάρτη"),
+    sortOrder: optionalInteger(input.sortOrder ?? input.sort_order ?? current?.sort_order ?? 0, "Σειρά", 0) ?? 0,
+  };
 }
 
 function phaseFormatValue(input: Record<string, unknown>, fallback = "standings") {
@@ -1125,7 +1188,7 @@ export async function getLeagueAdminSnapshot() {
     };
   }
 
-  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, games] = await Promise.all([
+  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, games, competitionVenues] = await Promise.all([
     rows(db, "SELECT * FROM league_seasons ORDER BY name DESC"),
     rows(db, `SELECT c.*, s.name AS season_name,
       COALESCE(cp.lifecycle_status,
@@ -1178,6 +1241,11 @@ export async function getLeagueAdminSnapshot() {
       LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
       ORDER BY c.name, COALESCE(p.phase_order, p.order_index), p.id`),
     rows(db, `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name FROM league_games g JOIN league_teams ht ON ht.id=g.home_team_id JOIN league_teams at ON at.id=g.away_team_id LEFT JOIN league_phases p ON p.id=g.phase_id ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`),
+    rows(db, `SELECT v.*, c.name AS competition_name, s.name AS season_name
+      FROM league_competition_venues v
+      JOIN league_competitions c ON c.id=v.competition_id
+      JOIN league_seasons s ON s.id=c.season_id
+      ORDER BY c.name, COALESCE(v.sort_order, 0), v.name`),
   ]);
   const phases = rawPhases.map((phase) => ({
     ...phase,
@@ -1186,7 +1254,7 @@ export async function getLeagueAdminSnapshot() {
 
   return {
     mode: "database" as const, seasons, competitions, teams, participations, players, rosters,
-    movements, phases, phaseSchedules, games,
+    movements, phases, phaseSchedules, games, competitionVenues,
     counts: {
       seasons: seasons.length, competitions: competitions.length,
       teams: teams.length, players: players.length,
@@ -2248,6 +2316,25 @@ export async function createLeagueEntity(resource: string, input: Record<string,
         }
       }
     }
+  } else if (resource === "competition-venues") {
+    const competitionId = String(input.competitionId ?? "").trim();
+    if (!competitionId) throw new Error("Η διοργάνωση είναι υποχρεωτική.");
+    const competition = await db.prepare("SELECT id FROM league_competitions WHERE id=?")
+      .bind(competitionId).first<{ id: string }>();
+    if (!competition) throw new Error("Η διοργάνωση δεν βρέθηκε.");
+    const venue = competitionVenueInput(input);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_competition_venues WHERE competition_id=? AND LOWER(TRIM(name))=LOWER(TRIM(?))",
+    ).bind(competitionId, venue.name).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη γήπεδο με αυτή την ονομασία στη συγκεκριμένη διοργάνωση.");
+    const maxSort = await db.prepare(
+      "SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM league_competition_venues WHERE competition_id=?",
+    ).bind(competitionId).first<{ max_sort: number | null }>();
+    const sortOrder = venue.sortOrder || Number(maxSort?.max_sort ?? 0) + 1;
+    await db.prepare(`INSERT INTO league_competition_venues
+      (id,competition_id,name,address,map_url,sort_order)
+      VALUES (?,?,?,?,?,?)`)
+      .bind(id, competitionId, venue.name, venue.address, venue.mapUrl, sortOrder).run();
   } else if (resource === "teams") {
     const team = teamInput(input);
     const duplicate = await db.prepare(
@@ -2441,9 +2528,14 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       VALUES (?,?,?,'draft')`)
       .bind(id, competitionId, phaseId).run();
   } else if (resource === "games") {
+    const scheduledDate = validateIsoDate(input.scheduledDate ?? input.scheduled_date ?? null, "Ημερομηνία αγώνα");
+    const scheduledTime = validateHmTime(input.scheduledTime ?? input.scheduled_time ?? null, "Ώρα αγώνα");
+    if (!scheduledDate && scheduledTime) {
+      throw new Error("Η ώρα αγώνα δεν μπορεί να οριστεί χωρίς ημερομηνία.");
+    }
     await db.prepare(`INSERT INTO league_games
-      (id,competition_id,phase_id,schedule_id,cycle_number,round_number,game_order,round_label,scheduled_at,venue,home_team_id,away_team_id,home_score,away_score,status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      (id,competition_id,phase_id,schedule_id,cycle_number,round_number,game_order,round_label,scheduled_at,scheduled_date,scheduled_time,venue,home_team_id,away_team_id,home_score,away_score,status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(
         id,
         input.competitionId,
@@ -2454,6 +2546,8 @@ export async function createLeagueEntity(resource: string, input: Record<string,
         input.gameOrder ?? input.game_order ?? null,
         input.roundLabel || "",
         input.scheduledAt || null,
+        scheduledDate,
+        scheduledTime,
         input.venue || "",
         input.homeTeamId,
         input.awayTeamId,
@@ -2868,6 +2962,38 @@ export async function deleteLeaguePhaseSchedule(input: Record<string, unknown>, 
   return { id };
 }
 
+export async function deleteLeagueCompetitionVenue(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή γηπέδου είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("Δεν επιλέχθηκε γήπεδο για διαγραφή.");
+
+  const current = await db.prepare(`
+    SELECT v.*, c.name AS competition_name
+    FROM league_competition_venues v
+    JOIN league_competitions c ON c.id=v.competition_id
+    WHERE v.id=?
+  `).bind(id).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε το γήπεδο.");
+
+  await db.prepare("DELETE FROM league_competition_venues WHERE id=?").bind(id).run();
+
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .bind(
+      createEntityId("audit"),
+      actor,
+      "delete",
+      "competition-venues",
+      id,
+      JSON.stringify({ deleted: current }),
+    ).run();
+
+  return { id };
+}
+
 export async function generateRoundRobinGamesForSchedule(input: Record<string, unknown>, actor: string) {
   const db = await database();
   if (!db) throw new Error("Η δημιουργία αγώνων είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
@@ -3123,6 +3249,75 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
   const id = String(input.id ?? "").trim();
   if (!id) throw new Error("Δεν επιλέχθηκε εγγραφή για επεξεργασία.");
   await auditAndConvertLegacyKnockoutFormats(db);
+
+  if (resource === "competition-venues") {
+    const current = await db.prepare("SELECT * FROM league_competition_venues WHERE id=?")
+      .bind(id).first<DbRow>();
+    if (!current) throw new Error("Δεν βρέθηκε το γήπεδο.");
+    const competitionId = String(current.competition_id ?? "").trim();
+    if (String(input.competitionId ?? competitionId).trim() !== competitionId) {
+      throw new Error("Το γήπεδο ανήκει σε συγκεκριμένη διοργάνωση και δεν μπορεί να μεταφερθεί.");
+    }
+    const venue = competitionVenueInput(input, current);
+    const duplicate = await db.prepare(
+      "SELECT id FROM league_competition_venues WHERE competition_id=? AND LOWER(TRIM(name))=LOWER(TRIM(?)) AND id<>?",
+    ).bind(competitionId, venue.name, id).first<{ id: string }>();
+    if (duplicate) throw new Error("Υπάρχει ήδη γήπεδο με αυτή την ονομασία στη συγκεκριμένη διοργάνωση.");
+    await db.prepare(`UPDATE league_competition_venues
+      SET name=?, address=?, map_url=?, sort_order=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`)
+      .bind(venue.name, venue.address, venue.mapUrl, venue.sortOrder, id).run();
+    await db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).bind(
+      createEntityId("audit"), actor, "update", resource, id,
+      JSON.stringify({ before: current, after: venue }), new Date().toISOString(),
+    ).run();
+    return { id };
+  }
+
+  if (resource === "games") {
+    const current = await db.prepare("SELECT * FROM league_games WHERE id=?")
+      .bind(id).first<DbRow>();
+    if (!current) throw new Error("Δεν βρέθηκε ο αγώνας.");
+
+    const hasScheduledDate = Object.prototype.hasOwnProperty.call(input, "scheduledDate")
+      || Object.prototype.hasOwnProperty.call(input, "scheduled_date");
+    const hasScheduledTime = Object.prototype.hasOwnProperty.call(input, "scheduledTime")
+      || Object.prototype.hasOwnProperty.call(input, "scheduled_time");
+    const hasVenue = Object.prototype.hasOwnProperty.call(input, "venue");
+    const hasScheduledAt = Object.prototype.hasOwnProperty.call(input, "scheduledAt")
+      || Object.prototype.hasOwnProperty.call(input, "scheduled_at");
+
+    const scheduledDate = hasScheduledDate
+      ? validateIsoDate(input.scheduledDate ?? input.scheduled_date ?? null, "Ημερομηνία αγώνα")
+      : (trimmedTextOrNull(current.scheduled_date) ?? null);
+    const scheduledTime = hasScheduledTime
+      ? validateHmTime(input.scheduledTime ?? input.scheduled_time ?? null, "Ώρα αγώνα")
+      : (trimmedTextOrNull(current.scheduled_time) ?? null);
+    if (!scheduledDate && scheduledTime) {
+      throw new Error("Η ώρα αγώνα δεν μπορεί να οριστεί χωρίς ημερομηνία.");
+    }
+    const venue = hasVenue
+      ? String(input.venue ?? "").trim()
+      : String(current.venue ?? "").trim();
+    const scheduledAt = hasScheduledAt
+      ? (String(input.scheduledAt ?? input.scheduled_at ?? "").trim() || null)
+      : (trimmedTextOrNull(current.scheduled_at) ?? null);
+
+    await db.prepare(`UPDATE league_games SET
+      scheduled_at=?, scheduled_date=?, scheduled_time=?, venue=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`)
+      .bind(scheduledAt, scheduledDate, scheduledTime, venue, id).run();
+
+    await db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,?)`).bind(
+      createEntityId("audit"), actor, "update", resource, id,
+      JSON.stringify({ before: current, after: { scheduledAt, scheduledDate, scheduledTime, venue } }), new Date().toISOString(),
+    ).run();
+    return { id };
+  }
 
   if (resource === "teams") {
     const current = await db.prepare("SELECT * FROM league_teams WHERE id=?")

@@ -1089,6 +1089,7 @@ export function CompetitionWorkspaceManager({
               data={data}
               competitionId={workspaceCompetitionId}
               submit={submit}
+              updateEntity={updateEntity}
               deleteEntity={deleteEntity}
               busy={busy}
             />

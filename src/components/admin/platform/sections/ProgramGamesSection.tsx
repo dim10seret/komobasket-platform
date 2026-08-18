@@ -44,6 +44,15 @@ type GeneratedGameRow = Row & {
   status: string | null;
 };
 
+type CompetitionVenueRow = Row & {
+  id: string;
+  competition_id: string | null;
+  name: string | null;
+  address: string | null;
+  map_url: string | null;
+  sort_order: number | string | null;
+};
+
 const parseObject = (value: unknown) => {
   if (!value) return {};
   if (typeof value === "string") {
@@ -132,11 +141,13 @@ export function ProgramGamesSection({
   competitionId,
   submit,
   deleteEntity,
+  updateEntity,
   busy,
 }: {
   data: Snapshot;
   competitionId: string;
   submit: (resource: string, event: FormEvent<HTMLFormElement>) => Promise<boolean>;
+  updateEntity: (resource: string, id: string, event: FormEvent<HTMLFormElement>, successMessage: string) => Promise<boolean>;
   deleteEntity: DeleteEntity;
   busy: boolean;
 }) {
@@ -178,6 +189,9 @@ export function ProgramGamesSection({
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
   const [selectedRoundByScheduleId, setSelectedRoundByScheduleId] = useState<Record<string, number>>({});
+  const [showVenueManager, setShowVenueManager] = useState(false);
+  const [showVenueForm, setShowVenueForm] = useState(false);
+  const [editingVenueId, setEditingVenueId] = useState("");
   const selectedPhase = availablePhases.find((phase) => String(phase.id) === selectedPhaseId) ?? availablePhases[0] ?? null;
 
   useEffect(() => {
@@ -196,6 +210,17 @@ export function ProgramGamesSection({
   };
 
   const selectedSchedule = schedules.find((schedule) => String(schedule.id) === selectedScheduleId) ?? null;
+  const competitionVenues = useMemo(() => {
+    return (data.competitionVenues as CompetitionVenueRow[])
+      .filter((venue) => String(venue.competition_id ?? "") === competitionId)
+      .sort((left, right) => {
+        const leftOrder = Number(left.sort_order ?? 0) || 0;
+        const rightOrder = Number(right.sort_order ?? 0) || 0;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(left.name ?? "").localeCompare(String(right.name ?? ""), "el-GR");
+      });
+  }, [competitionId, data.competitionVenues]);
+  const selectedVenue = competitionVenues.find((venue) => String(venue.id) === editingVenueId) ?? null;
 
   const selectedScheduleGames = useMemo(() => {
     if (!selectedSchedule) return [] as GeneratedGameRow[];
@@ -234,6 +259,28 @@ export function ProgramGamesSection({
     setSelectedScheduleId("");
   };
 
+  const openVenueManager = () => {
+    setShowVenueForm(competitionVenues.length === 0);
+    setEditingVenueId("");
+    setShowVenueManager(true);
+  };
+
+  const closeVenueManager = () => {
+    setShowVenueManager(false);
+    setShowVenueForm(false);
+    setEditingVenueId("");
+  };
+
+  const handleVenueDelete = async (venue: CompetitionVenueRow) => {
+    if (!window.confirm(`Να αφαιρεθεί το γήπεδο «${String(venue.name ?? "—")}» από τη λίστα της διοργάνωσης;`)) return;
+    await deleteEntity("competition-venues", String(venue.id), `Το γήπεδο «${String(venue.name ?? "—")}» αφαιρέθηκε από τη διοργάνωση.`);
+  };
+
+  const startVenueForm = (venueId = "") => {
+    setEditingVenueId(venueId);
+    setShowVenueForm(true);
+  };
+
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const ok = await submit("phase-schedules", event);
@@ -265,9 +312,14 @@ export function ProgramGamesSection({
                 : "Δεν έχει δημιουργηθεί πρόγραμμα για κάποια φάση."}
             </p>
           </div>
-          <button type="button" onClick={openCreateModal} disabled={!competitionPhases.length} className={buttonClass}>
-            + Δημιουργία Προγράμματος
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={openVenueManager} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:bg-zinc-50">
+              Διαχείριση γηπέδων
+            </button>
+            <button type="button" onClick={openCreateModal} disabled={!competitionPhases.length} className={buttonClass}>
+              + Δημιουργία Προγράμματος
+            </button>
+          </div>
         </div>
 
         {!schedules.length ? (
@@ -509,6 +561,215 @@ export function ProgramGamesSection({
           </div>
         );
       })()}
+
+      {showVenueManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black text-zinc-950">Γήπεδα διοργάνωσης</h3>
+                <p className="mt-1 text-sm text-zinc-600">Διαχείριση γηπέδων για τη συγκεκριμένη διοργάνωση.</p>
+              </div>
+              <button type="button" onClick={closeVenueManager} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700">
+                ← Επιστροφή
+              </button>
+            </div>
+
+            {!competitionVenues.length ? (
+              <div className="mt-5 space-y-4">
+                <p className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+                  Δεν έχουν προστεθεί γήπεδα για αυτή τη διοργάνωση.
+                </p>
+                <button type="button" onClick={() => startVenueForm("")} className={buttonClass}>
+                  + Προσθήκη γηπέδου
+                </button>
+                {showVenueForm ? (
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-black text-zinc-900">Προσθήκη γηπέδου</p>
+                        <p className="mt-1 text-sm text-zinc-600">Τα ιστορικά παιχνίδια διατηρούν το κείμενο γηπέδου που έχουν ήδη αποθηκεύσει.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingVenueId("");
+                          setShowVenueForm(false);
+                        }}
+                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                      >
+                        Κλείσιμο
+                      </button>
+                    </div>
+                    <form
+                      className="mt-4 space-y-4"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        const ok = selectedVenue
+                          ? await updateEntity("competition-venues", String(selectedVenue.id), event, `Το γήπεδο «${String(selectedVenue.name ?? "—")}» ενημερώθηκε.`)
+                          : await submit("competition-venues", event);
+                        if (!ok) return;
+                        setEditingVenueId("");
+                        setShowVenueForm(false);
+                      }}
+                    >
+                      <input type="hidden" name="competitionId" value={competitionId} />
+                      <Field label="Όνομα γηπέδου">
+                        <input name="name" required className={inputClass} />
+                      </Field>
+                      <Field label="Διεύθυνση">
+                        <input name="address" className={inputClass} />
+                      </Field>
+                      <Field label="Σύνδεσμος χάρτη">
+                        <input name="mapUrl" placeholder="https://..." className={inputClass} />
+                      </Field>
+                      <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingVenueId("");
+                            setShowVenueForm(false);
+                          }}
+                          className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
+                        >
+                          Καθαρισμός
+                        </button>
+                        <button disabled={busy} className={buttonClass}>
+                          Προσθήκη γηπέδου
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-5 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                <div className="space-y-3">
+                  {competitionVenues.map((venue) => (
+                    <article key={String(venue.id)} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black text-zinc-950">{String(venue.name ?? "—")}</p>
+                          {String(venue.address ?? "").trim() ? <p className="mt-1 text-sm text-zinc-600">{String(venue.address)}</p> : null}
+                          {String(venue.map_url ?? "").trim() ? (
+                            <a
+                              href={String(venue.map_url)}
+                              target="_blank"
+                              rel="noreferrer noopener"
+                              className="mt-2 inline-flex text-sm font-black text-orange-700 underline decoration-orange-300 underline-offset-2"
+                            >
+                              Προβολή στον χάρτη
+                            </a>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => startVenueForm(String(venue.id))}
+                            className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                          >
+                            Επεξεργασία
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleVenueDelete(venue)}
+                            className="rounded-xl border border-red-300 bg-white px-3 py-2 text-sm font-black text-red-700"
+                          >
+                            Αφαίρεση
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+                {showVenueForm ? (
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-black text-zinc-900">{selectedVenue ? "Επεξεργασία γηπέδου" : "Προσθήκη γηπέδου"}</p>
+                        <p className="mt-1 text-sm text-zinc-600">Τα ιστορικά παιχνίδια διατηρούν το κείμενο γηπέδου που έχουν ήδη αποθηκεύσει.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingVenueId("");
+                          setShowVenueForm(false);
+                        }}
+                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                      >
+                        Κλείσιμο
+                      </button>
+                    </div>
+                    <form
+                      className="mt-4 space-y-4"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        const ok = editingVenueId
+                          ? await updateEntity("competition-venues", editingVenueId, event, `Το γήπεδο «${String(selectedVenue?.name ?? "—")}» ενημερώθηκε.`)
+                          : await submit("competition-venues", event);
+                        if (!ok) return;
+                        setEditingVenueId("");
+                        setShowVenueForm(false);
+                      }}
+                    >
+                      <input type="hidden" name="competitionId" value={competitionId} />
+                      <Field label="Όνομα γηπέδου">
+                        <input
+                          name="name"
+                          defaultValue={String(selectedVenue?.name ?? "")}
+                          required
+                          className={inputClass}
+                        />
+                      </Field>
+                      <Field label="Διεύθυνση">
+                        <input
+                          name="address"
+                          defaultValue={String(selectedVenue?.address ?? "")}
+                          className={inputClass}
+                        />
+                      </Field>
+                      <Field label="Σύνδεσμος χάρτη">
+                        <input
+                          name="mapUrl"
+                          defaultValue={String(selectedVenue?.map_url ?? "")}
+                          placeholder="https://..."
+                          className={inputClass}
+                        />
+                      </Field>
+                      <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingVenueId("");
+                            setShowVenueForm(false);
+                          }}
+                          className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
+                        >
+                          Καθαρισμός
+                        </button>
+                        <button disabled={busy} className={buttonClass}>
+                          {selectedVenue ? "Αποθήκευση αλλαγών" : "Προσθήκη γηπέδου"}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm text-zinc-600">
+                    Επιλέξτε ένα γήπεδο για επεξεργασία ή πατήστε «+ Προσθήκη γηπέδου» για νέο.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {competitionVenues.length ? (
+              <div className="mt-5 rounded-2xl border border-dashed border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600">
+                <p className="font-black text-zinc-900">Προσθήκη γηπέδου</p>
+                <p className="mt-1">Το ίδιο γήπεδο μπορεί να χρησιμοποιηθεί αργότερα στο Πρόγραμμα & Αγώνες ως απλό κείμενο.</p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
     </Panel>
   );
 }

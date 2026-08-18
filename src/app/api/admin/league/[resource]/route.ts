@@ -8,6 +8,7 @@ import {
   deleteLeagueSeason,
   deleteLeagueTeam,
   deleteLeagueParticipation,
+  deleteLeagueCompetitionVenue,
   generateRoundRobinGamesForSchedule,
   updateLeagueEntity,
 } from "@/services/league-admin.service";
@@ -17,6 +18,7 @@ const resources = new Set([
   "competitions",
   "teams",
   "participations",
+  "competition-venues",
   "players",
   "rosters",
   "phases",
@@ -29,8 +31,10 @@ const editableResources = new Set([
   "competitions",
   "teams",
   "participations",
+  "competition-venues",
   "phases",
   "phase-schedules",
+  "games",
 ]);
 
 export async function POST(
@@ -145,6 +149,7 @@ export async function DELETE(
     resource !== "seasons"
     && resource !== "competitions"
     && resource !== "participations"
+    && resource !== "competition-venues"
     && resource !== "teams"
     && resource !== "phases"
     && resource !== "phase-schedules"
@@ -167,7 +172,9 @@ export async function DELETE(
           ? await deleteLeaguePhaseSchedule(input, authorization.identity.email)
         : resource === "teams"
           ? await deleteLeagueTeam(input, authorization.identity.email)
-          : await deleteLeagueParticipation(input, authorization.identity.email);
+          : resource === "competition-venues"
+            ? await deleteLeagueCompetitionVenue(input, authorization.identity.email)
+            : await deleteLeagueParticipation(input, authorization.identity.email);
 
     return Response.json(result);
   } catch (error) {
