@@ -19,14 +19,88 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
   );
   const competitionById = new Map(data.competitions.map((competition) => [String(competition.id), competition]));
   const seasonById = new Map(data.seasons.map((season) => [String(season.id), season]));
+  const selectedCompetition = selectedCompetitionId
+    ? data.competitions.find((competition)=>String(competition.id)===selectedCompetitionId)
+    : null;
   const existingTeamIdsInCompetition = new Set(
     selectedCompetitionId
       ? data.participations
         .filter((participation) => String(participation.competition_id ?? "") === selectedCompetitionId)
+        .filter((participation) => String(participation.status ?? "active") === "active")
         .map((participation) => String(participation.team_id ?? "").trim())
         .filter(Boolean)
       : [],
   );
+  const currentParticipationCount = selectedCompetitionId
+    ? data.participations
+      .filter((participation) => String(participation.competition_id ?? "") === selectedCompetitionId)
+      .filter((participation) => String(participation.status ?? "active") === "active")
+      .length
+    : 0;
+  const expectedParticipationCount = Number(selectedCompetition?.expected_team_count ?? 0);
+  const remainingParticipationSlots = Number.isFinite(expectedParticipationCount)
+    ? Math.max(0, expectedParticipationCount - currentParticipationCount)
+    : 0;
+  const selectedNewParticipationCount = selectedParticipationTeamIds.filter(
+    (teamId)=>!existingTeamIdsInCompetition.has(teamId),
+  ).length;
+  const bulkCapacityReached = selectedCompetitionId
+    ? expectedParticipationCount > 0 && currentParticipationCount >= expectedParticipationCount
+    : false;
+  const selectedCapacityWouldOverflow = selectedCompetitionId
+    ? expectedParticipationCount > 0 && selectedNewParticipationCount > remainingParticipationSlots
+    : false;
+  const seasonTeamIds = teamSeasonFilter==="all"
+    ? []
+    : Array.from(new Set(
+      data.participations.flatMap((participation) => {
+        const participationSeasonId = String(participation.season_id ?? "");
+        const competitionSeasonId = String(competitionSeasonById.get(String(participation.competition_id ?? "")) ?? "");
+        const matchesSeason = teamSeasonFilter === participationSeasonId;
+        const matchesCompetition = teamSeasonFilter === competitionSeasonId;
+        return (matchesSeason || matchesCompetition) ? [String(participation.team_id ?? "")] : [];
+      }),
+    ));
+  const availableParticipationTeams = teamSeasonFilter==="all"
+    ? activeTeams
+    : activeTeams.filter((team)=>seasonTeamIds.includes(String(team.id)));
+  const selectableParticipationTeams = availableParticipationTeams.filter(
+    (team) => !existingTeamIdsInCompetition.has(String(team.id)),
+  );
+  const allParticipationTeamsSelected=selectableParticipationTeams.length > 0 && selectableParticipationTeams.every((team)=>selectedParticipationTeamIds.includes(String(team.id)));
+  const toggleParticipationTeam=(teamId:string,checked:boolean)=>{
+    if (checked) {
+      if (!existingTeamIdsInCompetition.has(teamId) && selectedNewParticipationCount >= remainingParticipationSlots) return;
+      setSelectedParticipationTeamIds(Array.from(new Set([...selectedParticipationTeamIds,teamId])));
+      return;
+    }
+    setSelectedParticipationTeamIds(selectedParticipationTeamIds.filter((id)=>id!==teamId));
+  };
+  const toggleAllParticipationTeams=()=>{
+    if (allParticipationTeamsSelected) {
+      setSelectedParticipationTeamIds([]);
+      return;
+    }
+    if (remainingParticipationSlots <= 0) return;
+    const nextSelection = selectableParticipationTeams
+      .map((team)=>String(team.id))
+      .slice(0, remainingParticipationSlots);
+    setSelectedParticipationTeamIds(nextSelection);
+  };
+  const submitBulkParticipation = async () => {
+    if (!selectedSeasonId || !selectedCompetitionId) return;
+    const teamIds = selectedParticipationTeamIds.filter(
+      (teamId)=>!existingTeamIdsInCompetition.has(teamId),
+    );
+    if (!teamIds.length || selectedCapacityWouldOverflow || bulkCapacityReached) return;
+    await createEntity("participations", {
+      seasonId: selectedSeasonId,
+      competitionId: selectedCompetitionId,
+      teamIds,
+      copyPreviousRoster: false,
+    });
+    setSelectedParticipationTeamIds([]);
+  };
   const getSeasonOrder = (season: Row) => {
     const label = String(season.name ?? season.slug ?? "");
     const labelMatch = label.match(/^([0-9]{4})-[0-9]{2}$/);
@@ -78,53 +152,6 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
       })
       .sort(compareSeasonDesc);
     return candidates.length ? String(candidates[0].id) : "";
-  };
-
-  const seasonTeamIds = teamSeasonFilter==="all"
-    ? []
-    : Array.from(new Set(
-      data.participations.flatMap((participation) => {
-        const participationSeasonId = String(participation.season_id ?? "");
-        const competitionSeasonId = String(competitionSeasonById.get(String(participation.competition_id ?? "")) ?? "");
-        const matchesSeason = teamSeasonFilter === participationSeasonId;
-        const matchesCompetition = teamSeasonFilter === competitionSeasonId;
-        return (matchesSeason || matchesCompetition) ? [String(participation.team_id ?? "")] : [];
-      }),
-    ));
-
-  const availableParticipationTeams = teamSeasonFilter==="all" ? activeTeams : activeTeams.filter((team)=>seasonTeamIds.includes(String(team.id)));
-  const selectableParticipationTeams = availableParticipationTeams.filter(
-    (team) => !existingTeamIdsInCompetition.has(String(team.id)),
-  );
-  const allParticipationTeamsSelected=selectableParticipationTeams.length > 0 && selectableParticipationTeams.every((team)=>selectedParticipationTeamIds.includes(String(team.id)));
-  const toggleParticipationTeam=(teamId:string,checked:boolean)=>{
-    if (checked) {
-      setSelectedParticipationTeamIds(Array.from(new Set([...selectedParticipationTeamIds,teamId])));
-      return;
-    }
-    setSelectedParticipationTeamIds(selectedParticipationTeamIds.filter((id)=>id!==teamId));
-  };
-  const toggleAllParticipationTeams=()=>{
-    if (allParticipationTeamsSelected) {
-      setSelectedParticipationTeamIds([]);
-      return;
-    }
-    setSelectedParticipationTeamIds(selectableParticipationTeams.map((team)=>String(team.id)));
-  };
-
-  const submitBulkParticipation = async () => {
-    if (!selectedSeasonId || !selectedCompetitionId) return;
-    const teamIds = selectedParticipationTeamIds.filter(
-      (teamId)=>!existingTeamIdsInCompetition.has(teamId),
-    );
-    if (!teamIds.length) return;
-    await createEntity("participations", {
-      seasonId: selectedSeasonId,
-      competitionId: selectedCompetitionId,
-      teamIds,
-      copyPreviousRoster: false,
-    });
-    setSelectedParticipationTeamIds([]);
   };
 
   const historicalSeasons = [...data.seasons].sort(compareSeasonDesc);
@@ -358,7 +385,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                     <input
                         type="checkbox"
                         checked={selectedParticipationTeamIds.includes(String(team.id))}
-                        disabled={existingTeamIdsInCompetition.has(String(team.id))}
+                        disabled={existingTeamIdsInCompetition.has(String(team.id)) || (!selectedParticipationTeamIds.includes(String(team.id)) && remainingParticipationSlots <= 0)}
                         onChange={(event)=>toggleParticipationTeam(String(team.id), event.target.checked)}
                       />
                       <span className="flex-1">{team.name}</span>
@@ -371,13 +398,23 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
           )}
         </Field>
         <button
-          disabled={busy || !selectedSeasonId || !availableCompetitions.length || !selectedCompetitionId || !selectedParticipationTeamIds.some((teamId)=>!existingTeamIdsInCompetition.has(teamId))}
+          disabled={busy || !selectedSeasonId || !availableCompetitions.length || !selectedCompetitionId || !selectedParticipationTeamIds.some((teamId)=>!existingTeamIdsInCompetition.has(teamId)) || bulkCapacityReached || selectedCapacityWouldOverflow}
           className={`${buttonClass} self-end`}
         >
           Προσθήκη επιλεγμένων ομάδων
         </button>
       </form>
       {selectedSeasonId && !availableCompetitions.length && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Δεν υπάρχει ακόμη διοργάνωση για την επιλεγμένη σεζόν.</p>}
+      {selectedCompetitionId && selectedCompetition && (
+        <p className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm font-bold text-zinc-700">
+          Ομάδες: {currentParticipationCount} / {expectedParticipationCount} · Υπόλοιπο: {remainingParticipationSlots}
+        </p>
+      )}
+      {selectedCompetitionId && bulkCapacityReached && (
+        <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">
+          Η διοργάνωση έχει συμπληρώσει τον μέγιστο αριθμό των {expectedParticipationCount} ομάδων.
+        </p>
+      )}
     </Panel>
 
     <Panel title="Συμμετοχές ομάδων" description="Η απενεργοποίηση ή η αποχώρηση μιας συμμετοχής δεν διαγράφει την ομάδα, το ρόστερ ή το ιστορικό της.">

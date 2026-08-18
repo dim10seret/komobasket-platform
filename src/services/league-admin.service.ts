@@ -2263,9 +2263,32 @@ export async function createLeagueEntity(resource: string, input: Record<string,
     }
 
     const competition = await db.prepare(
-      "SELECT id FROM league_competitions WHERE id=? AND season_id=?",
-    ).bind(competitionId, seasonId).first<{ id: string }>();
+      `SELECT c.id, cf.expected_team_count
+       FROM league_competitions c
+       LEFT JOIN league_competition_formats cf ON cf.competition_id=c.id
+       WHERE c.id=? AND c.season_id=?`,
+    ).bind(competitionId, seasonId).first<{ id: string; expected_team_count: number | null }>();
     if (!competition) throw new Error("Η διοργάνωση δεν ανήκει στην επιλεγμένη σεζόν.");
+
+    const expectedTeamCount = Number(competition.expected_team_count ?? 0);
+    if (!Number.isFinite(expectedTeamCount) || expectedTeamCount <= 0) {
+      throw new Error("Δεν έχει οριστεί έγκυρη χωρητικότητα ομάδων για τη διοργάνωση.");
+    }
+
+    const activeCompetitionTeams = await rows<{ team_id: string }>(
+      db,
+      `SELECT st.team_id
+       FROM league_competition_teams ct
+       INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+       WHERE ct.competition_id=? AND ct.status='active'`,
+      [competitionId],
+    );
+    const activeTeamSet = new Set(activeCompetitionTeams.map((row) => String(row.team_id ?? "").trim()).filter(Boolean));
+    const newUniqueTeamIds = teamIds.filter((teamId) => !activeTeamSet.has(teamId));
+    const currentActiveCount = activeTeamSet.size;
+    if (currentActiveCount + newUniqueTeamIds.length > expectedTeamCount) {
+      throw new Error(`Η διοργάνωση έχει συμπληρώσει τον μέγιστο αριθμό των ${expectedTeamCount} ομάδων.`);
+    }
 
     const normalizedSeed = optionalInteger(input.seed, "Seed", 1);
     let created = 0;
@@ -2930,6 +2953,13 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
       WHERE c.id=?`).bind(id).first<DbRow>();
     if (!current) throw new Error("Δεν βρέθηκε η διοργάνωση.");
     const competition = await competitionInput(db, input, current);
+    const activeParticipationCount = await db.prepare(
+      "SELECT COUNT(*) AS count FROM league_competition_teams WHERE competition_id=? AND status='active'",
+    ).bind(id).first<{ count: number }>();
+    const currentActiveParticipationCount = Number(activeParticipationCount?.count ?? 0);
+    if (competition.expectedTeamCount !== null && currentActiveParticipationCount > competition.expectedTeamCount) {
+      throw new Error(`Δεν μπορείτε να ορίσετε ${competition.expectedTeamCount} αναμενόμενες ομάδες, επειδή η διοργάνωση έχει ήδη ${currentActiveParticipationCount} συμμετοχές.`);
+    }
     const duplicate = await db.prepare(
       "SELECT id FROM league_competitions WHERE season_id=? AND slug=? AND id<>?",
     ).bind(competition.seasonId, competition.slug, id).first<{ id: string }>();

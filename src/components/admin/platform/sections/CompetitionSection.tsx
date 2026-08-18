@@ -151,7 +151,8 @@ export function CompetitionWorkspaceManager({
   const participationCountByCompetition = new Map<string, number>();
   for (const participation of data.participations) {
     const competitionId = String(participation.competition_id ?? "");
-    if (competitionId) participationCountByCompetition.set(competitionId, (participationCountByCompetition.get(competitionId) ?? 0) + 1);
+    const status = String(participation.status ?? "active");
+    if (competitionId && status === "active") participationCountByCompetition.set(competitionId, (participationCountByCompetition.get(competitionId) ?? 0) + 1);
   }
 
   const selectedCompetition = data.competitions.find((competition)=>String(competition.id)===workspaceCompetitionId);
