@@ -180,6 +180,8 @@ export function CompetitionWorkspaceManager({
   const [newPhaseName, setNewPhaseName] = useState("");
   const [newPhaseFormat, setNewPhaseFormat] = useState<"standings" | "series">("standings");
   const [newPhasePreviousId, setNewPhasePreviousId] = useState("");
+  const [finalizePhaseDialog, setFinalizePhaseDialog] = useState<{ phaseId: string; phaseName: string; competitionId: string } | null>(null);
+  const [finalizePhaseConfirmation, setFinalizePhaseConfirmation] = useState("");
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
   const [teamRosterLoading,setTeamRosterLoading]=useState(false);
   const [teamRosterError,setTeamRosterError]=useState("");
@@ -867,8 +869,13 @@ export function CompetitionWorkspaceManager({
                 return (
                   <article key={`active-phase-${activePhaseIdValue}`} className="rounded-xl border border-zinc-200 bg-white p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-black uppercase tracking-wider text-orange-600">{activePhaseOrder}. {activePhase.name}</p>
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-xs font-black uppercase tracking-wider text-orange-600">{activePhaseOrder}. {activePhase.name}</p>
+                          <span className={String((activePhase as Row).lifecycle_status ?? "active") === "finalized" ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
+                            {String((activePhase as Row).lifecycle_status ?? "active") === "finalized" ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
+                          </span>
+                        </div>
                         <p className="mt-1 text-sm text-zinc-700">{phaseFormatLabel(activePhaseFormat)} · σειρά {activePhaseOrder}</p>
                       </div>
                       <button
@@ -879,6 +886,25 @@ export function CompetitionWorkspaceManager({
                         {isActivePhaseEditing ? "Αρχικό μενού Φάσεων" : "Edit Φάσης"}
                       </button>
                     </div>
+                    {!isActivePhaseEditing && activePhaseFormat === "standings" && String((activePhase as Row).lifecycle_status ?? "active") !== "finalized" && (
+                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                        <p className="text-sm font-semibold text-zinc-700">Η οριστικοποίηση της φάσης καθιστά την τελική κατάταξη διαθέσιμη στις επόμενες φάσεις και κλειδώνει βασικές ρυθμίσεις της φάσης.</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFinalizePhaseConfirmation("");
+                            setFinalizePhaseDialog({
+                              phaseId: activePhaseIdValue,
+                              phaseName: String(activePhase.name ?? ""),
+                              competitionId: String(activePhase.competition_id ?? ""),
+                            });
+                          }}
+                          className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100"
+                        >
+                          Οριστικοποίηση φάσης
+                        </button>
+                      </div>
+                    )}
                     {isActivePhaseEditing && (
                       <form
                         onSubmit={async (event) => {
@@ -949,6 +975,76 @@ export function CompetitionWorkspaceManager({
                   </article>
                 );
               })() : null}
+              {finalizePhaseDialog && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+                  <div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-wider text-orange-600">Οριστικοποίηση φάσης</p>
+                        <h3 className="mt-1 text-xl font-black text-zinc-950">{finalizePhaseDialog.phaseName}</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFinalizePhaseDialog(null);
+                          setFinalizePhaseConfirmation("");
+                        }}
+                        className="rounded-xl border border-zinc-300 px-3 py-2 text-sm font-black text-zinc-700 transition hover:border-orange-500"
+                      >
+                        Ακύρωση
+                      </button>
+                    </div>
+                    <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                      Η οριστικοποίηση της φάσης καθιστά την τελική κατάταξη διαθέσιμη στις επόμενες φάσεις και κλειδώνει βασικές ρυθμίσεις της φάσης.
+                    </p>
+                    <form
+                      className="mt-4"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        if (String(finalizePhaseConfirmation).trim() !== "ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ") return;
+                        const ok = await updateEntity("phases", finalizePhaseDialog.phaseId, event, "Η φάση οριστικοποιήθηκε.");
+                        if (ok) {
+                          setFinalizePhaseDialog(null);
+                          setFinalizePhaseConfirmation("");
+                        }
+                      }}
+                    >
+                      <input type="hidden" name="action" value="finalizePhase" />
+                      <input type="hidden" name="phaseId" value={finalizePhaseDialog.phaseId} />
+                      <input type="hidden" name="competitionId" value={finalizePhaseDialog.competitionId} />
+                      <label className="block text-sm font-black text-zinc-800">
+                        Πληκτρολόγησε ακριβώς <span className="text-orange-600">ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ</span>
+                        <input
+                          value={finalizePhaseConfirmation}
+                          onChange={(event) => setFinalizePhaseConfirmation(event.target.value)}
+                          className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-zinc-950 outline-none transition focus:border-orange-500 focus:ring-2 focus:ring-orange-100"
+                          placeholder="ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ"
+                        />
+                      </label>
+                      <div className="mt-5 flex flex-wrap items-center gap-3">
+                        <button
+                          type="submit"
+                          disabled={String(finalizePhaseConfirmation).trim() !== "ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ" || busy}
+                          className="rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Οριστικοποίηση φάσης
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFinalizePhaseDialog(null);
+                            setFinalizePhaseConfirmation("");
+                          }}
+                          className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500"
+                        >
+                          Ακύρωση
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
+
               {teamRosterLoading && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
                   <div className="max-w-sm rounded-2xl bg-white p-6 text-center text-zinc-700">Φόρτωση ρόστερ…</div>

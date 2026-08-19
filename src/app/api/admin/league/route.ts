@@ -17,6 +17,8 @@ import {
   removeStaffFromRoster,
   copyPreviousRosterForTeam,
   bulkScheduleGames,
+  finalizeLeaguePhase,
+  finalizePhaseById,
   getLeagueAdminSnapshot,
   getTeamRosterManagementView,
 } from "@/services/league-admin.service";
@@ -191,6 +193,14 @@ export async function PATCH(request: Request) {
         venueMode: String(input.venueMode ?? input.venue_mode ?? "keep"),
         venueId: input.venueId ?? input.venue_id ?? null,
       }, authorization.identity.email));
+    }
+    if (action === "finalizePhase") {
+      const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+      const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+      if (!phaseId || !competitionId) {
+        return Response.json({ error: "Λείπει phaseId ή competitionId." }, { status: 400 });
+      }
+      return Response.json(await finalizeLeaguePhase({ phaseId, competitionId }, authorization.identity.email));
     }
     if (action === "departPlayerLegacy") {
       return Response.json(await departPlayer(input, authorization.identity.email));

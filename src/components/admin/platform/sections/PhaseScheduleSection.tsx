@@ -702,6 +702,8 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
           const id=String(phase.id);
           const isEditing=editingPhaseId===id;
           const phaseFormat = String(phase.format ?? phase.phase_kind ?? "standings");
+          const lifecycleStatus = String((phase as { lifecycle_status?: string }).lifecycle_status ?? "active");
+          const isFinalized = lifecycleStatus === "finalized";
           const handleEditFormSubmit = async (event: FormEvent<HTMLFormElement>) => {
             const payload = new FormData(event.currentTarget);
             const activeStep = String(payload.get("phaseEditStep") || "0");
@@ -724,9 +726,42 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
           };
           return <article key={id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div><p className="text-xs font-black uppercase tracking-wider text-orange-600">{phase.season_name} · {phase.competition_name}</p><h3 className="mt-1 text-lg font-black text-zinc-950">{phase.name}</h3><p className="mt-2 text-sm text-zinc-600">{phaseFormatLabel(phaseFormat)} · σειρά {phase.order_index ?? 0}</p></div>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-black uppercase tracking-wider text-orange-600">{phase.season_name} · {phase.competition_name}</p>
+                  <span className={isFinalized ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
+                    {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
+                  </span>
+                </div>
+                <h3 className="mt-1 text-lg font-black text-zinc-950">{phase.name}</h3>
+                <p className="mt-2 text-sm text-zinc-600">{phaseFormatLabel(phaseFormat)} · σειρά {phase.order_index ?? 0}</p>
+              </div>
               <button type="button" onClick={()=>setEditingPhaseId(isEditing?null:id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing?"Αρχικό μενού Φάσεων":"Edit"}</button>
             </div>
+            {!isEditing && phaseFormat === "standings" && (
+              <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm">
+                <span className={isFinalized ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
+                  {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
+                </span>
+                {!isFinalized && (
+                  <form onSubmit={(event) => void updateEntity("phases", id, event, "Η φάση οριστικοποιήθηκε.")}>
+                    <input type="hidden" name="action" value="finalizePhase" />
+                    <input type="hidden" name="phaseId" value={id} />
+                    <input type="hidden" name="competitionId" value={String(phase.competition_id)} />
+                    <button type="submit" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100">Οριστικοποίηση φάσης</button>
+                  </form>
+                )}
+              </div>
+            )}
+            {!isEditing && phaseFormat === "standings" && !isFinalized && (
+              <form onSubmit={(event) => void updateEntity("phases", id, event, "Η φάση οριστικοποιήθηκε.")} className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <input type="hidden" name="action" value="finalizePhase" />
+                <input type="hidden" name="phaseId" value={id} />
+                <input type="hidden" name="competitionId" value={String(phase.competition_id)} />
+                <p className="text-sm font-semibold text-amber-900">Η οριστικοποίηση της φάσης επιτρέπει στην τελική κατάταξη να χρησιμοποιηθεί από επόμενες φάσεις.</p>
+                <button type="submit" className="mt-3 rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-amber-700">Οριστικοποίηση φάσης</button>
+              </form>
+            )}
             {!isEditing && phaseFormat === "standings" && <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />}
             {isEditing && <form
               ref={phaseEditFormRef}
@@ -943,6 +978,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
 
   </>;
 }
+
 
 
 

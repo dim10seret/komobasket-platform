@@ -3,6 +3,7 @@ import "server-only";
 import { players as legacyPlayers } from "@/data/players";
 import { teams as legacyTeams } from "@/data/teams";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { calculateStandings } from "@/lib/standings-calculator";
 import {
   createEntityId,
   findAutomaticPlayerMatch,
@@ -867,6 +868,195 @@ async function parsePhaseParticipantConfig(
   };
 }
 
+type FinalizationParticipant = {
+  teamId: string;
+  teamName: string;
+};
+
+function parsePhaseParticipantSettings(raw: unknown) {
+  const settings = parseJsonRecord(raw);
+  const participantConfig = parseJsonRecord(settings.participantConfiguration);
+  return {
+    participantConfig,
+    participantSourceType: String(participantConfig.participantSourceType ?? "competition_participants").trim() || "competition_participants",
+  };
+}
+
+async function resolvePhaseParticipantsForStandings(
+  db: D1DatabaseBinding,
+  phase: DbRow,
+): Promise<FinalizationParticipant[]> {
+  const competitionId = String(phase.competition_id ?? "").trim();
+  const { participantConfig, participantSourceType } = parsePhaseParticipantSettings(phase.rule_settings_json ?? phase.settings_json ?? "{}");
+
+  if (participantSourceType === "standing_positions") {
+    throw new Error("Η οριστικοποίηση της φάσης με θέσεις από προηγούμενη βαθμολογία θα υποστηριχθεί σε επόμενο στάδιο.");
+  }
+
+  if (participantSourceType === "selected_teams") {
+    const selectedTeamIds = parseJsonStringArray(participantConfig.selectedTeamIds);
+    if (!selectedTeamIds.length) throw new Error("Η φάση δεν έχει έγκυρους συμμετέχοντες.");
+    const placeholders = selectedTeamIds.map(() => "?").join(",");
+    const rowsResult = await rows<FinalizationParticipant>(
+      db,
+      `
+      SELECT t.id AS teamId, COALESCE(st.display_name, t.name) AS teamName
+      FROM league_teams t
+      LEFT JOIN league_season_teams st ON st.team_id=t.id
+      INNER JOIN league_competition_teams ct ON ct.season_team_id=st.id AND ct.competition_id=? AND ct.status='active'
+      WHERE t.id IN (${placeholders})
+      ORDER BY COALESCE(ct.seed, 999999), COALESCE(st.display_name, t.name), t.id
+      `,
+      [competitionId, ...selectedTeamIds],
+    );
+    return rowsResult;
+  }
+
+  const rowsResult = await rows<FinalizationParticipant>(
+    db,
+    `
+    SELECT t.id AS teamId, COALESCE(st.display_name, t.name) AS teamName
+    FROM league_competition_teams ct
+    JOIN league_season_teams st ON st.id=ct.season_team_id
+    JOIN league_teams t ON t.id=st.team_id
+    WHERE ct.competition_id=? AND ct.status='active'
+    ORDER BY COALESCE(ct.seed, 999999), COALESCE(st.display_name, t.name), t.id
+    `,
+    [competitionId],
+  );
+  return rowsResult;
+}
+
+function validateFinalGameState(game: DbRow) {
+  const status = String(game.status ?? "").trim().toLowerCase();
+  if (status === "scheduled" || status === "postponed") {
+    throw new Error("Η φάση δεν μπορεί να οριστικοποιηθεί επειδή υπάρχουν ακόμη αγώνες σε εκκρεμότητα.");
+  }
+  if (status === "cancelled") return;
+  if (status !== "completed") {
+    throw new Error("Η φάση δεν μπορεί να οριστικοποιηθεί επειδή υπάρχουν μη έγκυρες καταστάσεις αγώνων.");
+  }
+  const homeScore = parseNonNegativeInteger(game.home_score, "Σκορ γηπεδούχου");
+  const awayScore = parseNonNegativeInteger(game.away_score, "Σκορ φιλοξενούμενου");
+  if (homeScore === awayScore) {
+    throw new Error("Η φάση δεν μπορεί να οριστικοποιηθεί με ισόπαλο επίσημο αποτέλεσμα.");
+  }
+}
+
+export async function finalizePhaseById(
+  db: D1DatabaseBinding,
+  phaseId: string,
+  competitionId: string,
+  actor: string,
+) {
+  const current = await db.prepare(`
+    SELECT p.*, pr.phase_kind, pr.bracket_size, pr.best_of, pr.wins_required, pr.carry_over_enabled,
+      pr.carry_over_source_phase_id, pr.settings_json AS rule_settings_json
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.id=? AND p.competition_id=?
+  `).bind(phaseId, competitionId).first<DbRow>();
+  if (!current) throw new Error("Δεν βρέθηκε η φάση.");
+  const currentLifecycle = String(current.lifecycle_status ?? "active");
+  if (currentLifecycle === "finalized") {
+    throw new Error("Η φάση έχει ήδη οριστικοποιηθεί.");
+  }
+
+  const currentFormat = normalizeCanonicalFormat(String(current.format ?? ""), String(current.phase_kind ?? ""));
+  if (currentFormat !== "standings") {
+    throw new Error("Προς το παρόν μπορούν να οριστικοποιηθούν μόνο βαθμολογικές φάσεις.");
+  }
+
+  const phaseGames = await rows<DbRow>(
+    db,
+    `
+    SELECT id, phase_id, home_team_id, away_team_id, home_score, away_score, status, result_source
+    FROM league_games
+    WHERE phase_id=?
+    ORDER BY COALESCE(round_number, 0), COALESCE(game_order, 0), id
+    `,
+    [phaseId],
+  );
+  if (!phaseGames.length) {
+    throw new Error("Η φάση δεν μπορεί να οριστικοποιηθεί χωρίς αγώνες.");
+  }
+
+  const eligibleParticipants = await resolvePhaseParticipantsForStandings(db, current);
+  if (eligibleParticipants.length < 2) {
+    throw new Error("Η φάση δεν έχει αρκετές συμμετοχές για οριστικοποίηση.");
+  }
+  const participantIds = new Set(eligibleParticipants.map((entry) => entry.teamId));
+
+  for (const game of phaseGames) {
+    const homeTeamId = String(game.home_team_id ?? "").trim();
+    const awayTeamId = String(game.away_team_id ?? "").trim();
+    if (!homeTeamId || !awayTeamId || homeTeamId === awayTeamId) {
+      throw new Error("Η φάση περιέχει μη έγκυρο αγώνα.");
+    }
+    if (!participantIds.has(homeTeamId) || !participantIds.has(awayTeamId)) {
+      throw new Error("Η φάση περιέχει αγώνα με ομάδα εκτός της συμμετοχής.");
+    }
+    validateFinalGameState(game);
+  }
+
+  const rules = parsePhaseRuleJson(current.rule_settings_json);
+  const standings = calculateStandings({
+    phaseId,
+    teams: eligibleParticipants as any,
+    games: phaseGames.map((game) => ({
+      id: String(game.id ?? ""),
+      phaseId: String(game.phase_id ?? null),
+      homeTeamId: String(game.home_team_id ?? ""),
+      awayTeamId: String(game.away_team_id ?? ""),
+      homeScore: game.home_score as number | string | null,
+      awayScore: game.away_score as number | string | null,
+      status: String(game.status ?? null),
+      resultSource: game.result_source === undefined ? null : String(game.result_source ?? null),
+    })),
+    rules: {
+      pointsForWin: Number(rules.pointsForWin ?? rules.winPoints ?? 2),
+      pointsForLoss: Number(rules.pointsForLoss ?? rules.lossPoints ?? 1),
+    },
+    tieBreakers: parseStandingsTieBreakers(rules.tieBreakers) as any,
+  });
+  await db.batch([
+    db.prepare(`UPDATE league_phases
+      SET lifecycle_status='finalized', finalized_at=COALESCE(finalized_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND competition_id=?`).bind(phaseId, competitionId),
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+      .bind(
+        createEntityId("audit"),
+        actor,
+        "finalize",
+        "phases",
+        phaseId,
+        JSON.stringify({
+          before: { lifecycle_status: currentLifecycle },
+          after: { lifecycle_status: "finalized" },
+          standings: standings.orderedRows.map((row) => ({
+            teamId: row.teamId,
+            rank: row.rank,
+            primaryPoints: row.primaryPoints,
+            tieResolved: row.tieResolved,
+          })),
+        }),
+      ),
+  ]);
+
+  return { id: phaseId };
+}
+
+export async function finalizeLeaguePhase(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η οριστικοποίηση φάσης είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+  const phaseId = String(input.phaseId ?? input.id ?? input.phase_id ?? "").trim();
+  const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+  if (!phaseId || !competitionId) throw new Error("Λείπει phaseId ή competitionId.");
+  return finalizePhaseById(db, phaseId, competitionId, actor);
+}
+
 function seasonInput(input: Record<string, unknown>): SeasonInput {
   const name = String(input.name ?? "").trim();
   const startsOn = String(input.startsOn ?? "").trim() || null;
@@ -1272,6 +1462,7 @@ export async function getLeagueAdminSnapshot() {
     rows(db, `SELECT r.*, p.display_name AS player_name, t.name AS team_name, s.name AS season_name FROM league_roster_memberships r JOIN league_players p ON p.id=r.player_id JOIN league_teams t ON t.id=r.team_id JOIN league_seasons s ON s.id=r.season_id ORDER BY s.name DESC, t.name, p.display_name LIMIT 2000`),
     rows(db, `SELECT m.*, p.display_name AS player_name, ft.name AS from_team_name, tt.name AS to_team_name FROM league_player_movements m JOIN league_players p ON p.id=m.player_id LEFT JOIN league_teams ft ON ft.id=m.from_team_id LEFT JOIN league_teams tt ON tt.id=m.to_team_id ORDER BY m.effective_on DESC LIMIT 500`),
     rows(db, `SELECT p.*, c.name AS competition_name, s.name AS season_name,
+      p.lifecycle_status, p.finalized_at,
       COALESCE(pr.phase_kind, CASE WHEN p.phase_type='regular' THEN 'regular_season' ELSE p.phase_type END) AS phase_kind,
       COALESCE(p.phase_order, p.order_index) AS phase_order,
       p.previous_phase_id,
@@ -1285,7 +1476,7 @@ export async function getLeagueAdminSnapshot() {
       LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
       ORDER BY s.name DESC, c.name, COALESCE(p.phase_order, p.order_index), p.id`),
     rows(db, `SELECT ps.*, p.name AS phase_name, p.format AS phase_format,
-      p.phase_type, COALESCE(p.phase_order, p.order_index) AS phase_order,
+      p.phase_type, p.lifecycle_status, p.finalized_at, COALESCE(p.phase_order, p.order_index) AS phase_order,
       pr.phase_kind, pr.bracket_size, pr.best_of, pr.wins_required,
       pr.carry_over_enabled, pr.carry_over_source_phase_id,
       source_phase.name AS carry_over_source_name,
@@ -3616,13 +3807,19 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
   }
 
   if (resource === "phases") {
-    const current = await db.prepare(`SELECT p.*, pr.phase_kind, pr.bracket_size,
+    const current = await db.prepare(`SELECT p.*, p.lifecycle_status, p.finalized_at, pr.phase_kind, pr.bracket_size,
       pr.best_of, pr.wins_required, pr.carry_over_enabled,
       pr.carry_over_source_phase_id, pr.settings_json AS rule_settings_json
       FROM league_phases p
       LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
       WHERE p.id=?`).bind(id).first<DbRow>();
     if (!current) throw new Error("Δεν βρέθηκε η φάση.");
+    if (String(current.lifecycle_status ?? "active") === "finalized") {
+      throw new Error("Η οριστικοποιημένη φάση δεν μπορεί να τροποποιηθεί.");
+    }
+    if (String(current.lifecycle_status ?? "active") === "finalized") {
+      throw new Error("Η οριστικοποιημένη φάση δεν μπορεί να τροποποιηθεί.");
+    }
     const phase = await phaseInput(db, input, current);
     const generatedSchedule = await db.prepare(
       "SELECT id FROM league_phase_schedules WHERE phase_id=? LIMIT 1",

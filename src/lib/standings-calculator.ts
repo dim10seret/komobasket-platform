@@ -387,9 +387,9 @@ export const calculateStandings = (input: StandingsCalculatorInput): StandingsCa
           const rightTeam = teamById.get(right)!;
           return compareAlpha(leftTeam.name, rightTeam.name, leftTeam.id, rightTeam.id);
         }),
-        unresolved: true,
+        unresolved: false,
         resolvedBy: "fallback",
-        tieGroupId,
+        tieGroupId: null,
       };
     }
 
@@ -401,11 +401,7 @@ export const calculateStandings = (input: StandingsCalculatorInput): StandingsCa
 
     if (criterion === "alphabetical") {
       orderedTeamIds.push(...sortedStats.map((item) => item.teamId));
-      const hasTrueAlphabeticalTies = sortedStats.some((item, index) => {
-        const next = sortedStats[index + 1];
-        return next ? compareAlpha(item.teamName, next.teamName, item.teamId, next.teamId) === 0 : false;
-      });
-      unresolved = hasTrueAlphabeticalTies;
+      unresolved = false;
     } else {
       const buckets = new Map<number, string[]>();
       for (const item of sortedStats) {
@@ -432,16 +428,11 @@ export const calculateStandings = (input: StandingsCalculatorInput): StandingsCa
       }
     }
 
-    if (!unresolved && criterion !== "alphabetical") {
-      // The group may still contain equal elements resolved by deeper criteria.
-      unresolved = false;
-    }
-
     return {
       orderedTeamIds,
       unresolved,
       resolvedBy: criterion,
-      tieGroupId: unresolved ? tieGroupId : null,
+      tieGroupId: null,
     };
   };
 
@@ -469,24 +460,16 @@ export const calculateStandings = (input: StandingsCalculatorInput): StandingsCa
     tieGroupIndex += 1;
     const tieGroupId = `tg-${primaryPoints}-${tieGroupIndex}`;
     const ordered = orderGroup(group.map((row) => row.teamId), 0, tieGroupId);
-    if (ordered.unresolved) {
-      unresolvedTieGroups.push({
-        tieGroupId,
-        teamIds: [...ordered.orderedTeamIds],
-        primaryPoints,
-        exhaustedCriteria: true,
-      });
-    }
     for (const teamId of ordered.orderedTeamIds) {
       const row = primaryRows.find((item) => item.teamId === teamId)!;
       orderedRows.push({
         teamId,
         teamName: row.teamName,
         rank,
-        resolvedBy: ordered.unresolved ? "fallback" : ordered.resolvedBy,
+        resolvedBy: ordered.resolvedBy,
         primaryPoints,
-        tieResolved: !ordered.unresolved,
-        tieGroupId: ordered.unresolved ? tieGroupId : null,
+        tieResolved: true,
+        tieGroupId: null,
       });
       rank += 1;
     }

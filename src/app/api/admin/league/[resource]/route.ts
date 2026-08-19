@@ -10,6 +10,7 @@ import {
   deleteLeagueParticipation,
   deleteLeagueCompetitionVenue,
   generateRoundRobinGamesForSchedule,
+  finalizeLeaguePhase,
   updateLeagueEntity,
 } from "@/services/league-admin.service";
 
@@ -113,6 +114,11 @@ export async function PATCH(
   try {
     const input = (await request.json()) as Record<string, unknown>;
 
+    if (resource === "phases" && String(input.action ?? "").trim() === "finalizePhase") {
+      const result = await finalizeLeaguePhase(input, authorization.identity.email);
+      return Response.json(result);
+    }
+
     const result = await updateLeagueEntity(
       resource,
       input,
@@ -189,3 +195,5 @@ export async function DELETE(
     );
   }
 }
+
+
