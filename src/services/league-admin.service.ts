@@ -1002,7 +1002,10 @@ export async function finalizePhaseById(
   const rules = parsePhaseRuleJson(current.rule_settings_json);
   const standings = calculateStandings({
     phaseId,
-    teams: eligibleParticipants as any,
+    teams: eligibleParticipants.map((entry) => ({
+      id: String(entry.teamId ?? ""),
+      name: String(entry.teamName ?? "—"),
+    })),
     games: phaseGames.map((game) => ({
       id: String(game.id ?? ""),
       phaseId: String(game.phase_id ?? null),
