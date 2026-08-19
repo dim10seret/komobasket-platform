@@ -28,6 +28,7 @@ import {
 } from "../shared/admin-core";
 import { PhaseFields, StandingsPhasePreview } from "./PhaseScheduleSection";
 import { describeSeriesMatchupsFromPhase } from "../phases/PhaseParticipantsBuilder";
+import { resolveFinalizedStandingsPositions } from "@/lib/series-carry-over";
 import { ProgramGamesSection } from "./ProgramGamesSection";
 
 export function CompetitionFields({
@@ -955,6 +956,45 @@ export function CompetitionWorkspaceManager({
                           ?? "",
                         ).trim(),
                       };
+                      const ruleSettings = (() => {
+                        try {
+                          const raw = String((rawActivePhase as Record<string, unknown>).rule_settings_json ?? "");
+                          const parsed = raw ? JSON.parse(raw) : {};
+                          return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+                        } catch {
+                          return {};
+                        }
+                      })();
+                      const participantConfiguration = (() => {
+                        const value = ruleSettings.participantConfiguration;
+                        if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+                        return {};
+                      })();
+                      const sourcePhaseId = String(
+                        seriesSummaryPhase.previous_phase_id
+                        || participantConfiguration.participantSourcePhaseId
+                        || participantConfiguration.sourcePhaseId
+                        || ""
+                      ).trim() || null;
+                      const resolvedPositions = resolveFinalizedStandingsPositions(
+                        data.phases,
+                        data.games,
+                        data.teams,
+                        sourcePhaseId,
+                      );
+                      const positionNameMap = new Map<number, string>(
+                        resolvedPositions.positions.map((entry) => [entry.position, entry.teamName]),
+                      );
+                      const decorateStandingLabel = (label: string) => {
+                        if (resolvedPositions.state !== "resolved") return label;
+                        return label.split(" — ").map((part) => {
+                          const match = /^#(\d+)$/.exec(part.trim());
+                          if (!match) return part;
+                          const position = Number(match[1]);
+                          const teamName = positionNameMap.get(position);
+                          return teamName ? `#${position} ${teamName}` : part;
+                        }).join(" — ");
+                      };
                       const summaries = describeSeriesMatchupsFromPhase(data, seriesSummaryPhase);
                       return (
                         <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
@@ -962,7 +1002,7 @@ export function CompetitionWorkspaceManager({
                           <div className="mt-3 space-y-2">
                             {summaries.length ? summaries.map((summary) => (
                               <div key={summary.id} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
-                                <p>{summary.label}</p>
+                                <p>{decorateStandingLabel(summary.label)}</p>
                               </div>
                             )) : <p className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν έχουν οριστεί ακόμη διασταυρώσεις.</p>}
                           </div>

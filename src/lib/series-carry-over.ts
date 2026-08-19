@@ -1,3 +1,5 @@
+import { calculateStandings } from "@/lib/standings-calculator";
+
 type JsonRecord = Record<string, unknown>;
 
 export type SeriesCarryOverGameLike = {
@@ -25,6 +27,8 @@ export type SeriesCarryOverPhaseLike = {
   name?: string | null;
   format?: string | null;
   phase_kind?: string | null;
+  lifecycle_status?: string | null;
+  previous_phase_id?: string | number | null;
   wins_required?: string | number | null;
   carry_over_enabled?: string | number | null;
   carry_over_source_phase_id?: string | null;
@@ -88,6 +92,12 @@ export type SeriesCarryOverResolution = {
 export type SeriesCarryOverTeamLike = {
   id?: string | number | null;
   name?: string | null;
+};
+
+export type FinalizedStandingsPositionLike = {
+  position: number;
+  teamId: string;
+  teamName: string;
 };
 
 const parseJsonRecord = (input: unknown): JsonRecord => {
@@ -180,6 +190,138 @@ const resolveSourceGameWinner = (game: SeriesCarryOverGameLike, teamAId: string,
   return null;
 };
 
+const normalizePhaseFormat = (phase: SeriesCarryOverPhaseLike | undefined) => {
+  const raw = String(phase?.format ?? phase?.phase_kind ?? "").trim().toLowerCase();
+  return raw === "regular_season" ? "standings" : raw;
+};
+
+const parsePhaseParticipants = (
+  phase: SeriesCarryOverPhaseLike | undefined,
+  teams: SeriesCarryOverTeamLike[],
+) => {
+  const settings = getSeriesSettings(phase);
+  const participantConfig = parseJsonRecord(settings.participantConfiguration);
+  const participantSourceType = String(participantConfig.participantSourceType ?? "competition_participants").trim() || "competition_participants";
+  if (participantSourceType === "selected_teams") {
+    const selectedIds = Array.isArray(participantConfig.selectedTeamIds)
+      ? [...new Set(participantConfig.selectedTeamIds.map((value) => String(value ?? "").trim()).filter(Boolean))]
+      : [];
+    if (!selectedIds.length) return [];
+    return selectedIds.map((teamId) => {
+      const team = teams.find((entry) => String(entry.id ?? "") === teamId);
+      return {
+        id: teamId,
+        name: String(team?.name ?? "—"),
+      };
+    }).filter((entry) => entry.id);
+  }
+  return teams
+    .map((team) => ({ id: String(team.id ?? "").trim(), name: String(team.name ?? "—") }))
+    .filter((team) => team.id);
+};
+
+export const resolveFinalizedStandingsPositions = (
+  phases: SeriesCarryOverPhaseLike[],
+  games: SeriesCarryOverGameLike[],
+  teams: SeriesCarryOverTeamLike[],
+  sourcePhaseId?: string | null,
+): {
+  state: "resolved" | "pending" | "error";
+  message: string;
+  sourcePhaseId: string | null;
+  sourcePhaseName: string | null;
+  positions: FinalizedStandingsPositionLike[];
+} => {
+  const normalizedSourcePhaseId = String(sourcePhaseId ?? "").trim() || null;
+  if (!normalizedSourcePhaseId) {
+    return {
+      state: "pending",
+      message: "Σε αναμονή προσδιορισμού φάσης προέλευσης.",
+      sourcePhaseId: null,
+      sourcePhaseName: null,
+      positions: [],
+    };
+  }
+
+  const sourcePhase = phases.find((entry) => String(entry.id ?? "") === normalizedSourcePhaseId);
+  if (!sourcePhase) {
+    return {
+      state: "pending",
+      message: "Σε αναμονή προσδιορισμού φάσης προέλευσης.",
+      sourcePhaseId: normalizedSourcePhaseId,
+      sourcePhaseName: null,
+      positions: [],
+    };
+  }
+
+  if (String(sourcePhase.lifecycle_status ?? "active") !== "finalized") {
+    return {
+      state: "pending",
+      message: "Σε αναμονή οριστικοποίησης φάσης προέλευσης.",
+      sourcePhaseId: normalizedSourcePhaseId,
+      sourcePhaseName: sourcePhase.name ?? null,
+      positions: [],
+    };
+  }
+
+  if (normalizePhaseFormat(sourcePhase) !== "standings") {
+    return {
+      state: "error",
+      message: "Η φάση προέλευσης δεν είναι βαθμολογική.",
+      sourcePhaseId: normalizedSourcePhaseId,
+      sourcePhaseName: sourcePhase.name ?? null,
+      positions: [],
+    };
+  }
+
+  const sourceParticipants = parsePhaseParticipants(sourcePhase, teams);
+  if (!sourceParticipants.length) {
+    return {
+      state: "error",
+      message: "Η φάση προέλευσης δεν έχει έγκυρους συμμετέχοντες.",
+      sourcePhaseId: normalizedSourcePhaseId,
+      sourcePhaseName: sourcePhase.name ?? null,
+      positions: [],
+    };
+  }
+
+  const sourceSettings = getSeriesSettings(sourcePhase);
+  const standings = calculateStandings({
+    phaseId: normalizedSourcePhaseId,
+    teams: sourceParticipants.map((team) => ({
+      id: String(team.id ?? ""),
+      name: String(team.name ?? "—"),
+    })),
+    games: games.map((game) => ({
+      id: String(game.id ?? ""),
+      phaseId: String(game.phase_id ?? null),
+      homeTeamId: String(game.home_team_id ?? ""),
+      awayTeamId: String(game.away_team_id ?? ""),
+      homeScore: game.home_score ?? null,
+      awayScore: game.away_score ?? null,
+      status: String(game.status ?? null),
+      resultSource: null,
+    })),
+    rules: {
+      pointsForWin: Math.max(0, toInt(sourceSettings.pointsForWin ?? sourceSettings.winPoints ?? 2, 2)),
+      pointsForLoss: Math.max(0, toInt(sourceSettings.pointsForLoss ?? sourceSettings.lossPoints ?? 1, 1)),
+    },
+    tieBreakers: Array.isArray(sourceSettings.tieBreakers) ? sourceSettings.tieBreakers as never : undefined,
+  });
+
+  return {
+    state: "resolved",
+    message: "Η φάση προέλευσης έχει οριστικοποιηθεί.",
+    sourcePhaseId: normalizedSourcePhaseId,
+    sourcePhaseName: sourcePhase.name ?? null,
+    positions: standings.orderedRows.map((row: { rank: number; teamId: string; teamName: string }) => ({
+      position: Number(row.rank),
+      teamId: String(row.teamId),
+      teamName: String(row.teamName ?? "—"),
+    })),
+  };
+};
+
 export const resolveSeriesCarryOver = (
   phases: SeriesCarryOverPhaseLike[],
   games: SeriesCarryOverGameLike[],
@@ -213,10 +355,48 @@ export const resolveSeriesCarryOver = (
     String(game.phase_id ?? "") === String(sourcePhaseId ?? "") &&
     String(game.competition_id ?? "") === String(phase.competition_id ?? ""),
   );
+  const positionResolution = resolveFinalizedStandingsPositions(
+    phases,
+    games.filter((game) => String(game.phase_id ?? "") === String(sourcePhaseId ?? "")),
+    teams,
+    String(phase.previous_phase_id ?? sourcePhaseId ?? "").trim() || null,
+  );
+  const positionMap = new Map<number, FinalizedStandingsPositionLike>(
+    positionResolution.positions.map((entry) => [entry.position, entry]),
+  );
+  const resolveStandingPosition = (position: string | null | undefined) => {
+    const normalized = Number(String(position ?? "").trim());
+    if (!Number.isInteger(normalized) || normalized < 1) {
+      return { teamId: null, teamName: null, message: "Σε αναμονή προσδιορισμού ομάδων." };
+    }
+    const resolved = positionMap.get(normalized);
+    if (!resolved) {
+      return {
+        teamId: null,
+        teamName: null,
+        message: positionResolution.state === "pending"
+          ? "Σε αναμονή οριστικοποίησης φάσης προέλευσης."
+          : positionResolution.message,
+      };
+    }
+    return {
+      teamId: resolved.teamId,
+      teamName: resolved.teamName,
+      message: "",
+    };
+  };
 
   const matchupResolutions = matchupDefinitions.map((matchup) => {
-    const teamA = getSourceTeam(matchup.slotA, teams);
-    const teamB = getSourceTeam(matchup.slotB, teams);
+    const rawTeamA = getSourceTeam(matchup.slotA, teams);
+    const rawTeamB = getSourceTeam(matchup.slotB, teams);
+    const standingTeamA = String(matchup.slotA.type ?? "").trim() === "standing_position"
+      ? resolveStandingPosition(matchup.slotA.position)
+      : { teamId: null, teamName: null, message: "" };
+    const standingTeamB = String(matchup.slotB.type ?? "").trim() === "standing_position"
+      ? resolveStandingPosition(matchup.slotB.position)
+      : { teamId: null, teamName: null, message: "" };
+    const teamA = standingTeamA.teamId ? standingTeamA : rawTeamA;
+    const teamB = standingTeamB.teamId ? standingTeamB : rawTeamB;
     const concreteTeamsResolved = Boolean(teamA.teamId && teamB.teamId);
     const selectedMeetingResolutions: SeriesCarryOverMeetingResolution[] = [];
     let startingWinsA: number | null = concreteTeamsResolved ? 0 : null;
@@ -285,7 +465,7 @@ export const resolveSeriesCarryOver = (
         currentSeriesDecided: false,
         maxNewGames: null,
         state: "pending" as const,
-        message: "Σε αναμονή προσδιορισμού ομάδων.",
+        message: standingTeamA.message || standingTeamB.message || "Σε αναμονή προσδιορισμού ομάδων.",
       };
     }
 
