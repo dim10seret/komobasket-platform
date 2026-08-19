@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS league_games (
   round_label TEXT NOT NULL DEFAULT '',
   scheduled_at TEXT, scheduled_date TEXT, scheduled_time TEXT CHECK (scheduled_time IS NULL OR scheduled_date IS NOT NULL), venue TEXT NOT NULL DEFAULT '', home_team_id TEXT NOT NULL REFERENCES league_teams(id),
   away_team_id TEXT NOT NULL REFERENCES league_teams(id), home_score INTEGER, away_score INTEGER,
+  result_source TEXT CHECK (result_source IS NULL OR result_source IN ('manual','match_report','award')),
   status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','completed','postponed','cancelled')),
   external_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

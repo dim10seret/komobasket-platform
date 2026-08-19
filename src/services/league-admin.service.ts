@@ -436,6 +436,15 @@ function validateHmTime(value: unknown, label: string) {
   return text;
 }
 
+const parseNonNegativeInteger = (value: unknown, label: string) => {
+  const text = String(value ?? "").trim();
+  if (!text) throw new Error(`${label} είναι υποχρεωτικό.`);
+  if (!/^\d+$/.test(text)) throw new Error(`${label} πρέπει να είναι ακέραιος μη αρνητικός αριθμός.`);
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${label} είναι εκτός έγκυρου εύρους.`);
+  return parsed;
+};
+
 function teamInput(input: Record<string, unknown>, current?: DbRow) {
   const name = String(input.name ?? current?.name ?? "").trim();
   if (!name) throw new Error("Η ονομασία της ομάδας είναι υποχρεωτική.");
@@ -1086,14 +1095,14 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
   const scheduleMode = parseScheduleMode(
     input.scheduleMode ?? currentRuleSettings.scheduleMode,
   );
-  const winPoints = parseStandingsRuleInt(
-    input.winPoints ?? currentRuleSettings.winPoints,
+  const pointsForWin = parseStandingsRuleInt(
+    input.pointsForWin ?? input.winPoints ?? currentRuleSettings.pointsForWin ?? currentRuleSettings.winPoints,
     2,
     "Βαθμοί νίκης",
     0,
   );
-  const lossPoints = parseStandingsRuleInt(
-    input.lossPoints ?? currentRuleSettings.lossPoints,
+  const pointsForLoss = parseStandingsRuleInt(
+    input.pointsForLoss ?? input.lossPoints ?? currentRuleSettings.pointsForLoss ?? currentRuleSettings.lossPoints,
     1,
     "Βαθμοί ήττας",
     0,
@@ -1133,8 +1142,10 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
     previousPhaseId,
     settingsJson: JSON.stringify({
       ...currentRuleSettings,
-      winPoints,
-      lossPoints,
+      winPoints: pointsForWin,
+      lossPoints: pointsForLoss,
+      pointsForWin,
+      pointsForLoss,
       forfeitPoints,
       gamesPerPairing,
       tieBreakers,
@@ -2578,9 +2589,13 @@ export async function createLeagueEntity(resource: string, input: Record<string,
     if (!scheduledDate && scheduledTime) {
       throw new Error("Η ώρα αγώνα δεν μπορεί να οριστεί χωρίς ημερομηνία.");
     }
+    const resultSource = trimmedTextOrNull(input.resultSource ?? input.result_source);
+    if (resultSource && !["manual", "match_report", "award"].includes(resultSource)) {
+      throw new Error("Μη έγκυρη προέλευση αποτελέσματος.");
+    }
     await db.prepare(`INSERT INTO league_games
-      (id,competition_id,phase_id,schedule_id,cycle_number,round_number,game_order,round_label,scheduled_at,scheduled_date,scheduled_time,venue,home_team_id,away_team_id,home_score,away_score,status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      (id,competition_id,phase_id,schedule_id,cycle_number,round_number,game_order,round_label,scheduled_at,scheduled_date,scheduled_time,venue,home_team_id,away_team_id,home_score,away_score,result_source,status)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(
         id,
         input.competitionId,
@@ -2598,6 +2613,7 @@ export async function createLeagueEntity(resource: string, input: Record<string,
         input.awayTeamId,
         input.homeScore ?? null,
         input.awayScore ?? null,
+        resultSource,
         input.status || "scheduled",
       ).run();
   } else {
@@ -3421,6 +3437,38 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
     const current = await db.prepare("SELECT * FROM league_games WHERE id=?")
       .bind(id).first<DbRow>();
     if (!current) throw new Error("Δεν βρέθηκε ο αγώνας.");
+
+    if (String(input.action ?? input.updateAction ?? "") === "manual-result") {
+      const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+      if (!competitionId) throw new Error("Λείπει η διοργάνωση του αγώνα.");
+      if (String(current.competition_id ?? "") !== competitionId) {
+        throw new Error("Ο αγώνας δεν ανήκει σε αυτή τη διοργάνωση.");
+      }
+      const currentResultSource = String(current.result_source ?? "").trim();
+      if (["match_report", "award"].includes(currentResultSource)) {
+        throw new Error("Το αποτέλεσμα αυτού του αγώνα έχει ήδη δοθεί από Match Report ή κατακύρωση και δεν μπορεί να αντικατασταθεί ακόμη.");
+      }
+
+      const homeScore = parseNonNegativeInteger(input.homeScore ?? input.home_score, "Σκορ γηπεδούχου");
+      const awayScore = parseNonNegativeInteger(input.awayScore ?? input.away_score, "Σκορ φιλοξενούμενου");
+      if (homeScore === awayScore) {
+        throw new Error("Το τελικό αποτέλεσμα δεν μπορεί να είναι ισόπαλο.");
+      }
+
+      await db.prepare(`UPDATE league_games SET
+        home_score=?, away_score=?, status='completed', result_source='manual', updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND competition_id=?`)
+        .bind(homeScore, awayScore, id, competitionId).run();
+
+      await db.prepare(`INSERT INTO league_audit_log
+        (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+        VALUES (?,?,?,?,?,?,?)`).bind(
+        createEntityId("audit"), actor, "update", resource, id,
+        JSON.stringify({ before: current, after: { homeScore, awayScore, status: "completed", resultSource: "manual" } }), new Date().toISOString(),
+      ).run();
+
+      return { id };
+    }
 
     const hasScheduledDate = Object.prototype.hasOwnProperty.call(input, "scheduledDate")
       || Object.prototype.hasOwnProperty.call(input, "scheduled_date");

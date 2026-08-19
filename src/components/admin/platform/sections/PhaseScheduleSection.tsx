@@ -24,6 +24,7 @@ import {
   staffRoleLabels,
   standingsTieBreakerLabel,
 } from "../shared/admin-core";
+import { calculateStandings } from "../../../../lib/standings-calculator";
 import { PhaseParticipantsBuilder } from "../phases/PhaseParticipantsBuilder";
 
 export function PhaseFields({
@@ -193,13 +194,17 @@ export function PhaseFields({
           onContinueSeries={onContinueSeries}
         />
         {selectedFormat === "standings" && <>
-          <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="winPoints" defaultValue={rules.winPoints} className={inputClass}/></Field>
-          <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="lossPoints" defaultValue={rules.lossPoints} className={inputClass}/></Field>
-          <Field label="Βαθμοί μηδενισμού"><input type="number" min={0} step={1} required name="forfeitPoints" defaultValue={rules.forfeitPoints} className={inputClass}/></Field>
+          <div className="rounded-xl border border-zinc-200 p-3">
+            <p className="mb-3 text-sm font-black text-zinc-800">ΣΥΣΤΗΜΑ ΒΑΘΜΟΛΟΓΙΑΣ</p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="pointsForWin" defaultValue={rules.pointsForWin} className={inputClass}/></Field>
+              <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="pointsForLoss" defaultValue={rules.pointsForLoss} className={inputClass}/></Field>
+            </div>
+          </div>
           <Field label="Αγώνες ανά ζευγάρι"><input type="number" min={1} step={1} required name="gamesPerPairing" defaultValue={rules.gamesPerPairing} className={inputClass}/></Field>
           <div className="rounded-xl border border-zinc-200 p-3">
             <p className="mb-3 text-sm font-black text-zinc-800">Κριτήρια Κατάταξης</p>
-            <p className="mb-2 text-sm text-zinc-700">Βασικό κριτήριο: <span className="font-black">Βαθμοί 🔒</span></p>
+            <p className="mb-2 text-sm text-zinc-700">Βασικό κριτήριο: <span className="font-black">Σύστημα βαθμολογίας 🔒</span></p>
             <div className="space-y-2">
               {standingsTieBreakers.map((key) => {
                 if (key === "alphabetical") {
@@ -303,9 +308,13 @@ export function PhaseFields({
 
         {selectedFormat === "standings" && (
           <div>
-            <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="winPoints" defaultValue={rules.winPoints} className={inputClass}/></Field>
-            <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="lossPoints" defaultValue={rules.lossPoints} className={inputClass}/></Field>
-            <Field label="Βαθμοί μηδενισμού"><input type="number" min={0} step={1} required name="forfeitPoints" defaultValue={rules.forfeitPoints} className={inputClass}/></Field>
+            <div className="rounded-xl border border-zinc-200 p-3">
+              <p className="mb-3 text-sm font-black text-zinc-800">ΣΥΣΤΗΜΑ ΒΑΘΜΟΛΟΓΙΑΣ</p>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Βαθμοί νίκης"><input type="number" min={0} step={1} required name="pointsForWin" defaultValue={rules.pointsForWin} className={inputClass}/></Field>
+                <Field label="Βαθμοί ήττας"><input type="number" min={0} step={1} required name="pointsForLoss" defaultValue={rules.pointsForLoss} className={inputClass}/></Field>
+              </div>
+            </div>
             <Field label="Αγώνες ανά ζευγάρι"><input type="number" min={1} step={1} required name="gamesPerPairing" defaultValue={rules.gamesPerPairing} className={inputClass}/></Field>
             <div className="rounded-xl border border-zinc-200 p-3">
               <p className="mb-3 text-sm font-black text-zinc-800">Κριτήρια Κατάταξης</p>
@@ -409,17 +418,66 @@ export function StandingsPhasePreview({
   const teams = getCompetitionTeamsForStandings(data, competitionId);
   const actualTeamCount = teams.length;
   const rules = parseStandingsRules(phase.rule_settings_json);
+  const standings = calculateStandings({
+    phaseId: String(phase.id ?? ""),
+    teams: teams.map((team) => ({
+      id: String(team.team_id ?? ""),
+      name: String(team.team_name ?? "—"),
+    })),
+    games: data.games.map((game) => ({
+      id: String(game.id ?? ""),
+      phaseId: String(game.phase_id ?? null),
+      homeTeamId: String(game.home_team_id ?? ""),
+      awayTeamId: String(game.away_team_id ?? ""),
+      homeScore: (game.home_score ?? null) as number | string | null,
+      awayScore: (game.away_score ?? null) as number | string | null,
+      status: String(game.status ?? null),
+      resultSource: String(game.result_source ?? null),
+    })),
+    rules: {
+      pointsForWin: rules.pointsForWin,
+      pointsForLoss: rules.pointsForLoss,
+    },
+    tieBreakers: normalizeStandingsTieBreakers(rules.tieBreakers) as Array<
+      "head_to_head" | "head_to_head_point_diff" | "overall_point_diff" | "points_for" | "alphabetical"
+    >,
+  });
   const previewTeamCount = expectedTeamCount > 0 && actualTeamCount < expectedTeamCount
     ? expectedTeamCount
     : actualTeamCount;
   const structure = roundRobinStructureFromTeams(actualTeamCount, rules.gamesPerPairing);
-  const rows = Array.from({ length: previewTeamCount }, (_, index) => {
+  const standingsRows = standings.orderedRows.map((entry) => {
+    const row = standings.rows.find((item) => item.teamId === entry.teamId);
+    return {
+      rank: entry.rank,
+      teamId: entry.teamId,
+      team: entry.teamName,
+      gamesPlayed: row?.gamesPlayed ?? 0,
+      standingsPoints: row?.standingsPoints ?? 0,
+      wins: row?.wins ?? 0,
+      losses: row?.losses ?? 0,
+      pointsFor: row?.pointsFor ?? 0,
+      pointsAgainst: row?.pointsAgainst ?? 0,
+      pointDifference: row?.pointDifference ?? 0,
+      placeholder: false,
+      tieResolved: entry.tieResolved,
+    };
+  });
+  const rowWidth = standingsRows.length ? standingsRows : Array.from({ length: previewTeamCount }, (_, index) => {
     const team = teams[index];
     return {
-      position: index + 1,
+      rank: index + 1,
       teamId: team ? String(team.team_id ?? "") : "",
       team: team ? String(team.team_name ?? "—") : "—",
+      gamesPlayed: 0,
+      standingsPoints: 0,
+      wins: 0,
+      losses: 0,
+      pointsFor: 0,
+      pointsAgainst: 0,
+      pointDifference: 0,
       placeholder: !team,
+      tieResolved: true,
     };
   });
   const isIncomplete = expectedTeamCount > 0 && actualTeamCount > 0 && actualTeamCount < expectedTeamCount;
@@ -450,9 +508,9 @@ export function StandingsPhasePreview({
             <th className="px-2 py-2 text-right">Διαφορά</th>
           </tr></thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={row.position} className="border-b border-zinc-100 last:border-0">
-                <td className="px-2 py-2 text-zinc-700">{row.position}</td>
+            {rowWidth.map((row) => (
+              <tr key={row.rank} className="border-b border-zinc-100 last:border-0">
+                <td className="px-2 py-2 text-zinc-700">{row.rank}</td>
                 <td className="px-2 py-2 text-zinc-700">
                   {row.placeholder || !openTeamRoster || !row.teamId ? row.team : (
                     <button
@@ -464,16 +522,16 @@ export function StandingsPhasePreview({
                     </button>
                   )}
                 </td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
-                <td className="px-2 py-2 text-right text-zinc-700">{row.placeholder ? "—" : "0"}</td>
+                <td className="px-2 py-2 text-right text-zinc-700">{row.gamesPlayed}</td>
+                <td className="px-2 py-2 text-right text-zinc-700">{row.standingsPoints}</td>
+                <td className="px-2 py-2 text-right text-zinc-700">{row.wins}</td>
+                <td className="px-2 py-2 text-right text-zinc-700">{row.losses}</td>
+                <td className="px-2 py-2 text-right text-zinc-700">{row.pointsFor}</td>
+                <td className="px-2 py-2 text-right text-zinc-700">{row.pointsAgainst}</td>
+                <td className={`px-2 py-2 text-right font-black ${row.pointDifference > 0 ? "text-emerald-700" : row.pointDifference < 0 ? "text-red-600" : "text-zinc-700"}`}>{row.pointDifference > 0 ? `+${row.pointDifference}` : row.pointDifference}</td>
               </tr>
             ))}
-            {!rows.length && <tr><td className="px-2 py-3 text-zinc-500" colSpan={9}>Δεν υπάρχουν ακόμα συμμετοχές.</td></tr>}
+            {!rowWidth.length && <tr><td className="px-2 py-3 text-zinc-500" colSpan={9}>Δεν υπάρχουν ακόμα συμμετοχές.</td></tr>}
           </tbody>
         </table>
       </div>

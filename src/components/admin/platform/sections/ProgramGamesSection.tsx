@@ -44,6 +44,7 @@ type GeneratedGameRow = Row & {
   away_team_name: string | null;
   home_score: number | string | null;
   away_score: number | string | null;
+  result_source: string | null;
   status: string | null;
 };
 
@@ -265,6 +266,10 @@ export function ProgramGamesSection({
   const [showVenueManager, setShowVenueManager] = useState(false);
   const [showVenueForm, setShowVenueForm] = useState(false);
   const [editingVenueId, setEditingVenueId] = useState("");
+  const [showResultForm, setShowResultForm] = useState(false);
+  const [editingResultGameId, setEditingResultGameId] = useState("");
+  const [resultHomeScore, setResultHomeScore] = useState("");
+  const [resultAwayScore, setResultAwayScore] = useState("");
   const [selectedGameIdsByScheduleId, setSelectedGameIdsByScheduleId] = useState<Record<string, string[]>>({});
   const [scheduleEditorByScheduleId, setScheduleEditorByScheduleId] = useState<Record<string, ScheduleEditorState>>({});
   const selectedPhase = availablePhases.find((phase) => String(phase.id) === selectedPhaseId) ?? availablePhases[0] ?? null;
@@ -354,6 +359,20 @@ export function ProgramGamesSection({
   const startVenueForm = (venueId = "") => {
     setEditingVenueId(venueId);
     setShowVenueForm(true);
+  };
+
+  const openResultForm = (game: GeneratedGameRow) => {
+    setEditingResultGameId(String(game.id));
+    setResultHomeScore(String(game.home_score ?? ""));
+    setResultAwayScore(String(game.away_score ?? ""));
+    setShowResultForm(true);
+  };
+
+  const closeResultForm = () => {
+    setShowResultForm(false);
+    setEditingResultGameId("");
+    setResultHomeScore("");
+    setResultAwayScore("");
   };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
@@ -478,6 +497,9 @@ export function ProgramGamesSection({
               const commonVenueId = commonVenueValue
                 ? competitionVenues.find((venue) => String(venue.name ?? "") === commonVenueValue)?.id ?? ""
                 : "";
+              const selectedResultGame = editingResultGameId
+                ? scheduleGames.find((game) => String(game.id) === editingResultGameId) ?? null
+                : null;
               const dateInputValue = editor.scheduledDateMode === "set"
                 ? editor.scheduledDate
                 : editor.scheduledDateMode === "clear"
@@ -571,7 +593,7 @@ export function ProgramGamesSection({
                                     <th className="w-12 px-4 py-3" aria-label="Selection"></th>
                                     <th className="w-28 px-4 py-3">Match Report</th>
                                     <th className="px-4 py-3">Γηπεδούχος</th>
-                                    <th className="w-24 px-4 py-3">Αποτέλεσμα</th>
+                                    <th className="w-28 px-4 py-3">Αποτέλεσμα</th>
                                     <th className="px-4 py-3">Φιλοξενούμενος</th>
                                     <th className="w-32 px-4 py-3">Ημερομηνία</th>
                                     <th className="w-24 px-4 py-3">Ώρα</th>
@@ -606,7 +628,15 @@ export function ProgramGamesSection({
                                           </button>
                                         </td>
                                         <td className="px-4 py-3 align-top text-zinc-800">{String(game.home_team_name ?? "—")}</td>
-                                        <td className="px-4 py-3 align-top font-black text-zinc-900">{hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}</td>
+                                        <td className="w-28 whitespace-nowrap px-4 py-3 align-top font-black text-zinc-900">
+                                          <button
+                                            type="button"
+                                            onClick={() => openResultForm(game)}
+                                            className="inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                          >
+                                            {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
+                                          </button>
+                                        </td>
                                         <td className="px-4 py-3 align-top text-zinc-800">{String(game.away_team_name ?? "—")}</td>
                                         <td className="px-4 py-3 align-top text-zinc-800">
                                           {date ? parseDateForDisplay(date) : "—"}
@@ -630,6 +660,87 @@ export function ProgramGamesSection({
                                 Ρεπό: <span className="font-black text-zinc-900">{activeRound.byeTeam.name}</span>
                               </div>
                             ) : null}
+                          </div>
+                        ) : null}
+
+                        {showResultForm && selectedResultGame ? (
+                          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                            <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-xl font-black text-zinc-950">
+                                    {String(selectedResultGame.home_score ?? "") || String(selectedResultGame.away_score ?? "")
+                                      ? "Επεξεργασία αποτελέσματος"
+                                      : "Καταχώριση αποτελέσματος"}
+                                  </p>
+                                  <p className="mt-1 text-sm text-zinc-600">
+                                    {String(selectedResultGame.home_team_name ?? "—")} - {String(selectedResultGame.away_team_name ?? "—")}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={closeResultForm}
+                                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
+                                >
+                                  Κλείσιμο
+                                </button>
+                              </div>
+                              <form
+                                className="mt-4 space-y-4"
+                                onSubmit={async (event) => {
+                                  event.preventDefault();
+                                  const ok = await updateEntity(
+                                    "games",
+                                    editingResultGameId,
+                                    event,
+                                    "Το αποτέλεσμα αποθηκεύτηκε.",
+                                  );
+                                  if (!ok) return;
+                                  closeResultForm();
+                                }}
+                              >
+                                <input type="hidden" name="competitionId" value={competitionId} />
+                                <input type="hidden" name="action" value="manual-result" />
+                                <div className="grid gap-4 md:grid-cols-2">
+                                  <Field label={String(selectedResultGame.home_team_name ?? "Γηπεδούχος")}>
+                                    <input
+                                      name="homeScore"
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      required
+                                      value={resultHomeScore}
+                                      onChange={(event) => setResultHomeScore(event.target.value)}
+                                      className={inputClass}
+                                    />
+                                  </Field>
+                                  <Field label={String(selectedResultGame.away_team_name ?? "Φιλοξενούμενος")}>
+                                    <input
+                                      name="awayScore"
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      required
+                                      value={resultAwayScore}
+                                      onChange={(event) => setResultAwayScore(event.target.value)}
+                                      className={inputClass}
+                                    />
+                                  </Field>
+                                </div>
+                                <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
+                                  <button
+                                    type="button"
+                                    onClick={closeResultForm}
+                                    className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
+                                  >
+                                    Ακύρωση
+                                  </button>
+                                  <button disabled={busy} className={buttonClass}>
+                                    Αποθήκευση αποτελέσματος
+                                  </button>
+                                </div>
+                              </form>
+                            </div>
                           </div>
                         ) : null}
 

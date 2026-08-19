@@ -127,8 +127,8 @@ export type CreateEntity = (resource:string,input:Record<string, unknown>)=>Prom
 export type CompetitionWorkspaceMode = "settings" | "phases" | "program";
 
 export type StandingsRuleSettings = {
-  winPoints: number;
-  lossPoints: number;
+  pointsForWin: number;
+  pointsForLoss: number;
   forfeitPoints: number;
   gamesPerPairing: number;
   tieBreakers: string[];
@@ -209,8 +209,8 @@ export const normalizeStandingsTieBreakers = (value: unknown) => {
 export const parseStandingsRules = (raw: unknown): StandingsRuleSettings => {
   const parsed = typeof raw === "string" ? raw : "";
   const fallback: StandingsRuleSettings = {
-    winPoints: 2,
-    lossPoints: 1,
+    pointsForWin: 2,
+    pointsForLoss: 1,
     forfeitPoints: 0,
     gamesPerPairing: 1,
     tieBreakers: ["head_to_head", "head_to_head_point_diff", "overall_point_diff", "points_for", "alphabetical"],
@@ -224,8 +224,8 @@ export const parseStandingsRules = (raw: unknown): StandingsRuleSettings => {
       return Math.max(minimum, candidate);
     };
     return {
-      winPoints: toInt(parsedJson.winPoints, 0),
-      lossPoints: toInt(parsedJson.lossPoints, 0),
+      pointsForWin: toInt(parsedJson.pointsForWin ?? parsedJson.winPoints, 0),
+      pointsForLoss: toInt(parsedJson.pointsForLoss ?? parsedJson.lossPoints, 0),
       forfeitPoints: toInt(parsedJson.forfeitPoints, 0),
       gamesPerPairing: toInt(parsedJson.gamesPerPairing, 1),
       tieBreakers: Array.isArray(parsedJson.tieBreakers)
