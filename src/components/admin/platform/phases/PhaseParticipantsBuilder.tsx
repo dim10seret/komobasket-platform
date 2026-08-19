@@ -8,6 +8,7 @@ import {
   getCompetitionTeamsForStandings,
   inputClass,
 } from "../shared/admin-core";
+import { resolveSeriesCarryOver } from "@/lib/series-carry-over";
 
 type ParticipantSourceType =
   | "competition_participants"
@@ -53,6 +54,7 @@ type ParsedPhaseConfig = {
     method?: BracketMethod | string;
     matchups?: unknown[];
   };
+  carryOverMeetingNumbers?: number[];
 };
 
 type BracketOutputSource = {
@@ -115,6 +117,9 @@ const parsePhaseConfig = (phase: Row | undefined): ParsedPhaseConfig => {
   return {
     participantConfiguration: getObjectInput(raw.participantConfiguration) as ParsedPhaseConfig["participantConfiguration"],
     bracketConfiguration: getObjectInput(raw.bracketConfiguration) as ParsedPhaseConfig["bracketConfiguration"],
+    carryOverMeetingNumbers: Array.isArray(raw.carryOverMeetingNumbers)
+      ? raw.carryOverMeetingNumbers.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 1)
+      : [],
   };
 };
 
@@ -162,6 +167,25 @@ const clampRange = (from: number, to: number, fallbackTo: number) => {
   const safeFrom = Math.max(1, Math.floor(from || 1));
   const safeTo = Math.max(safeFrom, Math.floor(to || fallbackTo));
   return { safeFrom, safeTo };
+};
+
+const parseCarryOverMeetingNumbers = (value: unknown, maxMeetingNumber: number) => {
+  if (!Array.isArray(value) || maxMeetingNumber < 1) return [];
+  const normalized = value
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isInteger(entry) && entry >= 1 && entry <= maxMeetingNumber);
+  return [...new Set(normalized)].sort((left, right) => left - right);
+};
+
+const formatCarryOverMeetingLabel = (meetingNumber: number) => `${meetingNumber}η συνάντηση`;
+
+const formatCarryOverMeetingList = (meetingNumbers: number[]) => {
+  if (!meetingNumbers.length) return "—";
+  if (meetingNumbers.length === 1) return formatCarryOverMeetingLabel(meetingNumbers[0]);
+  if (meetingNumbers.length === 2) {
+    return `${formatCarryOverMeetingLabel(meetingNumbers[0])} και ${formatCarryOverMeetingLabel(meetingNumbers[1])}`;
+  }
+  return `${meetingNumbers.slice(0, -1).map(formatCarryOverMeetingLabel).join(", ")} και ${formatCarryOverMeetingLabel(meetingNumbers[meetingNumbers.length - 1])}`;
 };
 
 const getSlotToken = (slot: SlotBuilderSource) => {
@@ -483,6 +507,7 @@ export function PhaseParticipantsBuilder({
   const [matchups, setMatchups] = useState<BracketBuilderMatchup[]>(() => parseSlotArray(bracketConfig?.matchups));
   const [carryOverEnabled, setCarryOverEnabled] = useState(Boolean(phase?.format === "series" ? Number(phase?.carry_over_enabled ?? 0) === 1 : false));
   const [carryOverSourcePhaseId, setCarryOverSourcePhaseId] = useState(String(phase?.carry_over_source_phase_id ?? ""));
+  const [carryOverMeetingNumbers, setCarryOverMeetingNumbers] = useState<number[]>(() => parseCarryOverMeetingNumbers(parsedConfig.carryOverMeetingNumbers, 1));
   const [winsRequired, setWinsRequired] = useState(String(asInt(phase?.wins_required ?? 2, 2)));
 
   const isSeriesMode = String(selectedFormat) === "series";
@@ -533,6 +558,7 @@ export function PhaseParticipantsBuilder({
     setWinsRequired(String(asInt(phase?.wins_required ?? 2, 2)));
     setCarryOverEnabled(Boolean(phase?.format === "series" ? Number(phase?.carry_over_enabled ?? 0) === 1 : false));
     setCarryOverSourcePhaseId(String(phase?.carry_over_source_phase_id ?? ""));
+    setCarryOverMeetingNumbers(parseCarryOverMeetingNumbers(next.carryOverMeetingNumbers, 1));
   }, [isSeriesMode, lockedSeriesRangeFrom, lockedSeriesRangeTo, lockedSeriesSourcePhaseId, phase]);
 
   useEffect(() => {
@@ -577,6 +603,7 @@ export function PhaseParticipantsBuilder({
     winsRequired: String(asInt(phase?.wins_required, 2)),
     carryOverEnabled: Boolean(phase?.format === "series" ? Number(phase?.carry_over_enabled ?? 0) === 1 : false),
     carryOverSourcePhaseId: String(phase?.carry_over_source_phase_id ?? ""),
+    carryOverMeetingNumbers: parsedConfig.carryOverMeetingNumbers ?? [],
     matchups: persistedMatchups.map(normalizeMatchupForComparison),
   }), [
     config?.manualSlotCount,
@@ -588,6 +615,7 @@ export function PhaseParticipantsBuilder({
     phase?.carry_over_source_phase_id,
     phase?.format,
     phase?.wins_required,
+    parsedConfig.carryOverMeetingNumbers,
     persistedMatchups,
     persistedCanonicalSourcePhaseId,
     persistedSeriesSourceFrom,
@@ -604,10 +632,12 @@ export function PhaseParticipantsBuilder({
     winsRequired: String(asInt(winsRequired, 2)),
     carryOverEnabled,
     carryOverSourcePhaseId,
+    carryOverMeetingNumbers: [...carryOverMeetingNumbers],
     matchups: matchups.map(normalizeMatchupForComparison),
   }), [
     carryOverEnabled,
     carryOverSourcePhaseId,
+    carryOverMeetingNumbers,
     manualSlotCount,
     matchups,
     participantSourcePhaseId,
@@ -645,9 +675,40 @@ export function PhaseParticipantsBuilder({
     () => phaseList.find((entry) => String(entry.id ?? "") === carryOverSourcePhaseId),
     [carryOverSourcePhaseId, phaseList],
   );
+  const carryOverSourcePhaseSettings = useMemo(
+    () => getObjectInput(carryOverSourcePhase?.rule_settings_json),
+    [carryOverSourcePhase],
+  );
+  const carryOverSourceGamesPerPairing = Math.max(1, asInt(carryOverSourcePhaseSettings.gamesPerPairing, 1));
+  const carryOverMeetingOptions = useMemo(
+    () => Array.from({ length: carryOverSourceGamesPerPairing }, (_, index) => index + 1),
+    [carryOverSourceGamesPerPairing],
+  );
   const seriesMaxTotalResults = Math.max(0, (asInt(winsRequired, 2) * 2) - 1);
-  const countedPreviousResults = carryOverEnabled && carryOverSourcePhase ? 1 : 0;
-  const maxNewGamesToSchedule = Math.max(0, seriesMaxTotalResults - countedPreviousResults);
+  const carryOverMeetingLabel = carryOverEnabled ? formatCarryOverMeetingList(carryOverMeetingNumbers) : "—";
+  const carryOverResolution = useMemo(
+    () => resolveSeriesCarryOver(data.phases, data.games, data.teams, phase),
+    [data.games, data.phases, data.teams, phase],
+  );
+
+  useEffect(() => {
+    if (!isSeriesMode || !carryOverEnabled) {
+      if (carryOverMeetingNumbers.length) setCarryOverMeetingNumbers([]);
+      return;
+    }
+    if (!carryOverSourcePhaseId || !carryOverSourcePhase) {
+      if (carryOverMeetingNumbers.length) setCarryOverMeetingNumbers([]);
+      return;
+    }
+    const maxMeetingNumber = Math.max(1, carryOverSourceGamesPerPairing);
+    const normalized = parseCarryOverMeetingNumbers(carryOverMeetingNumbers, maxMeetingNumber);
+    const next = maxMeetingNumber === 1 ? [1] : (normalized.length ? normalized : [1]);
+    const same = normalized.length === carryOverMeetingNumbers.length
+      && normalized.every((value, index) => value === carryOverMeetingNumbers[index]);
+    if (!same || (maxMeetingNumber === 1 && (normalized.length !== 1 || normalized[0] !== 1))) {
+      setCarryOverMeetingNumbers(next);
+    }
+  }, [carryOverEnabled, carryOverMeetingNumbers, carryOverSourceGamesPerPairing, carryOverSourcePhase, carryOverSourcePhaseId, isSeriesMode]);
 
   const sourcePhaseOptions = useMemo(() => {
     return phaseList;
@@ -1097,20 +1158,22 @@ export function PhaseParticipantsBuilder({
 
   const renderMatchupsSection = () => (
     <section className="space-y-4">
-      <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-        <p className="text-xs font-black uppercase tracking-[0.08em] text-orange-600">Νίκες για πρόκριση</p>
-        <Field label="Πλήθος νικών">
-          <input
-            type="number"
-            min={1}
-            name="winsRequired"
-            value={winsRequired}
-            onChange={(event) => setWinsRequired(event.target.value)}
-            className={inputClass}
-          />
-          <p className="mt-1 text-xs text-zinc-500">Πόσες νίκες απαιτούνται για την πρόκριση.</p>
-        </Field>
-      </div>
+      {isSeriesMode ? (
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <p className="text-xs font-black uppercase tracking-[0.08em] text-orange-600">Νίκες για πρόκριση</p>
+          <Field label="Πλήθος νικών">
+            <input
+              type="number"
+              min={1}
+              name="winsRequired"
+              value={winsRequired}
+              onChange={(event) => setWinsRequired(event.target.value)}
+              className={inputClass}
+            />
+            <p className="mt-1 text-xs text-zinc-500">Πόσες νίκες απαιτούνται για την πρόκριση.</p>
+          </Field>
+        </div>
+      ) : null}
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-4 space-y-3">
         <p className="text-xs font-black uppercase tracking-[0.08em] text-orange-600">Μεταφορά προηγούμενου μεταξύ τους αγώνα</p>
@@ -1146,6 +1209,45 @@ export function PhaseParticipantsBuilder({
             </select>
           </Field>
         </div>
+        {carryOverEnabled ? (
+          <div className="space-y-3">
+            <p className="text-xs font-black uppercase tracking-[0.08em] text-zinc-600">Αγώνες που προσμετρώνται</p>
+            {!carryOverSourcePhase ? (
+              <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">Επίλεξε φάση προέλευσης.</p>
+            ) : carryOverSourceGamesPerPairing === 1 ? (
+              <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-black text-zinc-800">1η συνάντηση</p>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {carryOverMeetingOptions.map((meetingNumber) => {
+                  const isChecked = carryOverMeetingNumbers.includes(meetingNumber);
+                  return (
+                    <label
+                      key={meetingNumber}
+                      className={`flex cursor-pointer items-center gap-2 rounded-xl border p-3 text-sm transition ${isChecked ? "border-orange-500 bg-orange-50" : "border-zinc-200 bg-white hover:border-zinc-300"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setCarryOverMeetingNumbers((current) => {
+                            if (checked) {
+                              return [...new Set([...current, meetingNumber])].sort((left, right) => left - right);
+                            }
+                            const next = current.filter((value) => value !== meetingNumber);
+                            return next.length ? next : current;
+                          });
+                        }}
+                        className="h-4 w-4 accent-orange-600"
+                      />
+                      <span className="font-black text-zinc-900">{formatCarryOverMeetingLabel(meetingNumber)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-4">
@@ -1193,30 +1295,51 @@ export function PhaseParticipantsBuilder({
           <p><span className="font-black">Πηγή:</span> {isSeriesMode ? "Σειρά αγώνων" : participantSourceOptions.find((option) => option.value === participantSourceType)?.label ?? participantSourceType}</p>
           <p><span className="font-black">Θέσεις:</span> {isSeriesMode ? `${standingFrom}–${standingTo}` : `${standingFrom}–${standingTo}`}</p>
           <p><span className="font-black">Τρόπος:</span> Manual</p>
-          {isSeriesMode && <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>}
           {isSeriesMode && (
-            <p><span className="font-black">Μεταφορά προηγούμενου αγώνα:</span> {carryOverEnabled ? "Ναι" : "Όχι"}</p>
+            <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>
+          )}
+          {isSeriesMode && (
+            <p><span className="font-black">Μεταφορά προηγούμενου μεταξύ τους αγώνα:</span> {carryOverEnabled ? "Ναι" : "Όχι"}</p>
           )}
           {isSeriesMode && (
             <p><span className="font-black">Φάση προέλευσης:</span> {carryOverEnabled ? (carryOverSourcePhase?.name || "—") : "—"}</p>
           )}
+          {isSeriesMode && (
+            <p><span className="font-black">Αγώνες που προσμετρώνται:</span> {carryOverEnabled ? carryOverMeetingLabel : "—"}</p>
+          )}
           {isSeriesMode && <p><span className="font-black">Μέγιστο συνολικό πλήθος αποτελεσμάτων σειράς:</span> {seriesMaxTotalResults}</p>}
-          {isSeriesMode && <p><span className="font-black">Προηγούμενοι αγώνες που προσμετρώνται:</span> {countedPreviousResults}</p>}
-          {isSeriesMode && <p><span className="font-black">Μέγιστοι νέοι αγώνες προς προγραμματισμό:</span> {maxNewGamesToSchedule}</p>}
           <p><span className="font-black">Διαθέσιμα slots:</span> {isSeriesMode ? sourcePoolCount : estimatedParticipantCount}</p>
           <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>
           <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>
         </div>
       </div>
-      <div className="mt-4 space-y-2">
-        {matchups.length ? describeSeriesMatchupsFromPhase(data, phase).map((summary, index) => {
-          return (
-            <div key={summary.id} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
-              <p>{summary.label}</p>
-              <p className="text-xs text-zinc-500">Έξοδος: {summary.output}</p>
-            </div>
-          );
-        }) : <p className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν υπάρχουν manual slots.</p>}
+      <div className="mt-4 space-y-3">
+        {carryOverResolution.carryOverEnabled ? carryOverResolution.matchups.map((matchup) => (
+          <div key={matchup.matchupId} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
+            <p className="font-black text-zinc-900">{matchup.label}</p>
+            <p className="text-xs text-zinc-500">Επιλεγμένες συνάντησεις: {matchup.selectedMeetings.map(formatCarryOverMeetingLabel).join(" · ") || "—"}</p>
+            <p className="text-xs text-zinc-500">Κατάσταση: {matchup.state === "resolved" ? "Επιλυμένο" : matchup.state === "pending" ? "Σε αναμονή" : "Σφάλμα"}</p>
+            {matchup.state === "resolved" ? (
+              <>
+                <p className="text-xs text-zinc-500">Αφετηρία σειράς: {matchup.startingWinsA}–{matchup.startingWinsB}</p>
+                <p className="text-xs text-zinc-500">Μέγιστοι νέοι αγώνες: {matchup.maxNewGames}</p>
+              </>
+            ) : (
+              <p className="text-xs text-zinc-500">{matchup.message}</p>
+            )}
+            {matchup.meetingResolutions.length ? (
+              <div className="mt-2 space-y-1">
+                {matchup.meetingResolutions.map((meeting) => (
+                  <p key={`${matchup.matchupId}-${meeting.meetingNumber}`} className="text-xs text-zinc-500">
+                    {formatCarryOverMeetingLabel(meeting.meetingNumber)}: {meeting.message}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )) : (
+          <p className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν υπάρχουν ενεργά carry-over matchups.</p>
+        )}
       </div>
       {sourceValidationMessages.map((message) => <p key={message} className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-700">{message}</p>)}
     </section>
@@ -1244,7 +1367,8 @@ export function PhaseParticipantsBuilder({
     </div>
     <input type="hidden" name="carryOverEnabled" value={carryOverEnabled ? "true" : "false"} />
     <input type="hidden" name="carryOverSourcePhaseId" value={carryOverSourcePhaseId} />
-    <input type="hidden" name="winsRequired" value={winsRequired} />
+    <input type="hidden" name="carryOverMeetingNumbers" value={JSON.stringify(carryOverMeetingNumbers)} />
+    {isSeriesMode ? <input type="hidden" name="winsRequired" value={winsRequired} /> : null}
     <input
       type="hidden"
       name="participantConfiguration"
@@ -1266,4 +1390,5 @@ export function PhaseParticipantsBuilder({
     <div className="hidden" />
   </>;
 }
+
 

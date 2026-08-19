@@ -584,6 +584,26 @@ function parseJsonArray(input: unknown) {
   return [];
 }
 
+function parseCarryOverMeetingNumbers(input: unknown, maxMeetingNumber: number, enabled: boolean) {
+  if (!enabled) return [];
+  const values = parseJsonArray(input);
+  if (!values.length) {
+    throw new Error("Επίλεξε τουλάχιστον μία συνάντηση που θα προσμετράται.");
+  }
+  if (!Number.isInteger(maxMeetingNumber) || maxMeetingNumber < 1) {
+    throw new Error("Η φάση προέλευσης δεν είναι έγκυρη.");
+  }
+  const normalized = new Set<number>();
+  for (const value of values) {
+    const meetingNumber = Number(value);
+    if (!Number.isInteger(meetingNumber) || meetingNumber < 1 || meetingNumber > maxMeetingNumber) {
+      throw new Error("Οι συνάντησεις μεταφοράς προηγούμενου αγώνα δεν είναι έγκυρες.");
+    }
+    normalized.add(meetingNumber);
+  }
+  return [...normalized].sort((left, right) => left - right);
+}
+
 function parseJsonStringArray(input: unknown) {
   if (!input) return [];
   if (Array.isArray(input)) {
@@ -1009,10 +1029,21 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
   const carryOverEnabled = booleanValue(input.carryOverEnabled);
   const sourcePhaseIdInput = String(input.carryOverSourcePhaseId ?? "").trim() || null;
   const sourcePhaseId = carryOverEnabled ? sourcePhaseIdInput : null;
+  let sourceGamesPerPairing = 1;
   if (carryOverEnabled && sourcePhaseId) {
-    const source = await db.prepare("SELECT id FROM league_phases WHERE id=? AND competition_id=?")
-      .bind(sourcePhaseId, competitionId).first<{ id: string }>();
+    const source = await db.prepare(`
+      SELECT p.id, p.format, pr.settings_json
+      FROM league_phases p
+      LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+      WHERE p.id=? AND p.competition_id=?
+    `).bind(sourcePhaseId, competitionId).first<{ id: string; format: string | null; settings_json: string | null }>();
     if (!source) throw new Error("Η φάση προέλευσης πρέπει να ανήκει στην ίδια διοργάνωση.");
+    const sourceFormat = String(source.format ?? "").trim().toLowerCase();
+    if (sourceFormat !== "standings") {
+      throw new Error("Η φάση προέλευσης πρέπει να είναι βαθμολογική.");
+    }
+    const sourceRules = parseJsonRecord(source.settings_json);
+    sourceGamesPerPairing = parseStandingsRuleInt(sourceRules.gamesPerPairing, 1, "Αγώνες ανά ζευγάρι", 1);
   }
   const previousPhaseIdInput = String(input.previousPhaseId ?? input.previous_phase_id ?? "").trim() || null;
   const previousPhaseId = previousPhaseIdInput || null;
@@ -1082,6 +1113,11 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
   const tieBreakers = parseStandingsTieBreakers(
     input.tieBreakers ?? currentRuleSettings.tieBreakers,
   );
+  const carryOverMeetingNumbers = parseCarryOverMeetingNumbers(
+    input.carryOverMeetingNumbers ?? currentRuleSettings.carryOverMeetingNumbers,
+    sourceGamesPerPairing,
+    carryOverEnabled,
+  );
   return {
     competitionId,
     name,
@@ -1105,6 +1141,7 @@ async function phaseInput(db: D1DatabaseBinding, input: Record<string, unknown>,
       scheduleMode,
       participantConfiguration: participantConfig.participantConfiguration,
       bracketConfiguration: participantConfig.bracketConfiguration,
+      carryOverMeetingNumbers,
     }),
     participantConfig,
   };
