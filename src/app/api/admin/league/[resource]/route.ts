@@ -12,6 +12,7 @@ import {
   deleteLeagueParticipation,
   deleteLeagueCompetitionVenue,
   finalizeLeaguePhase,
+  saveSeriesPlanningSlot,
   updateLeagueEntity,
 } from "@/services/league-admin.service";
 
@@ -117,6 +118,10 @@ export async function PATCH(
 
     if (resource === "phases" && String(input.action ?? "").trim() === "finalizePhase") {
       const result = await finalizeLeaguePhase(input, authorization.identity.email);
+      return Response.json(result);
+    }
+    if (resource === "phase-schedules" && String(input.action ?? "").trim() === "saveSeriesPlanningSlot") {
+      const result = await saveSeriesPlanningSlot(input, authorization.identity.email);
       return Response.json(result);
     }
 

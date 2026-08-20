@@ -78,6 +78,19 @@ type CompetitionVenueRow = Row & {
   sort_order: number | string | null;
 };
 
+type SeriesPlanningSlotRow = Row & {
+  id: string;
+  competition_id: string;
+  phase_id: string;
+  schedule_id: string;
+  matchup_id: string;
+  series_round_number: number | string;
+  scheduled_date: string | null;
+  scheduled_time: string | null;
+  venue: string;
+  real_game_id: string | null;
+};
+
 type SchedulingMode = "keep" | "set" | "clear";
 type ScheduleDisplayMode = "round" | "all";
 
@@ -225,6 +238,7 @@ const getSeriesRoundLabel = (roundNumber: number, rowState?: string) => {
 const buildSeriesRounds = (
   data: Snapshot,
   phase: Row,
+  scheduleId: string,
   scheduleGames: GeneratedGameRow[],
   competitionTeams: { id: string; name: string }[],
 ) => {
@@ -308,7 +322,19 @@ const buildSeriesRounds = (
     const matchupGames = materializedSeriesGames.filter(
       (game) => game.matchupId === matchupResolution.matchupId,
     );
-    const planningSlots: Parameters<typeof calculateSeriesProgression>[0]["planningSlots"] = [];
+    const planningSlots: Parameters<typeof calculateSeriesProgression>[0]["planningSlots"] = (data.seriesPlanningSlots as SeriesPlanningSlotRow[])
+      .filter((slot) =>
+        String(slot.schedule_id ?? "") === scheduleId
+        && String(slot.matchup_id ?? "") === matchupResolution.matchupId
+        && !String(slot.real_game_id ?? "").trim()
+        && !matchupGames.some((game) => game.seriesRoundNumber === Number(slot.series_round_number)),
+      )
+      .map((slot) => ({
+        seriesRoundNumber: Number(slot.series_round_number),
+        scheduledDate: slot.scheduled_date,
+        scheduledTime: slot.scheduled_time,
+        venue: slot.venue,
+      }));
     let progression;
     try {
       progression = calculateSeriesProgression({
@@ -507,6 +533,19 @@ export function ProgramGamesSection({
   const [deleteProgramConfirmation, setDeleteProgramConfirmation] = useState("");
   const [deleteProgramBusy, setDeleteProgramBusy] = useState(false);
   const [deleteProgramError, setDeleteProgramError] = useState("");
+  const [planningTarget, setPlanningTarget] = useState<{
+    phaseId: string;
+    scheduleId: string;
+    matchupId: string;
+    seriesRoundNumber: number;
+    homeTeamName: string;
+    awayTeamName: string;
+  } | null>(null);
+  const [planningDate, setPlanningDate] = useState("");
+  const [planningTime, setPlanningTime] = useState("");
+  const [planningVenueId, setPlanningVenueId] = useState("");
+  const [planningBusy, setPlanningBusy] = useState(false);
+  const [planningError, setPlanningError] = useState("");
   const selectedPhase = availablePhases.find((phase) => String(phase.id) === selectedPhaseId) ?? availablePhases[0] ?? null;
 
   useEffect(() => {
@@ -576,7 +615,7 @@ export function ProgramGamesSection({
     const selectedSchedulePhase = competitionPhases.find((phase) => String(phase.id) === String(selectedSchedule.phase_id ?? "")) ?? null;
     const selectedScheduleFormat = String(selectedSchedulePhase?.format ?? selectedSchedulePhase?.phase_kind ?? "standings").trim().toLowerCase();
     const derivedRounds = selectedScheduleFormat === "series"
-      ? buildSeriesRounds(data, selectedSchedulePhase ?? selectedSchedule as unknown as Row, selectedScheduleGames, competitionTeams)
+      ? buildSeriesRounds(data, selectedSchedulePhase ?? selectedSchedule as unknown as Row, String(selectedSchedule.id), selectedScheduleGames, competitionTeams)
       : selectedScheduleRounds;
     const currentRound = selectedRoundByScheduleId[String(selectedSchedule.id)]
       ?? (selectedScheduleFormat === "series" ? 1 : Number(selectedScheduleGames[0]?.round_number ?? 0));
@@ -687,6 +726,80 @@ export function ProgramGamesSection({
     }
   };
 
+  const openPlanningDialog = (target: {
+    phaseId: string;
+    scheduleId: string;
+    matchupId: string;
+    seriesRoundNumber: number;
+    homeTeamName: string;
+    awayTeamName: string;
+    planningSlot: SeriesProgressionRoundRow["planningSlot"];
+  }) => {
+    const venueName = String(target.planningSlot?.venue ?? "").trim();
+    const venueId = venueName
+      ? String(competitionVenues.find((venue) => String(venue.name ?? "") === venueName)?.id ?? "")
+      : "";
+    setPlanningTarget({
+      phaseId: target.phaseId,
+      scheduleId: target.scheduleId,
+      matchupId: target.matchupId,
+      seriesRoundNumber: target.seriesRoundNumber,
+      homeTeamName: target.homeTeamName,
+      awayTeamName: target.awayTeamName,
+    });
+    setPlanningDate(String(target.planningSlot?.scheduledDate ?? ""));
+    setPlanningTime(String(target.planningSlot?.scheduledTime ?? ""));
+    setPlanningVenueId(venueId);
+    setPlanningError("");
+  };
+
+  const closePlanningDialog = () => {
+    if (planningBusy) return;
+    setPlanningTarget(null);
+    setPlanningDate("");
+    setPlanningTime("");
+    setPlanningVenueId("");
+    setPlanningError("");
+  };
+
+  const handleSaveSeriesPlanning = async () => {
+    if (!planningTarget) return;
+    setPlanningBusy(true);
+    setPlanningError("");
+    try {
+      const response = await fetch("/api/admin/league/phase-schedules", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "saveSeriesPlanningSlot",
+          competitionId,
+          phaseId: planningTarget.phaseId,
+          matchupId: planningTarget.matchupId,
+          seriesRoundNumber: planningTarget.seriesRoundNumber,
+          scheduledDate: planningDate,
+          scheduledTime: planningTime,
+          venueId: planningVenueId,
+        }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Η αποθήκευση του προσωρινού προγραμματισμού απέτυχε.");
+      setPlanningTarget(null);
+      setPlanningDate("");
+      setPlanningTime("");
+      setPlanningVenueId("");
+      setPlanningError("");
+      if (onRefreshCompetitionData) {
+        await onRefreshCompetitionData();
+      } else {
+        window.location.reload();
+      }
+    } catch (error) {
+      setPlanningError(error instanceof Error ? error.message : "Η αποθήκευση του προσωρινού προγραμματισμού απέτυχε.");
+    } finally {
+      setPlanningBusy(false);
+    }
+  };
+
   const getSelectedGameIds = (scheduleKey: string) => selectedGameIdsByScheduleId[scheduleKey] ?? [];
   const getScheduleEditor = (scheduleKey: string) => scheduleEditorByScheduleId[scheduleKey] ?? createDefaultScheduleEditorState();
   const getScheduleDisplayMode = (scheduleKey: string) => scheduleDisplayModeByScheduleId[scheduleKey] ?? "round";
@@ -778,7 +891,7 @@ export function ProgramGamesSection({
               const generatedRounds = buildGeneratedRounds(scheduleGames, competitionTeams);
               const lifecycle = String(schedule.lifecycle_status ?? "draft");
               const phaseFormat = String(phase?.format ?? phase?.phase_kind ?? "").toLowerCase();
-              const seriesRounds = phaseFormat === "series" ? buildSeriesRounds(data, phase ?? schedule as unknown as Row, scheduleGames, competitionTeams) : [];
+              const seriesRounds = phaseFormat === "series" ? buildSeriesRounds(data, phase ?? schedule as unknown as Row, scheduleKey, scheduleGames, competitionTeams) : [];
               const hasGames = phaseFormat === "series"
                 ? scheduleGames.some((game) => String(game.series_matchup_id ?? "").trim()) || seriesRounds.length > 0
                 : scheduleGames.length > 0;
@@ -1048,9 +1161,14 @@ export function ProgramGamesSection({
                                               : round.homeScore !== null && round.awayScore !== null
                                                 ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
                                                 : "—";
-                                          const displayDate = backingGame ? parseDateForDisplay(String(backingGame.scheduled_date ?? "")) : "—";
-                                          const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : "—";
-                                          const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : "—";
+                                          const planningDateValue = isIfNeeded ? String(round.planningSlot?.scheduledDate ?? "").trim() : "";
+                                          const planningTimeValue = isIfNeeded ? String(round.planningSlot?.scheduledTime ?? "").trim() : "";
+                                          const planningVenueValue = isIfNeeded ? String(round.planningSlot?.venue ?? "").trim() : "";
+                                          const displayDate = backingGame
+                                            ? parseDateForDisplay(String(backingGame.scheduled_date ?? ""))
+                                            : planningDateValue ? parseDateForDisplay(planningDateValue) : "—";
+                                          const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : planningTimeValue || "—";
+                                          const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : planningVenueValue || "—";
                                           return (
                                             <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
                                               <td className="px-3 py-3 align-top">
@@ -1113,6 +1231,23 @@ export function ProgramGamesSection({
                                                 <span className="block min-w-0 max-w-full whitespace-normal break-words leading-snug [overflow-wrap:anywhere]">
                                                   {displayVenue}
                                                 </span>
+                                                {isIfNeeded ? (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => openPlanningDialog({
+                                                      phaseId: String(phase?.id ?? schedule.phase_id ?? ""),
+                                                      scheduleId: scheduleKey,
+                                                      matchupId: entry.matchupId,
+                                                      seriesRoundNumber: round.seriesRoundNumber,
+                                                      homeTeamName: displayHome,
+                                                      awayTeamName: displayAway,
+                                                      planningSlot: round.planningSlot,
+                                                    })}
+                                                    className="mt-2 inline-flex rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1.5 text-xs font-black text-sky-800 transition hover:bg-sky-100"
+                                                  >
+                                                    {round.planningSlot ? "Επεξεργασία" : "Προγραμματισμός"}
+                                                  </button>
+                                                ) : null}
                                               </td>
                                             </tr>
                                           );
@@ -1531,6 +1666,87 @@ export function ProgramGamesSection({
           </div>
         )}
       </div>
+
+      {planningTarget ? (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="series-planning-title" className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl sm:p-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="series-planning-title" className="text-xl font-black text-zinc-950">Προσωρινός προγραμματισμός — Εάν χρειαστεί</h3>
+                <p className="mt-1 text-sm font-bold text-zinc-700">
+                  {planningTarget.homeTeamName} — {planningTarget.awayTeamName} · {getRoundOrdinalLabel(planningTarget.seriesRoundNumber)} Γύρος
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={planningBusy}
+                onClick={closePlanningDialog}
+                className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700 disabled:opacity-60"
+              >
+                Κλείσιμο
+              </button>
+            </div>
+            <p className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm leading-relaxed text-sky-900">
+              Ο αγώνας δεν έχει δημιουργηθεί ακόμη. Τα στοιχεία θα μεταφερθούν αυτόματα εάν ο αγώνας χρειαστεί.
+            </p>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <Field label="Ημερομηνία">
+                <input
+                  type="date"
+                  value={planningDate}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setPlanningDate(value);
+                    if (!value) setPlanningTime("");
+                  }}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Ώρα">
+                <input
+                  type="time"
+                  value={planningTime}
+                  disabled={!planningDate}
+                  onChange={(event) => setPlanningTime(event.target.value)}
+                  className={`${inputClass} disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400`}
+                />
+              </Field>
+            </div>
+            <div className="mt-4">
+              <Field label="Γήπεδο">
+                <select value={planningVenueId} onChange={(event) => setPlanningVenueId(event.target.value)} className={inputClass}>
+                  <option value="">—</option>
+                  {competitionVenues.map((venue) => (
+                    <option key={String(venue.id)} value={String(venue.id)}>{String(venue.name ?? "—")}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-zinc-500">Αν καθαρίσετε και τα τρία πεδία, ο προσωρινός προγραμματισμός θα αφαιρεθεί.</p>
+            {planningError ? (
+              <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{planningError}</p>
+            ) : null}
+            <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
+              <button
+                type="button"
+                disabled={planningBusy}
+                onClick={closePlanningDialog}
+                className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 disabled:opacity-60"
+              >
+                Ακύρωση
+              </button>
+              <button
+                type="button"
+                disabled={planningBusy || (!!planningTime && !planningDate)}
+                onClick={() => void handleSaveSeriesPlanning()}
+                className="rounded-xl bg-sky-700 px-4 py-2.5 font-black text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {planningBusy ? "Αποθήκευση..." : "Αποθήκευση προγραμματισμού"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {deleteProgramTarget ? (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 p-4">

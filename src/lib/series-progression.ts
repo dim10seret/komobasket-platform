@@ -486,7 +486,12 @@ export const calculateSeriesProgression = (input: SeriesProgressionInput): Serie
   const finalQualifiedRound = rounds.find((round) => round.winnerTeamId && round.qualificationRoundNumber !== null)?.qualificationRoundNumber ?? null;
   const qualifiedTeamId = currentWinsA >= winsRequired ? teamA.id : currentWinsB >= winsRequired ? teamB.id : null;
   const qualifiedTeamName = currentWinsA >= winsRequired ? teamA.name : currentWinsB >= winsRequired ? teamB.name : null;
-  const nextRequiredRoundNumber = qualifiedTeamId ? null : rounds.find((round) => round.rowState === "if_needed")?.seriesRoundNumber ?? null;
+  const hasPendingRealGame = rounds.some((round) =>
+    round.rowState === "real_game" && round.winnerTeamId === null,
+  );
+  const nextRequiredRoundNumber = qualifiedTeamId || hasPendingRealGame
+    ? null
+    : rounds.find((round) => round.rowState === "if_needed")?.seriesRoundNumber ?? null;
   const roundWindow = calculateSeriesRoundWindow({
     winsRequired,
     currentWinsA,

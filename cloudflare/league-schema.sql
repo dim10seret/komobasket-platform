@@ -151,6 +151,10 @@ CREATE TABLE IF NOT EXISTS league_series_planning_slots (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(schedule_id, matchup_id, series_round_number)
 );
+CREATE INDEX IF NOT EXISTS idx_series_planning_slots_schedule
+  ON league_series_planning_slots(schedule_id, matchup_id, series_round_number);
+CREATE INDEX IF NOT EXISTS idx_series_planning_slots_phase
+  ON league_series_planning_slots(phase_id, schedule_id);
 
 CREATE TABLE IF NOT EXISTS league_competition_venues (
   id TEXT PRIMARY KEY,
