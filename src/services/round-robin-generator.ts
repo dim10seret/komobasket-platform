@@ -38,6 +38,48 @@ export type RoundRobinGameCandidate = {
   status: string;
 };
 
+export type RoundRobinMaterializedGame = {
+  id: string;
+  competition_id: string | null;
+  phase_id: string | null;
+  schedule_id: string | null;
+  cycle_number: number | string | null;
+  round_number: number | string | null;
+  game_order: number | string | null;
+  home_team_id: string | null;
+  away_team_id: string | null;
+};
+
+export type RoundRobinFixturePlanState = "existing" | "missing" | "conflict";
+
+export type RoundRobinFixturePlanItem = {
+  identity: string;
+  cycle_number: number;
+  round_number: number;
+  game_order: number;
+  home_team_id: string;
+  home_team_name: string;
+  away_team_id: string;
+  away_team_name: string;
+  state: RoundRobinFixturePlanState;
+  existing_game_id: string | null;
+  expected_game_id: string;
+};
+
+export type RoundRobinFixturePlan = {
+  expectedCount: number;
+  existingCount: number;
+  missingCount: number;
+  conflictCount: number;
+  items: RoundRobinFixturePlanItem[];
+  groupedRounds: Array<{
+    cycleNumber: number;
+    roundNumber: number;
+    roundLabel: string;
+    games: RoundRobinFixturePlanItem[];
+  }>;
+};
+
 export type RoundRobinDryRunInput = {
   competitionId: string;
   phaseId: string;
@@ -245,6 +287,108 @@ const validateCounts = (
   return { errors, teamStats: Object.fromEntries(teamStats.entries()), pairStats: Object.fromEntries(pairStats.entries()) };
 };
 
+const hashStringToSeed = (value: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
+
+const createSeededRandom = (seed: number) => {
+  let state = seed >>> 0;
+  return () => {
+    state += 0x6D2B79F5;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const shuffleWithRandom = <T,>(items: T[], random: () => number) => {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result;
+};
+
+const scorePositionMatrix = (positionMatrix: Map<string, number[]>) => {
+  let maxSpread = 0;
+  let totalSquaredDeviation = 0;
+  let repeatPenalty = 0;
+  for (const counts of positionMatrix.values()) {
+    const total = counts.reduce((sum, value) => sum + value, 0);
+    const slots = counts.length || 1;
+    const ideal = total / slots;
+    const minCount = Math.min(...counts);
+    const maxCount = Math.max(...counts);
+    maxSpread = Math.max(maxSpread, maxCount - minCount);
+    for (const value of counts) {
+      totalSquaredDeviation += (value - ideal) ** 2;
+      if (value > 1) repeatPenalty += (value - 1) ** 2;
+    }
+  }
+  return maxSpread * 100000 + totalSquaredDeviation * 100 + repeatPenalty * 10;
+};
+
+const clonePositionMatrix = (matrix: Map<string, number[]>) => {
+  return new Map<string, number[]>([...matrix.entries()].map(([teamId, counts]) => [teamId, [...counts]]));
+};
+
+const chooseBalancedOrder = (
+  roundGames: RoundRobinGameCandidate[],
+  currentMatrix: Map<string, number[]>,
+  gamesPerRound: number,
+  random: () => number,
+) => {
+  if (roundGames.length <= 1) return [...roundGames];
+  const candidates: RoundRobinGameCandidate[][] = [];
+  const seen = new Set<string>();
+  const addCandidate = (candidate: RoundRobinGameCandidate[]) => {
+    const key = candidate.map((game) => game.id).join("::");
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(candidate);
+  };
+
+  addCandidate([...roundGames]);
+  addCandidate([...roundGames].reverse());
+
+  const sampleCount = Math.min(8, Math.max(4, roundGames.length));
+  for (let index = 0; index < sampleCount; index += 1) {
+    addCandidate(shuffleWithRandom(roundGames, random));
+  }
+
+  let best = candidates[0] ?? [...roundGames];
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const nextMatrix = clonePositionMatrix(currentMatrix);
+    for (let position = 0; position < candidate.length; position += 1) {
+      const game = candidate[position];
+      const slotIndex = Math.min(position, gamesPerRound - 1);
+      const homeCounts = nextMatrix.get(game.home_team_id) ?? Array(gamesPerRound).fill(0);
+      const awayCounts = nextMatrix.get(game.away_team_id) ?? Array(gamesPerRound).fill(0);
+      homeCounts[slotIndex] = (homeCounts[slotIndex] ?? 0) + 1;
+      awayCounts[slotIndex] = (awayCounts[slotIndex] ?? 0) + 1;
+      nextMatrix.set(game.home_team_id, homeCounts);
+      nextMatrix.set(game.away_team_id, awayCounts);
+    }
+    const score = scorePositionMatrix(nextMatrix);
+    if (score < bestScore) {
+      bestScore = score;
+      best = candidate;
+    } else if (score === bestScore && random() < 0.5) {
+      best = candidate;
+    }
+  }
+
+  return best;
+};
+
 const solveBaseOrientation = (
   rounds: { pairs: [RoundRobinTeam, RoundRobinTeam][]; byeTeam: RoundRobinTeam | null }[],
   teams: RoundRobinTeam[],
@@ -343,7 +487,7 @@ const solveBaseOrientation = (
   return solution;
 };
 
-export function generateRoundRobinDryRun(input: RoundRobinDryRunInput): RoundRobinDryRunResult {
+const generateRoundRobinDryRunBase = (input: RoundRobinDryRunInput): RoundRobinDryRunResult => {
   const competitionId = String(input.competitionId ?? "").trim();
   const phaseId = String(input.phaseId ?? "").trim();
   const scheduleId = String(input.scheduleId ?? "").trim();
@@ -470,8 +614,179 @@ export function generateRoundRobinDryRun(input: RoundRobinDryRunInput): RoundRob
     teamStats: Object.keys(teamStats).length ? teamStats : validation.teamStats,
     pairStats,
   };
+};
+
+export function generateRoundRobinDryRun(input: RoundRobinDryRunInput): RoundRobinDryRunResult {
+  const normalizedTeams = (input.teams ?? [])
+    .map((team) => ({ id: String(team.id ?? "").trim(), name: String(team.name ?? "").trim() }))
+    .filter((team) => team.id && team.name);
+
+  const entropySeed = (() => {
+    const cryptoGlobal = globalThis.crypto as Crypto | undefined;
+    if (cryptoGlobal?.getRandomValues) {
+      const buffer = new Uint32Array(1);
+      cryptoGlobal.getRandomValues(buffer);
+      return buffer[0] ?? 0;
+    }
+    return Math.floor(Math.random() * 0xffffffff) >>> 0;
+  })();
+  const baseSeed = entropySeed ^ hashStringToSeed(`${input.competitionId ?? ""}::${input.phaseId ?? ""}::${input.scheduleId ?? ""}`);
+  const candidateCount = 2;
+  let bestResult: RoundRobinDryRunResult | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let attempt = 0; attempt < candidateCount; attempt += 1) {
+    const random = createSeededRandom(baseSeed + attempt * 1013904223);
+    const orderedTeams = attempt === 0 ? normalizedTeams : shuffleWithRandom(normalizedTeams, random);
+    const result = generateRoundRobinDryRunBase({ ...input, teams: orderedTeams });
+    if (!result.ok) {
+      if (!bestResult) bestResult = result;
+      continue;
+    }
+
+    const positionMatrix = new Map<string, number[]>(
+      orderedTeams.map((team) => [team.id, Array(result.input.gamesPerRound).fill(0)]),
+    );
+    const balancedGames: RoundRobinGameCandidate[] = [];
+    const balancedRounds: RoundRobinRound[] = [];
+
+    for (const round of result.rounds) {
+      const roundGames = result.games.filter((game) => game.round_number === round.roundNumber);
+      const balancedOrder = chooseBalancedOrder(roundGames, positionMatrix, result.input.gamesPerRound, random);
+      for (let index = 0; index < balancedOrder.length; index += 1) {
+        const game = balancedOrder[index];
+        const slotIndex = Math.min(index, result.input.gamesPerRound - 1);
+        const homeCounts = positionMatrix.get(game.home_team_id) ?? Array(result.input.gamesPerRound).fill(0);
+        const awayCounts = positionMatrix.get(game.away_team_id) ?? Array(result.input.gamesPerRound).fill(0);
+        homeCounts[slotIndex] = (homeCounts[slotIndex] ?? 0) + 1;
+        awayCounts[slotIndex] = (awayCounts[slotIndex] ?? 0) + 1;
+        positionMatrix.set(game.home_team_id, homeCounts);
+        positionMatrix.set(game.away_team_id, awayCounts);
+        balancedGames.push({
+          ...game,
+          game_order: index + 1,
+          id: `generated_${game.schedule_id}_c${game.cycle_number}_r${game.round_number}_g${index + 1}`,
+        });
+      }
+      balancedRounds.push({
+        ...round,
+        games: balancedOrder.map((game) => ({
+          homeTeamId: game.home_team_id,
+          awayTeamId: game.away_team_id,
+          homeTeamName: game.home_team_name,
+          awayTeamName: game.away_team_name,
+        })),
+      });
+    }
+
+    const score = scorePositionMatrix(positionMatrix);
+    if (score < bestScore) {
+      bestScore = score;
+      bestResult = {
+        ...result,
+        rounds: balancedRounds,
+        games: balancedGames,
+      };
+    } else if (score === bestScore && random() < 0.5) {
+      bestResult = {
+        ...result,
+        rounds: balancedRounds,
+        games: balancedGames,
+      };
+    }
+  }
+
+  return bestResult ?? generateRoundRobinDryRunBase({ ...input, teams: normalizedTeams });
 }
 
 export function generateRoundRobinValidationPreview(input: RoundRobinDryRunInput) {
   return generateRoundRobinDryRun(input);
+}
+
+const buildRoundRobinFixtureIdentity = (scheduleId: string, cycleNumber: number, roundNumber: number, gameOrder: number) =>
+  `${scheduleId}::c${cycleNumber}::r${roundNumber}::g${gameOrder}`;
+
+export function generateRoundRobinFixturePlan(
+  input: RoundRobinDryRunInput,
+  materializedGames: RoundRobinMaterializedGame[],
+): RoundRobinFixturePlan {
+  const dryRun = generateRoundRobinDryRun(input);
+  const expectedByIdentity = new Map<string, RoundRobinGameCandidate>();
+  for (const game of dryRun.games) {
+    expectedByIdentity.set(buildRoundRobinFixtureIdentity(game.schedule_id, game.cycle_number, game.round_number, game.game_order), game);
+  }
+
+  const materializedByIdentity = new Map<string, RoundRobinMaterializedGame>();
+  const duplicateIdentities = new Set<string>();
+  for (const game of materializedGames) {
+    const scheduleId = String(game.schedule_id ?? "").trim();
+    const cycleNumber = Number(game.cycle_number ?? 0) || 0;
+    const roundNumber = Number(game.round_number ?? 0) || 0;
+    const gameOrder = Number(game.game_order ?? 0) || 0;
+    if (!scheduleId || cycleNumber < 1 || roundNumber < 1 || gameOrder < 1) {
+      continue;
+    }
+    const identity = buildRoundRobinFixtureIdentity(scheduleId, cycleNumber, roundNumber, gameOrder);
+    if (materializedByIdentity.has(identity)) {
+      duplicateIdentities.add(identity);
+    }
+    materializedByIdentity.set(identity, game);
+  }
+
+  const items: RoundRobinFixturePlanItem[] = [];
+  let existingCount = 0;
+  let missingCount = 0;
+  let conflictCount = 0;
+
+  for (const expected of dryRun.games) {
+    const identity = buildRoundRobinFixtureIdentity(expected.schedule_id, expected.cycle_number, expected.round_number, expected.game_order);
+    const existing = materializedByIdentity.get(identity) ?? null;
+    let state: RoundRobinFixturePlanState = "missing";
+    if (existing) {
+      const existingHome = String(existing.home_team_id ?? "");
+      const existingAway = String(existing.away_team_id ?? "");
+      if (existingHome === expected.home_team_id && existingAway === expected.away_team_id) {
+        state = "existing";
+        existingCount += 1;
+      } else {
+        state = "conflict";
+        conflictCount += 1;
+      }
+    } else {
+      missingCount += 1;
+    }
+    items.push({
+      identity,
+      cycle_number: expected.cycle_number,
+      round_number: expected.round_number,
+      game_order: expected.game_order,
+      home_team_id: expected.home_team_id,
+      home_team_name: expected.home_team_name,
+      away_team_id: expected.away_team_id,
+      away_team_name: expected.away_team_name,
+      state,
+      existing_game_id: existing?.id ?? null,
+      expected_game_id: expected.id,
+    });
+  }
+
+  if (duplicateIdentities.size > 0) {
+    conflictCount += duplicateIdentities.size;
+  }
+
+  const groupedRounds = dryRun.rounds.map((round) => ({
+    cycleNumber: round.cycleNumber,
+    roundNumber: round.roundNumber,
+    roundLabel: round.roundLabel,
+    games: items.filter((item) => item.round_number === round.roundNumber),
+  }));
+
+  return {
+    expectedCount: dryRun.games.length,
+    existingCount,
+    missingCount,
+    conflictCount,
+    items,
+    groupedRounds,
+  };
 }

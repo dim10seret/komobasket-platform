@@ -16,6 +16,12 @@ import {
   roundRobinStructureFromTeams,
   scheduleLifecycleLabels,
 } from "../shared/admin-core";
+import { calculateSeriesProgression, calculateSeriesRoundWindow, type SeriesProgressionRoundRow } from "@/lib/series-progression";
+import {
+  resolveFinalizedStandingsPositions,
+  resolveSeriesCarryOver,
+  resolveSeriesParticipantSourcePhaseId,
+} from "@/lib/series-carry-over";
 
 type PhaseScheduleRow = Row & {
   id: string;
@@ -35,6 +41,8 @@ type PhaseScheduleRow = Row & {
 type GeneratedGameRow = Row & {
   id: string;
   schedule_id: string | null;
+  series_matchup_id: string | null;
+  series_round_number: number | string | null;
   round_number: number | string | null;
   game_order: number | string | null;
   round_label: string | null;
@@ -46,6 +54,18 @@ type GeneratedGameRow = Row & {
   away_score: number | string | null;
   result_source: string | null;
   status: string | null;
+};
+
+type SeriesRoundViewRow = {
+  matchupId: string;
+  matchupLabel: string;
+  round: SeriesProgressionRoundRow;
+};
+
+type SeriesRoundView = {
+  roundNumber: number;
+  roundLabel: string;
+  rows: SeriesRoundViewRow[];
 };
 
 type CompetitionVenueRow = Row & {
@@ -107,18 +127,55 @@ const buildPhaseSummary = (data: Snapshot, phase?: Row | null) => {
     const matchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
     const winsRequired = Math.max(1, Math.floor(Number(phase.wins_required ?? 0) || 0));
     const carryOverEnabled = Boolean(Number(phase.carry_over_enabled ?? 0));
-    const maxTotalResults = winsRequired * 2 - 1;
-    const previousCounted = carryOverEnabled ? 1 : 0;
-    const maxNewGames = Math.max(0, maxTotalResults - previousCounted);
+    const carryOverMeetingNumbers = Array.isArray(phaseSettings.carryOverMeetingNumbers)
+      ? [...new Set(phaseSettings.carryOverMeetingNumbers.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 1))]
+      : [];
+    const transferredRounds = carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0;
+    const roundWindows = matchups.map((matchup) => {
+      const teamAType = String(matchup?.slotA?.type ?? "");
+      const teamBType = String(matchup?.slotB?.type ?? "");
+      const isBye = teamAType === "bye" || teamBType === "bye";
+      const startingWins = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase).matchups.find((entry) => entry.matchupId === String(matchup?.id ?? "")) ?? null;
+      const window = calculateSeriesRoundWindow({
+        winsRequired,
+        currentWinsA: Number(startingWins?.startingWinsA ?? 0),
+        currentWinsB: Number(startingWins?.startingWinsB ?? 0),
+        qualified: Boolean(startingWins?.state !== "resolved" || isBye || startingWins?.currentSeriesDecided),
+      });
+      return { isBye, ...window };
+    });
+    const minimumNewRounds = roundWindows.length ? Math.max(...roundWindows.map((entry) => entry.minimumNewRounds)) : 0;
+    const maximumNewRounds = roundWindows.length ? Math.max(...roundWindows.map((entry) => entry.maximumNewRounds)) : 0;
+    const maxNewGames = maximumNewRounds * matchups.length;
+    const directQualifiers = matchups.reduce((count, matchup) => {
+      const slotAType = String(matchup?.slotA?.type ?? "");
+      const slotBType = String(matchup?.slotB?.type ?? "");
+      return count + (slotAType === "bye" || slotBType === "bye" ? 1 : 0);
+    }, 0);
+    const totalConcreteTeams = matchups.reduce((count, matchup) => {
+      const slotAType = String(matchup?.slotA?.type ?? "");
+      const slotBType = String(matchup?.slotB?.type ?? "");
+      return count + (slotAType === "bye" ? 0 : 1) + (slotBType === "bye" ? 0 : 1);
+    }, 0);
+    const materializedSeriesGames = (data.games as GeneratedGameRow[]).filter((game) =>
+      String(game.phase_id ?? "") === String(phase.id ?? "") &&
+      String(game.series_matchup_id ?? "").trim() &&
+      Number.isInteger(Number(game.series_round_number ?? 0)),
+    );
+    const completedSeriesGames = materializedSeriesGames.filter((game) => String(game.status ?? "").toLowerCase() === "completed").length;
     return [
       "Τύπος: Σειρά αγώνων",
-      `Matchups: ${matchups.length}`,
+      `Ομάδες: ${totalConcreteTeams}`,
       `Νίκες για πρόκριση: ${winsRequired}`,
-      `Μεταφορά προηγούμενου αγώνα: ${carryOverEnabled ? "Ναι" : "Όχι"}`,
-      carryOverEnabled ? `Φάση προέλευσης: ${String(phase.carry_over_source_name ?? "—")}` : "Φάση προέλευσης: —",
-      `Μέγιστο συνολικό πλήθος αποτελεσμάτων σειράς: ${maxTotalResults}`,
-      `Προηγούμενοι αγώνες που προσμετρώνται: ${previousCounted}`,
-      `Μέγιστοι νέοι αγώνες προς προγραμματισμό: ${maxNewGames}`,
+      `Μεταφορά αποτελέσματος: ${carryOverEnabled ? `${transferredRounds}η συνάντηση` : "—"}`,
+      `Μεταφερόμενοι γύροι: ${transferredRounds}`,
+      `Ελάχιστοι νέοι γύροι: ${minimumNewRounds}`,
+      `Μέγιστοι νέοι γύροι: ${maximumNewRounds}`,
+      `Διασταυρώσεις ανά γύρο: ${matchups.length}`,
+      `Μέγιστοι πιθανοί νέοι αγώνες: ${maxNewGames}`,
+      `Ομάδες που προκρίνονται απευθείας: ${directQualifiers}`,
+      `Υλικοποιημένοι αγώνες: ${materializedSeriesGames.length}`,
+      `Ολοκληρωμένοι υλικοποιημένοι αγώνες: ${completedSeriesGames}`,
     ];
   }
 
@@ -150,6 +207,138 @@ const buildGeneratedRounds = (games: GeneratedGameRow[], teams: { id: string; na
       };
     });
   return rounds;
+};
+
+const getRoundOrdinalLabel = (roundNumber: number) => {
+  const suffix = roundNumber === 1 ? "1ος" : roundNumber === 2 ? "2ος" : roundNumber === 3 ? "3ος" : `${roundNumber}ος`;
+  return `${suffix} Γύρος`;
+};
+
+const getSeriesRoundLabel = (roundNumber: number, rowState?: string) => {
+  const base = getRoundOrdinalLabel(roundNumber);
+  if (roundNumber === 1 && rowState === "transferred") return `${base} — από μεταφορά`;
+  if (rowState === "if_needed") return `${base} — εάν χρειαστεί`;
+  return base;
+};
+
+const buildSeriesRounds = (
+  data: Snapshot,
+  phase: Row,
+  scheduleGames: GeneratedGameRow[],
+  competitionTeams: { id: string; name: string }[],
+) => {
+  const phaseSettings = parseObject(phase.rule_settings_json);
+  const bracketConfig = parseObject(phaseSettings.bracketConfiguration);
+  const matchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
+  const carryOver = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase);
+  const participantSourcePhaseId = resolveSeriesParticipantSourcePhaseId(phase);
+  const resolvedPositions = resolveFinalizedStandingsPositions(
+    data.phases,
+    data.games,
+    data.teams,
+    participantSourcePhaseId,
+  );
+  const positionMap = new Map<number, string>(
+    resolvedPositions.positions.map((entry) => [entry.position, entry.teamName]),
+  );
+  const resolveSlotTeam = (slot: { type?: string | null; teamId?: string | null; position?: string | null }) => {
+    const slotType = String(slot.type ?? "").trim();
+    if (slotType === "bye") return { id: "", name: "—" };
+    if (slotType === "standing_position") {
+      const position = Number(String(slot.position ?? "").trim());
+      const teamName = Number.isInteger(position) ? positionMap.get(position) ?? "—" : "—";
+      const resolvedPosition = resolvedPositions.positions.find((entry) => entry.position === position);
+      return { id: resolvedPosition?.teamId ?? "", name: teamName };
+    }
+    const teamId = String(slot.teamId ?? "").trim();
+    const team = competitionTeams.find((entry) => entry.id === teamId) ?? data.teams.find((entry) => String(entry.id ?? "") === teamId);
+    return { id: teamId, name: String(team?.name ?? "—") };
+  };
+
+  const materializedSeriesGames = scheduleGames
+    .filter((game) => String(game.series_matchup_id ?? "").trim() && Number.isInteger(Number(game.series_round_number ?? 0)))
+    .map((game) => ({
+      matchupId: String(game.series_matchup_id ?? ""),
+      gameId: String(game.id ?? ""),
+      seriesRoundNumber: Number(game.series_round_number ?? 0),
+      homeTeamId: String(game.home_team_id ?? ""),
+      awayTeamId: String(game.away_team_id ?? ""),
+      homeScore: game.home_score === null || game.home_score === "" ? null : Number(game.home_score),
+      awayScore: game.away_score === null || game.away_score === "" ? null : Number(game.away_score),
+      status: String(game.status ?? ""),
+      date: String(game.scheduled_date ?? "") || null,
+      time: String(game.scheduled_time ?? "") || null,
+      venue: String(game.venue ?? "") || null,
+    }));
+
+  const sourceGames = (data.games as GeneratedGameRow[]).filter((game) => String(game.phase_id ?? "") === carryOver.sourcePhaseId);
+  const seriesRoundsByNumber = new Map<number, SeriesRoundView>();
+  const matchupsInOrder = matchups.length ? matchups : carryOver.matchups.map((matchup) => ({
+    id: matchup.matchupId,
+    slotA: { type: "team", teamId: matchup.teamAId, position: null },
+    slotB: { type: "team", teamId: matchup.teamBId, position: null },
+  }));
+
+  for (const matchup of matchupsInOrder) {
+    const matchupResolution = carryOver.matchups.find((entry) => entry.matchupId === String(matchup.id ?? "")) ?? null;
+    if (!matchupResolution) continue;
+    const teamA = resolveSlotTeam(matchup.slotA ?? {});
+    const teamB = resolveSlotTeam(matchup.slotB ?? {});
+    if (!teamA.id || !teamB.id) continue;
+    const transferredGames = (matchupResolution.meetingResolutions ?? [])
+      .filter((meeting) => meeting.state === "resolved" && meeting.gameId)
+      .map((meeting) => {
+        const sourceGame = sourceGames.find((game) => String(game.id ?? "") === String(meeting.gameId ?? "")) ?? null;
+        if (!sourceGame) return null;
+        return {
+          sourceGameId: String(sourceGame.id ?? ""),
+          seriesRoundNumber: Number(meeting.meetingNumber || 1),
+          homeTeamId: String(sourceGame.home_team_id ?? ""),
+          awayTeamId: String(sourceGame.away_team_id ?? ""),
+          homeScore: Number(sourceGame.home_score ?? 0),
+          awayScore: Number(sourceGame.away_score ?? 0),
+          status: String(sourceGame.status ?? ""),
+          date: String(sourceGame.scheduled_date ?? "") || null,
+          time: String(sourceGame.scheduled_time ?? "") || null,
+          venue: String(sourceGame.venue ?? "") || null,
+        };
+      })
+      .filter(Boolean) as Parameters<typeof calculateSeriesProgression>[0]["transferredGames"];
+    const matchupGames = materializedSeriesGames.filter(
+      (game) => game.matchupId === matchupResolution.matchupId,
+    );
+    const planningSlots: Parameters<typeof calculateSeriesProgression>[0]["planningSlots"] = [];
+    let progression;
+    try {
+      progression = calculateSeriesProgression({
+        matchupId: matchupResolution.matchupId,
+        teamA,
+        teamB,
+        winsRequired: Math.max(1, Math.floor(Number(phase.wins_required ?? 0) || 0)),
+        transferredGames,
+        materializedGames: matchupGames,
+        planningSlots,
+      });
+    } catch {
+      continue;
+    }
+    for (const round of progression.rounds) {
+      const existing = seriesRoundsByNumber.get(round.seriesRoundNumber);
+      const nextRows: SeriesRoundViewRow[] = existing?.rows ?? [];
+      nextRows.push({
+        matchupId: matchupResolution.matchupId,
+        matchupLabel: matchupResolution.label,
+        round,
+      });
+      seriesRoundsByNumber.set(round.seriesRoundNumber, {
+        roundNumber: round.seriesRoundNumber,
+        roundLabel: getSeriesRoundLabel(round.seriesRoundNumber, round.rowState),
+        rows: nextRows,
+      });
+    }
+  }
+
+  return [...seriesRoundsByNumber.values()].sort((left, right) => left.roundNumber - right.roundNumber);
 };
 
 const createDefaultScheduleEditorState = (): ScheduleEditorState => ({
@@ -209,6 +398,24 @@ const sortRoundsForDisplay = (games: GeneratedGameRow[]) => {
   });
 };
 
+const getMaterializedProgramCount = (data: Snapshot, phaseId: string) => {
+  return (data.games as GeneratedGameRow[]).filter((game) =>
+    String(game.phase_id ?? "") === phaseId &&
+    String(game.series_matchup_id ?? "").trim()
+      ? Number.isInteger(Number(game.series_round_number ?? 0))
+      : Boolean(String(game.round_label ?? "").trim()) || Number.isInteger(Number(game.round_number ?? 0)),
+  ).length;
+};
+
+const hasFullRoundRobinProgram = (data: Snapshot, phase: Row, competitionTeams: { id: string; name: string }[]) => {
+  const rules = parseStandingsRules(phase.rule_settings_json);
+  const structure = roundRobinStructureFromTeams(competitionTeams.length, rules.gamesPerPairing);
+  const materializedCount = (data.games as GeneratedGameRow[]).filter(
+    (game) => String(game.phase_id ?? "") === String(phase.id ?? "") && !String(game.series_matchup_id ?? "").trim(),
+  ).length;
+  return materializedCount >= structure.totalGames;
+};
+
 export function ProgramGamesSection({
   data,
   competitionId,
@@ -250,14 +457,31 @@ export function ProgramGamesSection({
       });
   }, [competitionId, competitionPhases, data.phaseSchedules]);
 
-  const scheduledPhaseIds = useMemo(() => new Set(schedules.map((schedule) => String(schedule.phase_id ?? "")).filter(Boolean)), [schedules]);
-  const availablePhases = useMemo(() => competitionPhases.filter((phase) => !scheduledPhaseIds.has(String(phase.id))), [competitionPhases, scheduledPhaseIds]);
   const competitionTeams = useMemo(() => {
     return getCompetitionTeamsForStandings(data, competitionId).map((team) => ({
       id: String(team.team_id ?? ""),
       name: String(team.team_name ?? "—"),
     })).filter((team) => team.id && team.name);
   }, [data, competitionId]);
+  const availablePhases = useMemo(() => {
+    const scheduleByPhaseId = new Map(schedules.map((schedule) => [String(schedule.phase_id ?? ""), schedule]));
+    return competitionPhases.filter((phase) => {
+      const phaseId = String(phase.id ?? "");
+      const schedule = scheduleByPhaseId.get(phaseId) ?? null;
+      if (!schedule) return true;
+      const phaseFormat = String(phase.format ?? phase.phase_kind ?? "standings").trim().toLowerCase();
+      if (phaseFormat === "standings") {
+        return !hasFullRoundRobinProgram(data, phase, competitionTeams);
+      }
+      if (phaseFormat === "series") {
+        const materializedSeriesGames = (data.games as GeneratedGameRow[]).filter((game) =>
+          String(game.phase_id ?? "") === phaseId && String(game.series_matchup_id ?? "").trim() && Number.isInteger(Number(game.series_round_number ?? 0)),
+        );
+        return materializedSeriesGames.length === 0;
+      }
+      return false;
+    });
+  }, [competitionTeams, competitionPhases, data, schedules]);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedPhaseId, setSelectedPhaseId] = useState("");
@@ -342,14 +566,19 @@ export function ProgramGamesSection({
 
   useEffect(() => {
     if (!selectedSchedule) return;
-    if (!selectedScheduleGames.length) return;
-    const currentRound = selectedRoundByScheduleId[String(selectedSchedule.id)] ?? Number(selectedScheduleGames[0]?.round_number ?? 0);
-    if (currentRound && selectedScheduleRounds.some((round) => round.roundNumber === currentRound)) return;
-    const firstRound = selectedScheduleRounds[0]?.roundNumber ?? 0;
+    const selectedSchedulePhase = competitionPhases.find((phase) => String(phase.id) === String(selectedSchedule.phase_id ?? "")) ?? null;
+    const selectedScheduleFormat = String(selectedSchedulePhase?.format ?? selectedSchedulePhase?.phase_kind ?? "standings").trim().toLowerCase();
+    const derivedRounds = selectedScheduleFormat === "series"
+      ? buildSeriesRounds(data, selectedSchedulePhase ?? selectedSchedule as unknown as Row, selectedScheduleGames, competitionTeams)
+      : selectedScheduleRounds;
+    const currentRound = selectedRoundByScheduleId[String(selectedSchedule.id)]
+      ?? (selectedScheduleFormat === "series" ? 1 : Number(selectedScheduleGames[0]?.round_number ?? 0));
+    if (currentRound && derivedRounds.some((round) => round.roundNumber === currentRound)) return;
+    const firstRound = derivedRounds[0]?.roundNumber ?? 0;
     if (firstRound) {
       setSelectedRoundByScheduleId((current) => ({ ...current, [String(selectedSchedule.id)]: firstRound }));
     }
-  }, [selectedSchedule, selectedScheduleGames.length, selectedScheduleRounds, selectedRoundByScheduleId]);
+  }, [selectedSchedule, selectedScheduleGames, selectedScheduleRounds, selectedRoundByScheduleId, competitionPhases, competitionTeams, data]);
 
   const openGenerateModal = (scheduleId: string) => {
     setSelectedScheduleId(scheduleId);
@@ -498,24 +727,90 @@ export function ProgramGamesSection({
               const scheduleKey = String(schedule.id);
               const phase = competitionPhases.find((entry) => String(entry.id) === String(schedule.phase_id ?? "")) ?? null;
               const phaseRules = parseStandingsRules(phase?.rule_settings_json);
-              const structure = roundRobinStructureFromTeams(competitionTeams.length, phaseRules.gamesPerPairing);
+              const roundRobinStructure = roundRobinStructureFromTeams(competitionTeams.length, phaseRules.gamesPerPairing);
               const scheduleGames = (data.games as GeneratedGameRow[]).filter((game) => String(game.schedule_id ?? "") === scheduleKey);
               const completedGames = scheduleGames.filter((game) => String(game.status ?? "") === "completed").length;
               const generatedRounds = buildGeneratedRounds(scheduleGames, competitionTeams);
               const lifecycle = String(schedule.lifecycle_status ?? "draft");
-              const hasGames = scheduleGames.length > 0;
-              const activeRoundNumber = selectedRoundByScheduleId[scheduleKey] ?? generatedRounds[0]?.roundNumber ?? 0;
-              const activeRound = generatedRounds.find((round) => round.roundNumber === activeRoundNumber) ?? generatedRounds[0] ?? null;
-              const canGenerate = lifecycle === "draft" && !hasGames && String(phase?.format ?? phase?.phase_kind ?? "").toLowerCase() === "standings" && competitionTeams.length >= 2;
-              const totalGames = hasGames ? scheduleGames.length : structure.totalGames;
-              const statusLine = hasGames
-                ? `${totalGames} αγώνες • ${generatedRounds.length} αγωνιστικές • ${completedGames}/${totalGames} ολοκληρωμένοι`
-                : `${structure.totalGames} προβλεπόμενοι αγώνες • ${structure.rounds} αγωνιστικές`;
+              const phaseFormat = String(phase?.format ?? phase?.phase_kind ?? "").toLowerCase();
+              const seriesRounds = phaseFormat === "series" ? buildSeriesRounds(data, phase ?? schedule as unknown as Row, scheduleGames, competitionTeams) : [];
+              const hasGames = phaseFormat === "series"
+                ? scheduleGames.some((game) => String(game.series_matchup_id ?? "").trim()) || seriesRounds.length > 0
+                : scheduleGames.length > 0;
+              const activeRoundNumber = selectedRoundByScheduleId[scheduleKey] ?? (phaseFormat === "series" ? 1 : generatedRounds[0]?.roundNumber ?? 0);
+              const activeRound = phaseFormat === "series"
+                ? null
+                : (generatedRounds.find((round) => round.roundNumber === activeRoundNumber) ?? generatedRounds[0] ?? null);
+              const activeSeriesRound = phaseFormat === "series"
+                ? (seriesRounds.find((round) => round.roundNumber === activeRoundNumber) ?? seriesRounds[0] ?? null)
+                : null;
+              const canGenerate = lifecycle === "draft" && !hasGames && phaseFormat === "standings" && competitionTeams.length >= 2;
+              const phaseSettings = parseObject(phase?.rule_settings_json);
+              const bracketConfig = parseObject(phaseSettings.bracketConfiguration);
+              const seriesMatchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
+              const seriesTeams = seriesMatchups.reduce((count, matchup) => {
+                const slotAType = String(matchup?.slotA?.type ?? "");
+                const slotBType = String(matchup?.slotB?.type ?? "");
+                return count + (slotAType === "bye" ? 0 : 1) + (slotBType === "bye" ? 0 : 1);
+              }, 0);
+              const winsRequired = Math.max(1, Math.floor(Number(phase?.wins_required ?? 0) || 0));
+              const carryOverEnabled = Boolean(Number(phase?.carry_over_enabled ?? 0));
+              const carryOverMeetingNumbers = Array.isArray(phaseSettings.carryOverMeetingNumbers)
+                ? [...new Set(phaseSettings.carryOverMeetingNumbers.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 1))]
+                : [];
+              const transferredRounds = carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0;
+              const carryOverResolution = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase ?? schedule as unknown as Row);
+              const seriesRoundWindows = carryOverResolution.matchups.map((matchup) => {
+                const window = calculateSeriesRoundWindow({
+                  winsRequired,
+                  currentWinsA: Number(matchup.startingWinsA ?? 0),
+                  currentWinsB: Number(matchup.startingWinsB ?? 0),
+                  qualified: Boolean(matchup.currentSeriesDecided || matchup.state !== "resolved"),
+                });
+                return window;
+              });
+              const minimumNewRounds = seriesRoundWindows.length ? Math.max(...seriesRoundWindows.map((entry) => entry.minimumNewRounds)) : 0;
+              const maximumNewRounds = seriesRoundWindows.length ? Math.max(...seriesRoundWindows.map((entry) => entry.maximumNewRounds)) : 0;
+              const matchupsPerRound = seriesMatchups.length;
+              const maxNewGames = maximumNewRounds * matchupsPerRound;
+              const materializedSeriesGames = (data.games as GeneratedGameRow[]).filter((game) =>
+                String(game.phase_id ?? "") === String(phase?.id ?? "") &&
+                String(game.series_matchup_id ?? "").trim() &&
+                Number.isInteger(Number(game.series_round_number ?? 0)),
+              );
+              const participantConfiguration = parseObject(phaseSettings.participantConfiguration);
+              const sourcePhaseId = String(
+                phase?.previous_phase_id
+                ?? participantConfiguration.participantSourcePhaseId
+                ?? participantConfiguration.sourcePhaseId
+                ?? "",
+              ).trim();
+              const sourceGamesById = new Map(
+                (data.games as GeneratedGameRow[])
+                  .filter((game) => String(game.phase_id ?? "") === sourcePhaseId)
+                  .map((game) => [String(game.id ?? ""), game] as const),
+              );
+              const seriesGamesById = new Map(materializedSeriesGames.map((game) => [String(game.id ?? ""), game] as const));
+              const completedSeriesGames = materializedSeriesGames.filter((game) => String(game.status ?? "").toLowerCase() === "completed").length;
+              const totalGames = phaseFormat === "series" ? materializedSeriesGames.length : (hasGames ? scheduleGames.length : roundRobinStructure.totalGames);
+              const statusLine = phaseFormat === "series"
+                ? `${seriesTeams} ομάδες • ${transferredRounds} μεταφερόμενοι γύροι • ${minimumNewRounds} ελάχιστοι νέοι γύροι • ${maximumNewRounds} μέγιστοι νέοι γύροι • ${matchupsPerRound} διασταυρώσεις/γύρο • ${maxNewGames} μέγιστοι πιθανοί νέοι αγώνες`
+                : hasGames
+                  ? `${totalGames} αγώνες • ${generatedRounds.length} αγωνιστικές • ${completedGames}/${totalGames} ολοκληρωμένοι`
+                  : `${roundRobinStructure.totalGames} προβλεπόμενοι αγώνες • ${roundRobinStructure.rounds} αγωνιστικές`;
               const selectedGameIds = getSelectedGameIds(scheduleKey);
               const selectedGameSet = new Set(selectedGameIds);
-              const displayedRoundGames = activeRound ? sortRoundsForDisplay(activeRound.games) : [];
-              const selectedRoundGames = displayedRoundGames.filter((game) => selectedGameSet.has(String(game.id)));
-              const allRoundSelected = displayedRoundGames.length > 0 && displayedRoundGames.every((game) => selectedGameSet.has(String(game.id)));
+              const displayedRoundGames = phaseFormat === "series" ? [] : (activeRound ? sortRoundsForDisplay(activeRound.games) : []);
+              const activeSeriesRows = phaseFormat === "series" ? (activeSeriesRound?.rows ?? []) : [];
+              const activeSeriesSelectableGameIds = activeSeriesRows
+                .filter((entry) => entry.round.rowState === "real_game" && entry.round.realGameId)
+                .map((entry) => String(entry.round.realGameId ?? ""));
+              const selectedRoundGames = phaseFormat === "series"
+                ? (activeSeriesSelectableGameIds.length ? materializedSeriesGames.filter((game) => selectedGameSet.has(String(game.id))) : [])
+                : displayedRoundGames.filter((game) => selectedGameSet.has(String(game.id)));
+              const allRoundSelected = phaseFormat === "series"
+                ? activeSeriesSelectableGameIds.length > 0 && activeSeriesSelectableGameIds.every((gameId) => selectedGameSet.has(gameId))
+                : displayedRoundGames.length > 0 && displayedRoundGames.every((game) => selectedGameSet.has(String(game.id)));
               const editor = getScheduleEditor(scheduleKey);
               const displayMode = getScheduleDisplayMode(scheduleKey);
               const selectedDateValues = [...new Set(selectedRoundGames.map((game) => String(game.scheduled_date ?? "").trim()).filter(Boolean))];
@@ -555,7 +850,9 @@ export function ProgramGamesSection({
               const isExpanded = openScheduleId === scheduleKey;
               const phaseLifecycle = String((phase as Row | undefined)?.lifecycle_status ?? "active");
               const phaseLifecycleLabel = phaseLifecycle === "finalized" ? "Οριστικοποιημένη" : "Σε εξέλιξη";
-              const phaseProgressLabel = `${completedGames}/${totalGames}`;
+              const phaseProgressLabel = phaseFormat === "series"
+                ? `${completedSeriesGames}/${Math.max(materializedSeriesGames.length, 0)} υλικοποιημένοι ολοκληρωμένοι`
+                : `${completedGames}/${totalGames}`;
               const phaseHeaderSummary = totalGames ? `${phaseLifecycleLabel} · ${phaseProgressLabel}` : phaseLifecycleLabel;
               const headerLabel = `${String(schedule.phase_name ?? phase?.name ?? "—")}`;
               return (
@@ -590,14 +887,14 @@ export function ProgramGamesSection({
                         <div className="mt-4 min-w-0 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-black text-zinc-900">Αγωνιστικές</p>
+                              <p className="text-sm font-black text-zinc-900">{phaseFormat === "series" ? "Σειρά Αγώνων" : "Αγωνιστικές"}</p>
                               <div className="inline-flex rounded-xl border border-zinc-300 bg-white p-1 text-xs font-black text-zinc-700">
                                 <button
                                   type="button"
                                   onClick={() => setScheduleDisplayMode(scheduleKey, "round")}
                                   className={`rounded-lg px-3 py-2 transition ${displayMode === "round" ? "bg-orange-600 text-white" : "hover:bg-zinc-50"}`}
                                 >
-                                  Ανά αγωνιστική
+                                  {phaseFormat === "series" ? "Ανά γύρο" : "Ανά αγωνιστική"}
                                 </button>
                                 <button
                                   type="button"
@@ -612,6 +909,15 @@ export function ProgramGamesSection({
                                   type="button"
                                   className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
                                   onClick={() => {
+                                    if (phaseFormat === "series") {
+                                      if (!activeSeriesSelectableGameIds.length) return;
+                                      if (allRoundSelected) {
+                                        clearScheduleSelection(scheduleKey);
+                                        return;
+                                      }
+                                      setAllScheduleGames(scheduleKey, activeSeriesSelectableGameIds);
+                                      return;
+                                    }
                                     if (!displayedRoundGames.length) return;
                                     if (allRoundSelected) {
                                       clearScheduleSelection(scheduleKey);
@@ -643,7 +949,7 @@ export function ProgramGamesSection({
                                   clearScheduleSelection(scheduleKey);
                                 }}
                               >
-                                {generatedRounds.map((round) => (
+                                {(phaseFormat === "series" ? seriesRounds : generatedRounds).map((round) => (
                                   <option key={round.roundNumber} value={round.roundNumber}>
                                     {round.roundLabel}
                                   </option>
@@ -652,123 +958,284 @@ export function ProgramGamesSection({
                             ) : null}
                           </div>
                           {displayMode === "round" ? (
-                            activeRound ? (
-                              <div className="mt-4 min-w-0">
-                                <div className="max-w-full overflow-x-auto rounded-2xl border border-zinc-200 bg-white lg:overflow-x-visible">
-                                  <table className="w-full min-w-0 table-fixed text-left text-sm">
-                                    <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
-                                      <tr>
-                                        <th className="w-10 px-3 py-3" aria-label="Selection"></th>
-                                        <th className="w-24 px-3 py-3">Match Report</th>
-                                        <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
-                                        <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
-                                        <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
-                                        <th className="w-28 px-3 py-3">Ημερομηνία</th>
-                                        <th className="w-20 px-3 py-3">Ώρα</th>
-                                        <th className="px-3 py-3">Γήπεδο</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {displayedRoundGames.map((game) => {
-                                        const gameId = String(game.id);
-                                        const isSelected = selectedGameSet.has(gameId);
-                                        const date = String(game.scheduled_date ?? "").trim();
-                                        const time = String(game.scheduled_time ?? "").trim();
-                                        const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
-                                        return (
-                                          <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
-                                            <td className="px-3 py-3 align-top">
-                                              <input
-                                                type="checkbox"
-                                                checked={isSelected}
-                                                onChange={() => toggleScheduleGame(scheduleKey, gameId)}
-                                                className="mt-1 h-4 w-4 rounded border-zinc-300 text-orange-600 focus:ring-orange-500"
-                                              />
-                                            </td>
-                                            <td className="px-3 py-3 align-top">
-                                              <button
-                                                type="button"
-                                                disabled
-                                                aria-disabled="true"
-                                                className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 px-3 py-1 text-xs font-black text-zinc-500"
-                                              >
-                                                —
-                                              </button>
-                                            </td>
-                                            <td className="px-3 py-3 align-top text-zinc-800">
-                                              <span className="block min-w-0 break-words text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
-                                            </td>
-                                            <td className="px-3 py-3 align-top font-black text-zinc-900">
-                                              <button
-                                                type="button"
-                                                onClick={() => openResultForm(game)}
-                                                className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
-                                              >
-                                                {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
-                                              </button>
-                                            </td>
-                                            <td className="px-3 py-3 align-top text-zinc-800">
-                                              <span className="block min-w-0 break-words text-left leading-snug">{String(game.away_team_name ?? "—")}</span>
-                                            </td>
-                                            <td className="px-3 py-3 align-top text-zinc-800">
-                                              {date ? parseDateForDisplay(date) : "—"}
-                                            </td>
-                                            <td className="px-3 py-3 align-top text-zinc-800">
-                                              {time || "—"}
-                                            </td>
-                                            <td className="px-3 py-3 align-top text-zinc-800">
-                                              <span className="block min-w-0 max-w-full whitespace-normal break-words leading-snug [overflow-wrap:anywhere]">
-                                                {String(game.venue ?? "").trim() || "—"}
-                                              </span>
-                                            </td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
+                            phaseFormat === "series" ? (
+                              activeSeriesRound ? (
+                                <div className="mt-4 min-w-0">
+                                  <div className="max-w-full overflow-x-auto rounded-2xl border border-zinc-200 bg-white lg:overflow-x-visible">
+                                    <table className="w-full min-w-0 table-fixed text-left text-sm">
+                                      <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+                                        <tr>
+                                          <th className="w-10 px-3 py-3" aria-label="Selection"></th>
+                                          <th className="w-24 px-3 py-3">Match Report</th>
+                                          <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
+                                          <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
+                                          <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
+                                          <th className="w-28 px-3 py-3">Ημερομηνία</th>
+                                          <th className="w-20 px-3 py-3">Ώρα</th>
+                                          <th className="px-3 py-3">Γήπεδο</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {(activeSeriesRound.rows ?? []).map((entry) => {
+                                          const round = entry.round;
+                                          const isRealGame = round.rowState === "real_game";
+                                          const isTransferred = round.rowState === "transferred";
+                                          const isIfNeeded = round.rowState === "if_needed";
+                                          const isQualified = round.rowState === "qualified";
+                                          const realGame = round.realGameId ? seriesGamesById.get(String(round.realGameId)) ?? null : null;
+                                          const sourceGame = round.sourceGameId ? sourceGamesById.get(String(round.sourceGameId)) ?? null : null;
+                                          const backingGame = realGame ?? sourceGame;
+                                          const gameId = String(round.realGameId ?? round.sourceGameId ?? `${entry.matchupId}-${round.seriesRoundNumber}`);
+                                          const isSelected = selectedGameSet.has(String(round.realGameId ?? ""));
+                                          const displayHome = String(round.homeTeamName ?? round.expectedHomeTeamName ?? "—");
+                                          const displayAway = String(round.awayTeamName ?? round.expectedAwayTeamName ?? "—");
+                                          const displayResult = isQualified
+                                            ? `Πρόκριση ${String(round.winnerTeamName ?? "—")} από τον ${round.qualificationRoundNumber ?? round.seriesRoundNumber}ο Γύρο`
+                                            : isIfNeeded
+                                              ? "Εάν χρειαστεί"
+                                              : round.homeScore !== null && round.awayScore !== null
+                                                ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
+                                                : "—";
+                                          const displayDate = backingGame ? parseDateForDisplay(String(backingGame.scheduled_date ?? "")) : "—";
+                                          const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : "—";
+                                          const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : "—";
+                                          return (
+                                            <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
+                                              <td className="px-3 py-3 align-top">
+                                                {isRealGame ? (
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    onChange={() => toggleScheduleGame(scheduleKey, String(round.realGameId ?? ""))}
+                                                    className="mt-1 h-4 w-4 rounded border-zinc-300 text-orange-600 focus:ring-orange-500"
+                                                  />
+                                                ) : null}
+                                              </td>
+                                              <td className="px-3 py-3 align-top">
+                                                <button
+                                                  type="button"
+                                                  disabled={!isRealGame || !realGame}
+                                                  aria-disabled={!isRealGame || !realGame}
+                                                  onClick={() => {
+                                                    if (isRealGame && realGame) openResultForm(realGame);
+                                                  }}
+                                                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-black ${
+                                                    isRealGame
+                                                      ? "border-zinc-300 bg-white text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                                      : "border-zinc-300 bg-zinc-100 text-zinc-500"
+                                                  }`}
+                                                >
+                                                  {isTransferred ? "Από μεταφορά" : isRealGame ? "MATCH REPORT" : displayResult}
+                                                </button>
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                <span className="block min-w-0 break-words text-right leading-snug">{displayHome}</span>
+                                              </td>
+                                              <td className="px-3 py-3 align-top font-black text-zinc-900">
+                                                {isRealGame ? (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      if (realGame) openResultForm(realGame);
+                                                    }}
+                                                    className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                                  >
+                                                    {round.homeScore !== null && round.awayScore !== null ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}` : "—"}
+                                                  </button>
+                                                ) : (
+                                                  <div className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-zinc-50 px-2 py-2 text-sm font-black text-zinc-600">
+                                                    {displayResult}
+                                                  </div>
+                                                )}
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                <span className="block min-w-0 break-words text-left leading-snug">{displayAway}</span>
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                {displayDate}
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                {displayTime}
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                <span className="block min-w-0 max-w-full whitespace-normal break-words leading-snug [overflow-wrap:anywhere]">
+                                                  {displayVenue}
+                                                </span>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
                                 </div>
-                                {activeRound.byeTeam ? (
-                                  <div className="mt-3 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
-                                    Ρεπό: <span className="font-black text-zinc-900">{activeRound.byeTeam.name}</span>
+                              ) : null
+                            ) : (
+                              activeRound ? (
+                                <div className="mt-4 min-w-0">
+                                  <div className="max-w-full overflow-x-auto rounded-2xl border border-zinc-200 bg-white lg:overflow-x-visible">
+                                    <table className="w-full min-w-0 table-fixed text-left text-sm">
+                                      <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+                                        <tr>
+                                          <th className="w-10 px-3 py-3" aria-label="Selection"></th>
+                                          <th className="w-24 px-3 py-3">Match Report</th>
+                                          <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
+                                          <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
+                                          <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
+                                          <th className="w-28 px-3 py-3">Ημερομηνία</th>
+                                          <th className="w-20 px-3 py-3">Ώρα</th>
+                                          <th className="px-3 py-3">Γήπεδο</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {displayedRoundGames.map((game) => {
+                                          const gameId = String(game.id);
+                                          const isSelected = selectedGameSet.has(gameId);
+                                          const date = String(game.scheduled_date ?? "").trim();
+                                          const time = String(game.scheduled_time ?? "").trim();
+                                          const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
+                                          return (
+                                            <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
+                                              <td className="px-3 py-3 align-top">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isSelected}
+                                                  onChange={() => toggleScheduleGame(scheduleKey, gameId)}
+                                                  className="mt-1 h-4 w-4 rounded border-zinc-300 text-orange-600 focus:ring-orange-500"
+                                                />
+                                              </td>
+                                              <td className="px-3 py-3 align-top">
+                                                <button
+                                                  type="button"
+                                                  disabled
+                                                  aria-disabled="true"
+                                                  className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 px-3 py-1 text-xs font-black text-zinc-500"
+                                                >
+                                                  —
+                                                </button>
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                <span className="block min-w-0 break-words text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
+                                              </td>
+                                              <td className="px-3 py-3 align-top font-black text-zinc-900">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => openResultForm(game)}
+                                                  className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                                >
+                                                  {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
+                                                </button>
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                <span className="block min-w-0 break-words text-left leading-snug">{String(game.away_team_name ?? "—")}</span>
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                {date ? parseDateForDisplay(date) : "—"}
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                {time || "—"}
+                                              </td>
+                                              <td className="px-3 py-3 align-top text-zinc-800">
+                                                <span className="block min-w-0 max-w-full whitespace-normal break-words leading-snug [overflow-wrap:anywhere]">
+                                                  {String(game.venue ?? "").trim() || "—"}
+                                                </span>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
                                   </div>
-                                ) : null}
-                              </div>
-                            ) : null
-                          ) : (
-                            <div className="mt-4 space-y-4">
-                              {generatedRounds.map((round) => (
-                                <section key={round.roundNumber} className="rounded-2xl border border-zinc-200 bg-white p-3">
-                                  <p className="text-sm font-black text-zinc-900">{round.roundLabel}</p>
-                                  <div className="mt-3 overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
-                                    <div className="min-w-[760px]">
-                                      {round.games.map((game) => {
-                                        const gameId = String(game.id);
-                                        const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
-                                        return (
-                                          <div key={gameId} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-8 border-t border-zinc-100 px-4 py-3 first:border-t-0">
-                                            <div className="min-w-0 justify-self-end text-right text-zinc-800">
-                                              <span className="block break-words">{String(game.home_team_name ?? "—")}</span>
-                                            </div>
-                                            <button
-                                              type="button"
-                                              onClick={() => openResultForm(game)}
-                                              className="inline-flex min-h-10 w-[7.5rem] items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
-                                            >
-                                              {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
-                                            </button>
-                                            <div className="min-w-0 text-left text-zinc-800">
-                                              <span className="block break-words">{String(game.away_team_name ?? "—")}</span>
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                  {round.byeTeam ? (
+                                  {activeSeriesRound?.rows?.some((entry) => entry.round.rowState === "if_needed") ? (
                                     <div className="mt-3 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
-                                      Ρεπό: <span className="font-black text-zinc-900">{round.byeTeam.name}</span>
+                                      Ρεπό: <span className="font-black text-zinc-900">—</span>
                                     </div>
                                   ) : null}
+                                </div>
+                              ) : null
+                            )
+                          ) : (
+                            <div className="mt-4 space-y-4">
+                              {(phaseFormat === "series" ? seriesRounds : generatedRounds).map((round) => (
+                                <section key={round.roundNumber} className="rounded-2xl border border-zinc-200 bg-white p-3">
+                                  <p className="text-sm font-black text-zinc-900">{round.roundLabel}</p>
+                                  <div className="mt-3 space-y-2">
+                                    {(phaseFormat === "series"
+                                      ? ((round as SeriesRoundView).rows)
+                                      : (round as typeof generatedRounds[number]).games.map((game) => ({
+                                        matchupId: String(game.id),
+                                        matchupLabel: String(game.home_team_name ?? "—"),
+                                        round: {
+                                          seriesRoundNumber: Number(game.round_number ?? 0),
+                                          rowState: "real_game" as const,
+                                          expectedHomeTeamId: String(game.home_team_id ?? ""),
+                                          expectedHomeTeamName: String(game.home_team_name ?? "—"),
+                                          expectedAwayTeamId: String(game.away_team_id ?? ""),
+                                          expectedAwayTeamName: String(game.away_team_name ?? "—"),
+                                          sourceGameId: null,
+                                          realGameId: String(game.id ?? ""),
+                                          planningSlot: null,
+                                          homeTeamId: String(game.home_team_id ?? ""),
+                                          homeTeamName: String(game.home_team_name ?? "—"),
+                                          awayTeamId: String(game.away_team_id ?? ""),
+                                          awayTeamName: String(game.away_team_name ?? "—"),
+                                          homeScore: game.home_score === null ? null : Number(game.home_score),
+                                          awayScore: game.away_score === null ? null : Number(game.away_score),
+                                          winnerTeamId: null,
+                                          winnerTeamName: null,
+                                          qualificationRoundNumber: null,
+                                          nextRequiredRoundNumber: null,
+                                        },
+                                      }))).map((entry: SeriesRoundViewRow) => {
+                                      const round = entry.round;
+                                      const isRealGame = round.rowState === "real_game";
+                                      const isTransferred = round.rowState === "transferred";
+                                      const isIfNeeded = round.rowState === "if_needed";
+                                      const isQualified = round.rowState === "qualified";
+                                      const realGame = round.realGameId ? seriesGamesById.get(String(round.realGameId)) ?? null : null;
+                                      const sourceGame = round.sourceGameId ? sourceGamesById.get(String(round.sourceGameId)) ?? null : null;
+                                      const backingGame = realGame ?? sourceGame;
+                                      const displayHome = String(round.homeTeamName ?? round.expectedHomeTeamName ?? "—");
+                                      const displayAway = String(round.awayTeamName ?? round.expectedAwayTeamName ?? "—");
+                                      const displayResult = isQualified
+                                        ? `Πρόκριση ${String(round.winnerTeamName ?? "—")} από τον ${round.qualificationRoundNumber ?? round.seriesRoundNumber}ο Γύρο`
+                                        : isIfNeeded
+                                          ? "Εάν χρειαστεί"
+                                          : round.homeScore !== null && round.awayScore !== null
+                                            ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
+                                            : "—";
+                                      const displayDate = backingGame ? parseDateForDisplay(String(backingGame.scheduled_date ?? "")) : "—";
+                                      const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : "—";
+                                      const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : "—";
+                                      return (
+                                        phaseFormat === "series" ? (
+                                          <div key={`${entry.matchupId}-${round.seriesRoundNumber}`} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-8 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3">
+                                            <div className="min-w-0 justify-self-end text-right text-zinc-800">
+                                              <span className="block break-words leading-snug">{displayHome}</span>
+                                            </div>
+                                            <div className="inline-flex min-h-10 w-[7.5rem] items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900">
+                                              {displayResult}
+                                            </div>
+                                            <div className="min-w-0 text-left text-zinc-800">
+                                              <span className="block break-words leading-snug">{displayAway}</span>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <div key={`${entry.matchupId}-${round.seriesRoundNumber}`} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-8 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3">
+                                            <div className="min-w-0 justify-self-end text-right text-zinc-800">
+                                              <span className="block break-words">{displayHome}</span>
+                                            </div>
+                                            <div className="inline-flex min-h-10 w-[7.5rem] items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900">
+                                              {displayResult}
+                                            </div>
+                                            <div className="min-w-0 text-left text-zinc-800">
+                                              <span className="block break-words">{displayAway}</span>
+                                            </div>
+                                          </div>
+                                        )
+                                      );
+                                    })}
+                                  </div>
                                 </section>
                               ))}
                             </div>
@@ -1109,7 +1576,7 @@ export function ProgramGamesSection({
                 </button>
               </div>
               <form onSubmit={handleGenerate} className="mt-5 space-y-4">
-                <input type="hidden" name="action" value="generateRoundRobinGames" />
+                <input type="hidden" name="action" value="materializePhaseProgram" />
                 <input type="hidden" name="scheduleId" value={selectedSchedule.id} />
                 <input type="hidden" name="id" value={selectedSchedule.id} />
                 <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">

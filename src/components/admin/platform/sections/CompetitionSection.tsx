@@ -28,7 +28,10 @@ import {
 } from "../shared/admin-core";
 import { PhaseFields, StandingsPhasePreview } from "./PhaseScheduleSection";
 import { describeSeriesMatchupsFromPhase } from "../phases/PhaseParticipantsBuilder";
-import { resolveFinalizedStandingsPositions } from "@/lib/series-carry-over";
+import {
+  resolveFinalizedStandingsPositions,
+  resolveSeriesParticipantSourcePhaseId,
+} from "@/lib/series-carry-over";
 import { ProgramGamesSection } from "./ProgramGamesSection";
 
 export function CompetitionFields({
@@ -893,12 +896,7 @@ export function CompetitionWorkspaceManager({
                     if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
                     return {};
                   })();
-                  const sourcePhaseId = String(
-                    seriesSummaryPhase.previous_phase_id
-                    || participantConfiguration.participantSourcePhaseId
-                    || participantConfiguration.sourcePhaseId
-                    || ""
-                  ).trim() || null;
+                  const sourcePhaseId = resolveSeriesParticipantSourcePhaseId(seriesSummaryPhase);
                   const resolvedPositions = resolveFinalizedStandingsPositions(
                     data.phases,
                     data.games,

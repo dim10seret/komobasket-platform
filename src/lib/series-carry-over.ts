@@ -156,6 +156,27 @@ const getSeriesSettings = (phase: SeriesCarryOverPhaseLike | undefined) => {
   return raw;
 };
 
+export const resolveSeriesParticipantSourcePhaseId = (
+  phase: SeriesCarryOverPhaseLike | undefined,
+) => {
+  if (!phase) return null;
+  const settings = getSeriesSettings(phase);
+  const participantConfiguration = parseJsonRecord(settings.participantConfiguration);
+  const explicitSourcePhaseId = String(
+    participantConfiguration.participantSourcePhaseId
+      ?? participantConfiguration.sourcePhaseId
+      ?? "",
+  ).trim();
+  if (explicitSourcePhaseId) return explicitSourcePhaseId;
+
+  const previousPhaseId = String(phase.previous_phase_id ?? "").trim();
+  if (previousPhaseId) return previousPhaseId;
+
+  // Legacy Series configurations could use the carry-over source as their
+  // participant source before participantConfiguration was persisted.
+  return String(phase.carry_over_source_phase_id ?? "").trim() || null;
+};
+
 const getSourceTeam = (
   slot: SeriesCarryOverMatchupLike["slotA"] | SeriesCarryOverMatchupLike["slotB"],
   teams: SeriesCarryOverTeamLike[],
@@ -342,6 +363,7 @@ export const resolveSeriesCarryOver = (
   const carryOverEnabled = Number(phase.carry_over_enabled ?? 0) === 1;
   const sourcePhaseId = carryOverEnabled ? String(phase.carry_over_source_phase_id ?? "").trim() || null : null;
   const sourcePhase = sourcePhaseId ? phases.find((entry) => String(entry.id ?? "") === sourcePhaseId) : undefined;
+  const participantSourcePhaseId = resolveSeriesParticipantSourcePhaseId(phase);
   const sourceSettings = getSeriesSettings(sourcePhase);
   const sourceGamesPerPairing = Math.max(1, toInt(sourceSettings.gamesPerPairing, 1));
   const selectedMeetings = getMeetingOrder(
@@ -357,9 +379,9 @@ export const resolveSeriesCarryOver = (
   );
   const positionResolution = resolveFinalizedStandingsPositions(
     phases,
-    games.filter((game) => String(game.phase_id ?? "") === String(sourcePhaseId ?? "")),
+    games.filter((game) => String(game.phase_id ?? "") === String(participantSourcePhaseId ?? "")),
     teams,
-    String(phase.previous_phase_id ?? sourcePhaseId ?? "").trim() || null,
+    participantSourcePhaseId,
   );
   const positionMap = new Map<number, FinalizedStandingsPositionLike>(
     positionResolution.positions.map((entry) => [entry.position, entry]),
@@ -404,6 +426,7 @@ export const resolveSeriesCarryOver = (
     let unresolvedMessage = "";
 
     if (!carryOverEnabled) {
+      const winsRequired = Math.max(1, toInt(phase.wins_required, 2));
       return {
         matchupId: matchup.id,
         label: getMatchupLabel(teamA.teamName, teamB.teamName),
@@ -416,12 +439,14 @@ export const resolveSeriesCarryOver = (
         sourcePhaseName: sourcePhase?.name ?? null,
         sourceGamesPerPairing,
         meetingResolutions: [],
-        startingWinsA: null,
-        startingWinsB: null,
+        startingWinsA: concreteTeamsResolved ? 0 : null,
+        startingWinsB: concreteTeamsResolved ? 0 : null,
         currentSeriesDecided: false,
-        maxNewGames: null,
-        state: "resolved" as const,
-        message: "Μεταφορά προηγούμενων μεταξύ τους αγώνων: Όχι",
+        maxNewGames: concreteTeamsResolved ? (winsRequired * 2) - 1 : null,
+        state: concreteTeamsResolved ? "resolved" as const : "pending" as const,
+        message: concreteTeamsResolved
+          ? "Μεταφορά προηγούμενων μεταξύ τους αγώνων: Όχι"
+          : standingTeamA.message || standingTeamB.message || "Σε αναμονή προσδιορισμού ομάδων.",
       };
     }
 

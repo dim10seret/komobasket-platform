@@ -17,6 +17,7 @@ export type SeriesProgressionTransferredGame = {
 };
 
 export type SeriesProgressionMaterializedGame = {
+  matchupId?: string | null;
   gameId: string;
   seriesRoundNumber: number;
   homeTeamId: string;
@@ -78,6 +79,8 @@ export type SeriesProgressionResult = {
   teamBName: string;
   winsRequired: number;
   maximumSeriesRounds: number;
+  minimumNewRounds: number;
+  maximumNewRounds: number;
   transferredRoundCount: number;
   currentWinsA: number;
   currentWinsB: number;
@@ -97,6 +100,33 @@ type RoundEntry = {
   realGameId: string | null;
   planningSlot: SeriesProgressionPlanningSlot | null;
   game: SeriesProgressionTransferredGame | SeriesProgressionMaterializedGame | null;
+};
+
+export type SeriesRoundWindowInput = {
+  winsRequired: number;
+  currentWinsA: number;
+  currentWinsB: number;
+  qualified: boolean;
+};
+
+export const calculateSeriesRoundWindow = (input: SeriesRoundWindowInput) => {
+  const winsRequired = normalizeRequiredRound(input.winsRequired, "Οι νίκες για πρόκριση");
+  const maximumSeriesRounds = (winsRequired * 2) - 1;
+  const currentWinsA = Math.max(0, Math.floor(Number(input.currentWinsA ?? 0) || 0));
+  const currentWinsB = Math.max(0, Math.floor(Number(input.currentWinsB ?? 0) || 0));
+  if (input.qualified) {
+    return {
+      minimumNewRounds: 0,
+      maximumNewRounds: 0,
+      maximumSeriesRounds,
+    };
+  }
+  const currentBest = Math.max(currentWinsA, currentWinsB);
+  return {
+    minimumNewRounds: Math.max(0, winsRequired - currentBest),
+    maximumNewRounds: Math.max(0, maximumSeriesRounds - (currentWinsA + currentWinsB)),
+    maximumSeriesRounds,
+  };
 };
 
 const toInt = (value: unknown, fallback = 0) => {
@@ -222,6 +252,10 @@ export const calculateSeriesProgression = (input: SeriesProgressionInput): Serie
   }));
 
   const materializedGames = sortRounds((input.materializedGames ?? []).map((game, index): SeriesProgressionMaterializedGame => {
+    const gameMatchupId = String(game.matchupId ?? "").trim();
+    if (gameMatchupId && gameMatchupId !== matchupId) {
+      throw new Error("Ο υλοποιημένος αγώνας ανήκει σε διαφορετικό matchup.");
+    }
     const gameId = String(game.gameId ?? "").trim();
     if (!gameId) throw new Error(`Ο υλικοποιημένος αγώνας ${index + 1} πρέπει να έχει gameId.`);
     const seriesRoundNumber = normalizeRequiredRound(game.seriesRoundNumber, `Ο υλικοποιημένος γύρος ${index + 1}`);
@@ -334,7 +368,8 @@ export const calculateSeriesProgression = (input: SeriesProgressionInput): Serie
   const rounds = Array.from({ length: maximumSeriesRounds }, (_, index) => index + 1).map((seriesRoundNumber) => {
     const entry = byRound.get(seriesRoundNumber);
     const planningSlot = entry?.planningSlot ?? planningSlots.find((slot) => slot.seriesRoundNumber === seriesRoundNumber) ?? null;
-    const expected = expectedOrientation(seriesRoundNumber, teamA.id, teamB.id);
+    const newGameOrdinal = seriesRoundNumber - transferredGames.length;
+    const expected = expectedOrientation(Math.max(1, newGameOrdinal), teamA.id, teamB.id);
     const baseRow = {
       seriesRoundNumber,
       expectedHomeTeamId: expected.homeTeamId,
@@ -452,6 +487,12 @@ export const calculateSeriesProgression = (input: SeriesProgressionInput): Serie
   const qualifiedTeamId = currentWinsA >= winsRequired ? teamA.id : currentWinsB >= winsRequired ? teamB.id : null;
   const qualifiedTeamName = currentWinsA >= winsRequired ? teamA.name : currentWinsB >= winsRequired ? teamB.name : null;
   const nextRequiredRoundNumber = qualifiedTeamId ? null : rounds.find((round) => round.rowState === "if_needed")?.seriesRoundNumber ?? null;
+  const roundWindow = calculateSeriesRoundWindow({
+    winsRequired,
+    currentWinsA,
+    currentWinsB,
+    qualified: Boolean(qualifiedTeamId),
+  });
 
   return {
     matchupId,
@@ -461,6 +502,8 @@ export const calculateSeriesProgression = (input: SeriesProgressionInput): Serie
     teamBName: teamB.name,
     winsRequired,
     maximumSeriesRounds,
+    minimumNewRounds: roundWindow.minimumNewRounds,
+    maximumNewRounds: roundWindow.maximumNewRounds,
     transferredRoundCount: transferredGames.length,
     currentWinsA,
     currentWinsB,

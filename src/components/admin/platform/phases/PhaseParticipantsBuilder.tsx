@@ -1299,15 +1299,18 @@ export function PhaseParticipantsBuilder({
             <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>
           )}
           {isSeriesMode && (
-            <p><span className="font-black">Μεταφορά προηγούμενου μεταξύ τους αγώνα:</span> {carryOverEnabled ? "Ναι" : "Όχι"}</p>
+            <p><span className="font-black">Μεταφορά αποτελέσματος:</span> {carryOverEnabled ? "1η συνάντηση" : "—"}</p>
           )}
           {isSeriesMode && (
             <p><span className="font-black">Φάση προέλευσης:</span> {carryOverEnabled ? (carryOverSourcePhase?.name || "—") : "—"}</p>
           )}
           {isSeriesMode && (
-            <p><span className="font-black">Αγώνες που προσμετρώνται:</span> {carryOverEnabled ? carryOverMeetingLabel : "—"}</p>
+            <p><span className="font-black">Μεταφερόμενοι γύροι:</span> {carryOverEnabled ? carryOverMeetingNumbers.length : 0}</p>
           )}
-          {isSeriesMode && <p><span className="font-black">Μέγιστο συνολικό πλήθος αποτελεσμάτων σειράς:</span> {seriesMaxTotalResults}</p>}
+          {isSeriesMode && <p><span className="font-black">Πιθανοί νέοι γύροι:</span> {Math.max(0, seriesMaxTotalResults - (carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0))}</p>}
+          {isSeriesMode && <p><span className="font-black">Διασταυρώσεις ανά γύρο:</span> {Math.max(0, matchups.length)}</p>}
+          {isSeriesMode && <p><span className="font-black">Μέγιστοι πιθανοί νέοι αγώνες:</span> {Math.max(0, (seriesMaxTotalResults - (carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0)) * Math.max(0, matchups.length))}</p>}
+          {isSeriesMode && <p><span className="font-black">Ομάδες που προκρίνονται απευθείας:</span> {matchups.reduce((count, matchup) => count + (String(matchup.slotA?.type ?? "") === "bye" || String(matchup.slotB?.type ?? "") === "bye" ? 1 : 0), 0)}</p>}
           <p><span className="font-black">Διαθέσιμα slots:</span> {isSeriesMode ? sourcePoolCount : estimatedParticipantCount}</p>
           <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>
           <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>
