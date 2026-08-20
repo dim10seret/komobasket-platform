@@ -1252,6 +1252,7 @@ export function CompetitionWorkspaceManager({
               deleteEntity={deleteEntity}
               bulkScheduleGames={bulkScheduleGames}
               busy={busy}
+              onRefreshCompetitionData={onRefreshCompetitionData}
             />
           )}
         </Panel>

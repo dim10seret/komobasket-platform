@@ -3,6 +3,8 @@ import {
   createLeagueEntity,
   cleanupLeagueCompetition,
   deleteLeagueCompetition,
+  deletePhaseProgram,
+  DeletePhaseProgramError,
   deleteLeaguePhase,
   deleteLeaguePhaseSchedule,
   deleteLeagueSeason,
@@ -174,7 +176,9 @@ export async function DELETE(
         : resource === "phases"
           ? await deleteLeaguePhase(input, authorization.identity.email)
         : resource === "phase-schedules"
-          ? await deleteLeaguePhaseSchedule(input, authorization.identity.email)
+          ? String(input.action ?? "").trim() === "deletePhaseProgram"
+            ? await deletePhaseProgram(input, authorization.identity.email)
+            : await deleteLeaguePhaseSchedule(input, authorization.identity.email)
         : resource === "teams"
           ? await deleteLeagueTeam(input, authorization.identity.email)
           : resource === "competition-venues"
@@ -183,14 +187,16 @@ export async function DELETE(
 
     return Response.json(result);
   } catch (error) {
+    const phaseProgramError = error instanceof DeletePhaseProgramError ? error : null;
     return Response.json(
       {
+        ...(phaseProgramError ? { code: phaseProgramError.code } : {}),
         error:
           error instanceof Error
             ? error.message
             : "Η διαγραφή απέτυχε.",
       },
-      { status: 400 },
+      { status: phaseProgramError ? 409 : 400 },
     );
   }
 }

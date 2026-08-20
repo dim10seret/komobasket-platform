@@ -23,6 +23,10 @@ import {
   normalizePlayerName,
 } from "@/lib/player-matching";
 import {
+  hasPhaseProgramStarted,
+  type PhaseProgramGameStartEvidence,
+} from "@/lib/phase-program-delete-policy";
+import {
   generateRoundRobinDryRun,
   generateRoundRobinFixturePlan,
 } from "@/services/round-robin-generator";
@@ -3840,6 +3844,222 @@ export async function deleteLeaguePhaseSchedule(input: Record<string, unknown>, 
   ]);
 
   return { id };
+}
+
+export type DeletePhaseProgramErrorCode =
+  | "PHASE_PROGRAM_FINALIZED"
+  | "PHASE_PROGRAM_STARTED"
+  | "PHASE_PROGRAM_CONCURRENT_CHANGE";
+
+export class DeletePhaseProgramError extends Error {
+  readonly code: DeletePhaseProgramErrorCode;
+
+  constructor(code: DeletePhaseProgramErrorCode, message: string) {
+    super(message);
+    this.name = "DeletePhaseProgramError";
+    this.code = code;
+  }
+}
+
+type PhaseProgramOwnedGame = DbRow & {
+  id: string;
+  status: string | null;
+  home_score: number | null;
+  away_score: number | null;
+  result_source: string | null;
+  external_id: string | null;
+  has_player_stats: number;
+};
+
+const phaseProgramUnsafeGameSql = `
+  (g.status <> 'scheduled'
+    OR g.home_score IS NOT NULL
+    OR g.away_score IS NOT NULL
+    OR NULLIF(TRIM(COALESCE(g.result_source, '')), '') IS NOT NULL
+    OR NULLIF(TRIM(COALESCE(g.external_id, '')), '') IS NOT NULL
+    OR EXISTS (SELECT 1 FROM league_player_game_stats pgs WHERE pgs.game_id=g.id))
+`;
+
+const phaseProgramGuardSql = `NOT EXISTS (
+  SELECT 1
+  FROM league_games g
+  WHERE g.phase_id=? AND g.schedule_id=? AND ${phaseProgramUnsafeGameSql}
+)`;
+
+export async function deletePhaseProgram(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η διαγραφή προγράμματος είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+
+  const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+  const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+  if (!competitionId || !phaseId) {
+    throw new Error("Δεν επιλέχθηκε διοργάνωση και φάση για διαγραφή προγράμματος.");
+  }
+
+  const competition = await db.prepare("SELECT id FROM league_competitions WHERE id=?")
+    .bind(competitionId).first<DbRow>();
+  if (!competition) throw new Error("Δεν βρέθηκε η διοργάνωση.");
+
+  const phase = await db.prepare(`
+    SELECT id, competition_id, name, lifecycle_status, finalized_at
+    FROM league_phases
+    WHERE id=?
+  `).bind(phaseId).first<DbRow>();
+  if (!phase) throw new Error("Δεν βρέθηκε η φάση.");
+  if (String(phase.competition_id ?? "") !== competitionId) {
+    throw new Error("Η φάση δεν ανήκει στη συγκεκριμένη διοργάνωση.");
+  }
+  if (String(phase.lifecycle_status ?? "active") === "finalized" || phase.finalized_at) {
+    throw new DeletePhaseProgramError(
+      "PHASE_PROGRAM_FINALIZED",
+      "Το πρόγραμμα οριστικοποιημένης φάσης δεν μπορεί να διαγραφεί.",
+    );
+  }
+
+  const schedules = await rows<DbRow>(
+    db,
+    `SELECT id, competition_id, phase_id, lifecycle_status
+      FROM league_phase_schedules
+      WHERE phase_id=? AND competition_id=?
+      ORDER BY id`,
+    [phaseId, competitionId],
+  );
+  if (!schedules.length) {
+    return {
+      deleted: false,
+      alreadyDeleted: true,
+      noProgram: true,
+      gamesDeleted: 0,
+      planningSlotsDeleted: 0,
+      phaseId,
+    };
+  }
+  if (schedules.length !== 1) {
+    throw new Error("Βρέθηκαν πολλαπλά προγράμματα για τη φάση. Η διαγραφή ακυρώθηκε.");
+  }
+
+  const schedule = schedules[0];
+  const scheduleId = String(schedule.id ?? "");
+  if (String(schedule.phase_id ?? "") !== phaseId || String(schedule.competition_id ?? "") !== competitionId) {
+    throw new Error("Το πρόγραμμα δεν ανήκει στη σωστή φάση ή διοργάνωση.");
+  }
+
+  const ownedGames = await rows<PhaseProgramOwnedGame>(
+    db,
+    `SELECT g.id, g.status, g.home_score, g.away_score, g.result_source, g.external_id,
+      EXISTS (SELECT 1 FROM league_player_game_stats pgs WHERE pgs.game_id=g.id) AS has_player_stats
+      FROM league_games g
+      WHERE g.phase_id=? AND g.schedule_id=?
+      ORDER BY g.id`,
+    [phaseId, scheduleId],
+  );
+  const startEvidence: PhaseProgramGameStartEvidence[] = ownedGames.map((game) => ({
+    status: game.status,
+    homeScore: game.home_score,
+    awayScore: game.away_score,
+    resultSource: game.result_source,
+    externalId: game.external_id,
+    hasPlayerStats: Boolean(Number(game.has_player_stats ?? 0)),
+    // Add Match Report/play-by-play evidence here when those canonical tables are introduced.
+    hasCompetitiveDependency: false,
+  }));
+  if (hasPhaseProgramStarted(startEvidence)) {
+    throw new DeletePhaseProgramError(
+      "PHASE_PROGRAM_STARTED",
+      "Το πρόγραμμα δεν μπορεί να διαγραφεί επειδή τουλάχιστον ένας αγώνας έχει ξεκινήσει ή περιέχει αγωνιστικά δεδομένα.",
+    );
+  }
+
+  const planningCount = await db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM league_series_planning_slots
+    WHERE competition_id=? AND phase_id=? AND schedule_id=?
+  `).bind(competitionId, phaseId, scheduleId).first<DbRow>();
+  const gamesDeleted = ownedGames.length;
+  const planningSlotsDeleted = Number(planningCount?.count ?? 0);
+
+  // D1 batch is transactional. Every destructive statement repeats the no-start
+  // guard so a concurrent result/stat write cannot be followed by deletion.
+  await db.batch([
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      SELECT ?,?,?,?,?,?,CURRENT_TIMESTAMP
+      WHERE ${phaseProgramGuardSql}`)
+      .bind(
+        createEntityId("audit"),
+        actor,
+        "delete_program",
+        "phases",
+        phaseId,
+        JSON.stringify({ competitionId, phaseId, scheduleId, gamesDeleted, planningSlotsDeleted }),
+        phaseId,
+        scheduleId,
+      ),
+    db.prepare(`DELETE FROM league_series_planning_slots
+      WHERE competition_id=? AND phase_id=? AND schedule_id=?
+        AND ${phaseProgramGuardSql}`)
+      .bind(competitionId, phaseId, scheduleId, phaseId, scheduleId),
+    db.prepare(`DELETE FROM league_games
+      WHERE phase_id=? AND schedule_id=?
+        AND ${phaseProgramGuardSql}`)
+      .bind(phaseId, scheduleId, phaseId, scheduleId),
+    db.prepare(`DELETE FROM league_phase_schedules
+      WHERE id=? AND phase_id=? AND competition_id=?
+        AND EXISTS (
+          SELECT 1 FROM league_phases p
+          WHERE p.id=? AND p.competition_id=?
+            AND p.lifecycle_status <> 'finalized' AND p.finalized_at IS NULL
+        )
+        AND NOT EXISTS (SELECT 1 FROM league_games g WHERE g.phase_id=? AND g.schedule_id=?)
+        AND NOT EXISTS (
+          SELECT 1 FROM league_series_planning_slots ps
+          WHERE ps.phase_id=? AND ps.schedule_id=?
+        )`)
+      .bind(
+        scheduleId,
+        phaseId,
+        competitionId,
+        phaseId,
+        competitionId,
+        phaseId,
+        scheduleId,
+        phaseId,
+        scheduleId,
+      ),
+  ]);
+
+  const remainingSchedule = await db.prepare(`
+    SELECT id FROM league_phase_schedules
+    WHERE id=? AND phase_id=? AND competition_id=?
+  `).bind(scheduleId, phaseId, competitionId).first<DbRow>();
+  if (remainingSchedule) {
+    const unsafeAfterBatch = await db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM league_games g
+      WHERE g.phase_id=? AND g.schedule_id=? AND ${phaseProgramUnsafeGameSql}
+    `).bind(phaseId, scheduleId).first<DbRow>();
+    if (Number(unsafeAfterBatch?.count ?? 0) > 0) {
+      throw new DeletePhaseProgramError(
+        "PHASE_PROGRAM_STARTED",
+        "Το πρόγραμμα άλλαξε και περιέχει πλέον αγωνιστικά δεδομένα. Δεν διαγράφηκε τίποτα.",
+      );
+    }
+    throw new DeletePhaseProgramError(
+      "PHASE_PROGRAM_CONCURRENT_CHANGE",
+      "Το πρόγραμμα άλλαξε ταυτόχρονα με τη διαγραφή. Δεν διαγράφηκε τίποτα.",
+    );
+  }
+
+  return {
+    deleted: true,
+    alreadyDeleted: false,
+    noProgram: false,
+    gamesDeleted,
+    planningSlotsDeleted,
+    competitionId,
+    phaseId,
+    scheduleId,
+  };
 }
 
 export async function deleteLeagueCompetitionVenue(input: Record<string, unknown>, actor: string) {

@@ -54,6 +54,7 @@ type GeneratedGameRow = Row & {
   away_score: number | string | null;
   result_source: string | null;
   status: string | null;
+  external_id: string | null;
 };
 
 type SeriesRoundViewRow = {
@@ -424,6 +425,7 @@ export function ProgramGamesSection({
   deleteEntity,
   bulkScheduleGames,
   busy,
+  onRefreshCompetitionData,
 }: {
   data: Snapshot;
   competitionId: string;
@@ -432,6 +434,7 @@ export function ProgramGamesSection({
   deleteEntity: DeleteEntity;
   bulkScheduleGames: (payload: Record<string, unknown>) => Promise<boolean>;
   busy: boolean;
+  onRefreshCompetitionData?: () => Promise<void> | void;
 }) {
   const competitionPhases = useMemo(() => {
     return data.phases
@@ -500,6 +503,10 @@ export function ProgramGamesSection({
   const [resultAwayScore, setResultAwayScore] = useState("");
   const [selectedGameIdsByScheduleId, setSelectedGameIdsByScheduleId] = useState<Record<string, string[]>>({});
   const [scheduleEditorByScheduleId, setScheduleEditorByScheduleId] = useState<Record<string, ScheduleEditorState>>({});
+  const [deleteProgramTarget, setDeleteProgramTarget] = useState<{ phaseId: string; phaseName: string } | null>(null);
+  const [deleteProgramConfirmation, setDeleteProgramConfirmation] = useState("");
+  const [deleteProgramBusy, setDeleteProgramBusy] = useState(false);
+  const [deleteProgramError, setDeleteProgramError] = useState("");
   const selectedPhase = availablePhases.find((phase) => String(phase.id) === selectedPhaseId) ?? availablePhases[0] ?? null;
 
   useEffect(() => {
@@ -640,6 +647,44 @@ export function ProgramGamesSection({
     if (!ok) return;
     setShowGenerateModal(false);
     setSelectedScheduleId("");
+  };
+
+  const closeDeleteProgramDialog = () => {
+    if (deleteProgramBusy) return;
+    setDeleteProgramTarget(null);
+    setDeleteProgramConfirmation("");
+    setDeleteProgramError("");
+  };
+
+  const handleDeletePhaseProgram = async () => {
+    if (!deleteProgramTarget || deleteProgramConfirmation !== "ΔΙΑΓΡΑΦΗ") return;
+    setDeleteProgramBusy(true);
+    setDeleteProgramError("");
+    try {
+      const response = await fetch("/api/admin/league/phase-schedules", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "deletePhaseProgram",
+          competitionId,
+          phaseId: deleteProgramTarget.phaseId,
+        }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Η διαγραφή του προγράμματος απέτυχε.");
+      setDeleteProgramTarget(null);
+      setDeleteProgramConfirmation("");
+      setOpenScheduleId(null);
+      if (onRefreshCompetitionData) {
+        await onRefreshCompetitionData();
+      } else {
+        window.location.reload();
+      }
+    } catch (error) {
+      setDeleteProgramError(error instanceof Error ? error.message : "Η διαγραφή του προγράμματος απέτυχε.");
+    } finally {
+      setDeleteProgramBusy(false);
+    }
   };
 
   const getSelectedGameIds = (scheduleKey: string) => selectedGameIdsByScheduleId[scheduleKey] ?? [];
@@ -849,6 +894,13 @@ export function ProgramGamesSection({
               const venueDisplayMode = selectedVenueValues.length > 1 ? "Διαφορετικές τιμές" : commonVenueValue || "—";
               const isExpanded = openScheduleId === scheduleKey;
               const phaseLifecycle = String((phase as Row | undefined)?.lifecycle_status ?? "active");
+              const programObviouslyStarted = scheduleGames.some((game) =>
+                String(game.status ?? "").trim().toLowerCase() !== "scheduled"
+                || game.home_score !== null
+                || game.away_score !== null
+                || Boolean(String(game.result_source ?? "").trim())
+                || Boolean(String(game.external_id ?? "").trim()),
+              );
               const phaseLifecycleLabel = phaseLifecycle === "finalized" ? "Οριστικοποιημένη" : "Σε εξέλιξη";
               const phaseProgressLabel = phaseFormat === "series"
                 ? `${completedSeriesGames}/${Math.max(materializedSeriesGames.length, 0)} υλικοποιημένοι ολοκληρωμένοι`
@@ -1025,7 +1077,7 @@ export function ProgramGamesSection({
                                                       : "border-zinc-300 bg-zinc-100 text-zinc-500"
                                                   }`}
                                                 >
-                                                  {isTransferred ? "Από μεταφορά" : isRealGame ? "MATCH REPORT" : displayResult}
+                                                  {isTransferred ? "Από μεταφορά" : isRealGame ? "MATCH REPORT" : "—"}
                                                 </button>
                                               </td>
                                               <td className="px-3 py-3 align-top text-zinc-800">
@@ -1441,8 +1493,8 @@ export function ProgramGamesSection({
                           {lifecycle === "published" ? "Δημοσιευμένο πρόγραμμα" : "Αναμονή δημιουργίας αγώνων"}
                         </p>
                       )}
-                  {canGenerate ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    {canGenerate ? (
                       <button
                         type="button"
                         disabled={busy}
@@ -1451,39 +1503,79 @@ export function ProgramGamesSection({
                       >
                         Δημιουργία Αγώνων
                       </button>
-                    </div>
-                  ) : lifecycle === "draft" && hasGames ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled
-                        className="rounded-xl border border-red-200 bg-zinc-50 px-4 py-2.5 text-sm font-black text-red-400"
-                      >
-                        Το πρόγραμμα περιέχει αγώνες και δεν μπορεί να διαγραφεί.
-                      </button>
-                    </div>
-                  ) : lifecycle === "draft" ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={async () => {
-                          const phaseName = String(schedule.phase_name ?? phase?.name ?? "—");
-                          if (!window.confirm(`Να διαγραφεί το πρόχειρο πρόγραμμα της φάσης «${phaseName}»;`)) return;
-                          await deleteEntity("phase-schedules", String(schedule.id), `Το πρόχειρο πρόγραμμα της φάσης «${phaseName}» διαγράφηκε.`);
-                        }}
-                        className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Διαγραφή Προχείρου
-                      </button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={busy || deleteProgramBusy || phaseLifecycle === "finalized" || programObviouslyStarted}
+                      onClick={() => {
+                        setDeleteProgramConfirmation("");
+                        setDeleteProgramError("");
+                        setDeleteProgramTarget({
+                          phaseId: String(phase?.id ?? schedule.phase_id ?? ""),
+                          phaseName: String(schedule.phase_name ?? phase?.name ?? "—"),
+                        });
+                      }}
+                      className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-50 disabled:text-zinc-400"
+                    >
+                      Διαγραφή Προγράμματος
+                    </button>
+                    {phaseLifecycle === "finalized" ? (
+                      <span className="text-xs font-bold text-zinc-500">Η οριστικοποιημένη φάση δεν επιτρέπει διαγραφή προγράμματος.</span>
+                    ) : programObviouslyStarted ? (
+                      <span className="text-xs font-bold text-zinc-500">Το πρόγραμμα έχει ξεκινήσει ή περιέχει αγωνιστικά δεδομένα.</span>
+                    ) : null}
+                  </div>
                 </article>
               );
             })}
           </div>
         )}
       </div>
+
+      {deleteProgramTarget ? (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="delete-program-title" className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl sm:p-6">
+            <h3 id="delete-program-title" className="text-xl font-black text-zinc-950">Διαγραφή Προγράμματος</h3>
+            <div className="mt-4 space-y-3 text-sm leading-relaxed text-zinc-700">
+              <p className="font-black text-zinc-950">Να διαγραφεί το πρόγραμμα της φάσης «{deleteProgramTarget.phaseName}»;</p>
+              <p>Θα διαγραφούν οι υλοποιημένοι αγώνες και τα στοιχεία προγραμματισμού της συγκεκριμένης φάσης.</p>
+              <p>Η φάση, οι κανόνες, οι διασταυρώσεις και οι ιστορικοί αγώνες μεταφοράς θα διατηρηθούν.</p>
+              <p>Μετά τη διαγραφή μπορείτε να δημιουργήσετε νέο πρόγραμμα.</p>
+            </div>
+            <label className="mt-5 block text-sm font-black text-zinc-900">
+              Πληκτρολογήστε ΔΙΑΓΡΑΦΗ για επιβεβαίωση
+              <input
+                autoFocus
+                value={deleteProgramConfirmation}
+                onChange={(event) => setDeleteProgramConfirmation(event.target.value)}
+                className={`${inputClass} mt-2`}
+                autoComplete="off"
+              />
+            </label>
+            {deleteProgramError ? (
+              <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{deleteProgramError}</p>
+            ) : null}
+            <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
+              <button
+                type="button"
+                disabled={deleteProgramBusy}
+                onClick={closeDeleteProgramDialog}
+                className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 disabled:opacity-60"
+              >
+                Ακύρωση
+              </button>
+              <button
+                type="button"
+                disabled={deleteProgramBusy || deleteProgramConfirmation !== "ΔΙΑΓΡΑΦΗ"}
+                onClick={() => void handleDeletePhaseProgram()}
+                className="rounded-xl bg-red-700 px-4 py-2.5 font-black text-white transition hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {deleteProgramBusy ? "Διαγραφή..." : "Οριστική Διαγραφή Προγράμματος"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
