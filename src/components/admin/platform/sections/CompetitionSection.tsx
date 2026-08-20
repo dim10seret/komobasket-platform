@@ -173,6 +173,8 @@ export function CompetitionWorkspaceManager({
         return String(left.id).localeCompare(String(right.id));
       });
   }, [data.phases, workspaceCompetitionId]);
+  const [openPhaseId, setOpenPhaseId] = useState<string | null>(null);
+  const hasInitializedOpenPhase = useRef(false);
   const [editingPhaseId, setEditingPhaseId] = useState<string | null>(null);
   const [activePhaseId, setActivePhaseId] = useState<string>("");
   const [showAddPhaseForm, setShowAddPhaseForm] = useState(false);
@@ -202,6 +204,22 @@ export function CompetitionWorkspaceManager({
   const [cleanupBusy,setCleanupBusy]=useState(false);
   const [cleanupNotice,setCleanupNotice]=useState("");
   const [cleanupError,setCleanupError]=useState("");
+
+  useEffect(() => {
+    if (!selectedCompetitionPhases.length) {
+      hasInitializedOpenPhase.current = false;
+      setOpenPhaseId(null);
+      return;
+    }
+    if (hasInitializedOpenPhase.current) {
+      if (openPhaseId === null) return;
+      if (selectedCompetitionPhases.some((phase) => String(phase.id) === openPhaseId)) return;
+    }
+    const preferredPhase = selectedCompetitionPhases.find((phase) => String((phase as Row).lifecycle_status ?? "active") === "active")
+      ?? selectedCompetitionPhases[0];
+    hasInitializedOpenPhase.current = true;
+    setOpenPhaseId(String(preferredPhase?.id ?? "") || null);
+  }, [openPhaseId, selectedCompetitionPhases]);
 
   const rosterPlayers = useMemo(() => (teamRoster?.athletes ?? []).map((athlete,index)=>({ ...athlete, rowIndex:index + 1 })), [teamRoster?.athletes]);
 
@@ -685,29 +703,8 @@ export function CompetitionWorkspaceManager({
             </form>
           ) : workspaceMode === "phases" ? (
             <article className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-              <div className="mb-4 flex flex-wrap gap-2 border-b border-zinc-200 pb-3">
-                {selectedCompetitionPhases.map((phase, index) => {
-                  const phaseId = String(phase.id);
-                  return (
-                    <button
-                      key={`phase-tab-${phaseId}`}
-                      type="button"
-                      onClick={() => {
-                        if (editingPhaseId && editingPhaseId !== phaseId) return;
-                        setActivePhaseId(phaseId);
-                      }}
-                      disabled={!!editingPhaseId && editingPhaseId !== phaseId}
-                      className={`rounded-full border px-4 py-2 text-sm font-black transition ${
-                        activePhaseId === phaseId
-                          ? "border-orange-500 bg-orange-600 text-white"
-                          : "border-zinc-300 bg-white text-zinc-800"
-                      } ${editingPhaseId && editingPhaseId !== phaseId ? "cursor-not-allowed opacity-50" : "hover:bg-zinc-100"}`}
-                    >
-                      {index + 1}. {String(phase.name ?? "")}
-                    </button>
-                  );
-                })}
-                {!showAddPhaseForm && (
+              {!showAddPhaseForm && (
+                <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -722,8 +719,8 @@ export function CompetitionWorkspaceManager({
                   >
                     + Προσθήκη Φάσης
                   </button>
-                )}
-              </div>
+                </div>
+              )}
               {showAddPhaseForm && (
                 <>
                 <div className="mb-3 flex items-center justify-between gap-3">
@@ -827,176 +824,165 @@ export function CompetitionWorkspaceManager({
                 </>
               )}
               {!selectedCompetitionPhases.length && <p className="text-sm text-zinc-500">Δεν έχουν δημιουργηθεί ακόμη Φάσεις.</p>}
-              {activePhaseId && selectedCompetitionPhases.some((phase) => String(phase.id) === activePhaseId) ? (() => {
-                const activePhase = selectedCompetitionPhases.find((phase) => String(phase.id) === activePhaseId);
-                if (!activePhase) return null;
-                const activePhaseIdValue = String(activePhase.id);
-                const isActivePhaseEditing = editingPhaseId === activePhaseIdValue;
-                const activePhaseOrder = Number(activePhase.phase_order ?? activePhase.order_index ?? 0) || selectedCompetitionPhases.findIndex((phase) => String(phase.id) === activePhaseIdValue) + 1;
-                const activePhaseFormat = String(activePhase.format ?? activePhase.phase_kind ?? "standings");
-                const shouldUseC4Save = String(activePhaseFormat) === "series";
-                const fallbackActivePhaseId = (() => {
-                  const currentIndex = selectedCompetitionPhases.findIndex((phase) => String(phase.id) === activePhaseIdValue);
+              {selectedCompetitionPhases.map((phase, index) => {
+                const phaseIdValue = String(phase.id);
+                const isExpanded = openPhaseId === phaseIdValue;
+                const isEditingPhase = editingPhaseId === phaseIdValue;
+                const phaseOrder = Number(phase.phase_order ?? phase.order_index ?? 0) || index + 1;
+                const phaseFormat = String(phase.format ?? phase.phase_kind ?? "standings");
+                const lifecycleStatus = String((phase as Row).lifecycle_status ?? "active");
+                const isFinalized = lifecycleStatus === "finalized";
+                const phaseGames = data.games.filter((game) => String(game.phase_id ?? "") === phaseIdValue);
+                const completedGames = phaseGames.filter((game) => String(game.status ?? "") === "completed").length;
+                const totalGames = phaseGames.length;
+                const headerSummary = totalGames ? `${isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"} · ${completedGames}/${totalGames}` : (isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη");
+                const fallbackPhaseId = (() => {
+                  const currentIndex = selectedCompetitionPhases.findIndex((entry) => String(entry.id) === phaseIdValue);
                   if (currentIndex > 0) return String(selectedCompetitionPhases[currentIndex - 1].id);
                   return String(selectedCompetitionPhases[0]?.id ?? "");
                 })();
-                const handleActivePhaseSave = async (event: MouseEvent<HTMLButtonElement>) => {
+                const handlePhaseSave = async (event: MouseEvent<HTMLButtonElement>) => {
                   const form = event.currentTarget.form;
                   if (!form) return;
                   const syntheticEvent = ({
                     preventDefault: () => {},
                     currentTarget: form,
                   } as unknown) as FormEvent<HTMLFormElement>;
-                  if (await updateEntity("phases", activePhaseIdValue, syntheticEvent, "Η φάση ενημερώθηκε.")) {
-                    if (activePhaseFormat !== "series") {
+                  if (await updateEntity("phases", phaseIdValue, syntheticEvent, "Η φάση ενημερώθηκε.")) {
+                    if (phaseFormat !== "series") {
                       setEditingPhaseId(null);
                     }
                   }
                 };
-                const handleActivePhaseContinue = () => {
-                  if (!isActivePhaseEditing) return;
-                  const { from, to } = formatParticipantRangeFromPhase(activePhase);
+                const handleContinueSeries = () => {
+                  if (!isEditingPhase) return;
+                  const { from, to } = formatParticipantRangeFromPhase(phase);
                   setSeriesContinuationSeed({
-                    sourcePhaseId: activePhaseIdValue,
-                    sourceName: String(activePhase.name ?? ""),
+                    sourcePhaseId: phaseIdValue,
+                    sourceName: String(phase.name ?? ""),
                     from,
                     to,
                   });
                   setShowAddPhaseForm(true);
                   setEditingPhaseId(null);
-                  setActivePhaseId(activePhaseIdValue);
+                  setOpenPhaseId(phaseIdValue);
                 };
-
-                return (
-                  <article key={`active-phase-${activePhaseIdValue}`} className="rounded-xl border border-zinc-200 bg-white p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-xs font-black uppercase tracking-wider text-orange-600">{activePhaseOrder}. {activePhase.name}</p>
-                          <span className={String((activePhase as Row).lifecycle_status ?? "active") === "finalized" ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
-                            {String((activePhase as Row).lifecycle_status ?? "active") === "finalized" ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-sm text-zinc-700">{phaseFormatLabel(activePhaseFormat)} · σειρά {activePhaseOrder}</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setEditingPhaseId(isActivePhaseEditing ? null : activePhaseIdValue)}
-                        className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500"
-                      >
-                        {isActivePhaseEditing ? "Αρχικό μενού Φάσεων" : "Edit Φάσης"}
-                      </button>
-                    </div>
-                    {!isActivePhaseEditing && activePhaseFormat === "standings" && String((activePhase as Row).lifecycle_status ?? "active") !== "finalized" && (
-                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                        <p className="text-sm font-semibold text-zinc-700">Η οριστικοποίηση της φάσης καθιστά την τελική κατάταξη διαθέσιμη στις επόμενες φάσεις και κλειδώνει βασικές ρυθμίσεις της φάσης.</p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFinalizePhaseConfirmation("");
-                            setFinalizePhaseDialog({
-                              phaseId: activePhaseIdValue,
-                              phaseName: String(activePhase.name ?? ""),
-                              competitionId: String(activePhase.competition_id ?? ""),
-                            });
-                          }}
-                          className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100"
-                        >
-                          Οριστικοποίηση φάσης
-                        </button>
-                      </div>
-                    )}
-                    {isActivePhaseEditing && (
-                      <form
-                        onSubmit={async (event) => {
-                          if (await updateEntity("phases", activePhaseIdValue, event, "Η φάση ενημερώθηκε.")) {
-                            setEditingPhaseId(null);
-                          }
-                        }}
-                        className="mt-4 w-full min-w-0 space-y-4 border-t border-zinc-200 pt-4"
-                      >
-                        <PhaseFields
-                          data={data}
-                          phase={activePhase}
-                          competitionId={String(activePhase.competition_id ?? "")}
-                          editing
-                          onExplicitSave={shouldUseC4Save ? handleActivePhaseSave : undefined}
-                          onContinueSeries={shouldUseC4Save ? handleActivePhaseContinue : undefined}
-                          onCancel={() => setEditingPhaseId(null)}
-                        />
-                        <input type="hidden" name="competitionId" value={String(activePhase.competition_id ?? "")} />
-                        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
-                          <p className="text-sm font-black text-red-800">Επικίνδυνες ενέργειες</p>
-                          <p className="mt-1 text-sm text-red-700">Η διαγραφή επιτρέπεται μόνο όταν δεν υπάρχουν επόμενες φάσεις που εξαρτώνται από αυτή.</p>
+                const phaseBody = (() => {
+                  if (!isExpanded) return null;
+                  const shouldUseC4Save = String(phaseFormat) === "series";
+                  const rawPhase = data.phases.find((entry) => String(entry.id) === phaseIdValue) ?? phase;
+                  const seriesSummaryPhase = {
+                    ...rawPhase,
+                    previous_phase_id: String(
+                      (rawPhase as Record<string, unknown>).previous_phase_id
+                      ?? (rawPhase as Record<string, unknown>).previousPhaseId
+                      ?? "",
+                    ).trim(),
+                  };
+                  const ruleSettings = (() => {
+                    try {
+                      const raw = String((rawPhase as Record<string, unknown>).rule_settings_json ?? "");
+                      const parsed = raw ? JSON.parse(raw) : {};
+                      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+                    } catch {
+                      return {};
+                    }
+                  })();
+                  const participantConfiguration = (() => {
+                    const value = ruleSettings.participantConfiguration;
+                    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+                    return {};
+                  })();
+                  const sourcePhaseId = String(
+                    seriesSummaryPhase.previous_phase_id
+                    || participantConfiguration.participantSourcePhaseId
+                    || participantConfiguration.sourcePhaseId
+                    || ""
+                  ).trim() || null;
+                  const resolvedPositions = resolveFinalizedStandingsPositions(
+                    data.phases,
+                    data.games,
+                    data.teams,
+                    sourcePhaseId,
+                  );
+                  const positionNameMap = new Map<number, string>(
+                    resolvedPositions.positions.map((entry) => [entry.position, entry.teamName]),
+                  );
+                  const decorateStandingLabel = (label: string) => {
+                    if (resolvedPositions.state !== "resolved") return label;
+                    return label.split(" — ").map((part) => {
+                      const match = /^#(\d+)$/.exec(part.trim());
+                      if (!match) return part;
+                      const position = Number(match[1]);
+                      const teamName = positionNameMap.get(position);
+                      return teamName ? `#${position} ${teamName}` : part;
+                    }).join(" — ");
+                  };
+                  const summaries = describeSeriesMatchupsFromPhase(data, seriesSummaryPhase);
+                  return (
+                    <>
+                      <div className="mt-4 flex flex-wrap items-center gap-3">
+                        <span className={isFinalized ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
+                          {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
+                        </span>
+                        {!isFinalized && phaseFormat === "standings" && (
                           <button
                             type="button"
-                            disabled={busy}
-                            onClick={async () => {
-                              const phaseName = String(activePhase.name ?? "");
-                              if (!window.confirm(`Θέλετε σίγουρα να διαγράψετε τη φάση «${phaseName}»;`)) return;
-                              if (await deleteEntity("phases", activePhaseIdValue, `Η φάση «${phaseName}» διαγράφηκε.`)) {
-                                setEditingPhaseId(null);
-                                setActivePhaseId(fallbackActivePhaseId);
-                              }
+                            onClick={() => {
+                              setFinalizePhaseConfirmation("");
+                              setFinalizePhaseDialog({
+                                phaseId: phaseIdValue,
+                                phaseName: String(phase.name ?? ""),
+                                competitionId: String(phase.competition_id ?? ""),
+                              });
                             }}
-                            className="mt-3 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100"
                           >
-                            Διαγραφή Φάσης
+                            Οριστικοποίηση φάσης
                           </button>
-                        </div>
-                      </form>
-                    )}
-                    {!isActivePhaseEditing && activePhaseFormat === "series" && (() => {
-                      const rawActivePhase = data.phases.find((phase) => String(phase.id) === activePhaseIdValue) ?? activePhase;
-                      const seriesSummaryPhase = {
-                        ...rawActivePhase,
-                        previous_phase_id: String(
-                          (rawActivePhase as Record<string, unknown>).previous_phase_id
-                          ?? (rawActivePhase as Record<string, unknown>).previousPhaseId
-                          ?? "",
-                        ).trim(),
-                      };
-                      const ruleSettings = (() => {
-                        try {
-                          const raw = String((rawActivePhase as Record<string, unknown>).rule_settings_json ?? "");
-                          const parsed = raw ? JSON.parse(raw) : {};
-                          return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-                        } catch {
-                          return {};
-                        }
-                      })();
-                      const participantConfiguration = (() => {
-                        const value = ruleSettings.participantConfiguration;
-                        if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-                        return {};
-                      })();
-                      const sourcePhaseId = String(
-                        seriesSummaryPhase.previous_phase_id
-                        || participantConfiguration.participantSourcePhaseId
-                        || participantConfiguration.sourcePhaseId
-                        || ""
-                      ).trim() || null;
-                      const resolvedPositions = resolveFinalizedStandingsPositions(
-                        data.phases,
-                        data.games,
-                        data.teams,
-                        sourcePhaseId,
-                      );
-                      const positionNameMap = new Map<number, string>(
-                        resolvedPositions.positions.map((entry) => [entry.position, entry.teamName]),
-                      );
-                      const decorateStandingLabel = (label: string) => {
-                        if (resolvedPositions.state !== "resolved") return label;
-                        return label.split(" — ").map((part) => {
-                          const match = /^#(\d+)$/.exec(part.trim());
-                          if (!match) return part;
-                          const position = Number(match[1]);
-                          const teamName = positionNameMap.get(position);
-                          return teamName ? `#${position} ${teamName}` : part;
-                        }).join(" — ");
-                      };
-                      const summaries = describeSeriesMatchupsFromPhase(data, seriesSummaryPhase);
-                      return (
+                        )}
+                        {isFinalized ? <span className="text-sm font-black text-zinc-600">{headerSummary}</span> : <span className="text-sm text-zinc-600">{headerSummary}</span>}
+                      </div>
+                      {isEditingPhase ? (
+                        <form
+                          onSubmit={async (event) => {
+                            if (await updateEntity("phases", phaseIdValue, event, "Η φάση ενημερώθηκε.")) {
+                              setEditingPhaseId(null);
+                            }
+                          }}
+                          className="mt-4 w-full min-w-0 space-y-4 border-t border-zinc-200 pt-4"
+                        >
+                          <PhaseFields
+                            data={data}
+                            phase={phase}
+                            competitionId={String(phase.competition_id ?? "")}
+                            editing
+                            onExplicitSave={shouldUseC4Save ? handlePhaseSave : undefined}
+                            onContinueSeries={shouldUseC4Save ? handleContinueSeries : undefined}
+                            onCancel={() => setEditingPhaseId(null)}
+                          />
+                          <input type="hidden" name="competitionId" value={String(phase.competition_id ?? "")} />
+                          <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                            <p className="text-sm font-black text-red-800">Επικίνδυνες ενέργειες</p>
+                            <p className="mt-1 text-sm text-red-700">Η διαγραφή επιτρέπεται μόνο όταν δεν υπάρχουν επόμενες φάσεις που εξαρτώνται από αυτή.</p>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={async () => {
+                                const phaseName = String(phase.name ?? "");
+                                if (!window.confirm(`Θέλετε σίγουρα να διαγράψετε τη φάση «${phaseName}»;`)) return;
+                                if (await deleteEntity("phases", phaseIdValue, `Η φάση «${phaseName}» διαγράφηκε.`)) {
+                                  setEditingPhaseId(null);
+                                  setOpenPhaseId(fallbackPhaseId);
+                                }
+                              }}
+                              className="mt-3 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Διαγραφή Φάσης
+                            </button>
+                          </div>
+                        </form>
+                      ) : phaseFormat === "series" ? (
                         <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                           <p className="text-sm font-black text-zinc-900">Διασταυρώσεις</p>
                           <div className="mt-3 space-y-2">
@@ -1007,14 +993,51 @@ export function CompetitionWorkspaceManager({
                             )) : <p className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν έχουν οριστεί ακόμη διασταυρώσεις.</p>}
                           </div>
                         </div>
-                      );
-                    })()}
-                    {activePhaseFormat === "standings" && (
-                      <StandingsPhasePreview data={data} phase={activePhase} openTeamRoster={showTeamRosterPopup} />
-                    )}
+                      ) : (
+                        <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />
+                      )}
+                    </>
+                  );
+                })();
+
+                return (
+                  <article key={`phase-${phaseIdValue}`} className={`rounded-2xl border ${isExpanded ? "border-orange-300 bg-white" : "border-zinc-200 bg-zinc-50"} p-4 sm:p-5`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenPhaseId(isExpanded ? null : phaseIdValue);
+                        setEditingPhaseId(null);
+                      }}
+                      className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+                    >
+                      <div className="space-y-1">
+                        <p className="text-xs font-black uppercase tracking-wider text-orange-600">{phaseOrder}. {String(phase.name ?? "—")}</p>
+                        <p className={`text-sm font-black ${isExpanded ? "text-zinc-900" : "text-zinc-700"}`}>{headerSummary}</p>
+                      </div>
+                      <span className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">
+                        {isExpanded ? "Σύμπτυξη" : "Άνοιγμα"}
+                      </span>
+                    </button>
+                    {isExpanded ? (
+                      <div className="mt-4 border-t border-zinc-200 pt-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-2">
+                            <p className="text-sm text-zinc-700">{phaseFormatLabel(phaseFormat)} · σειρά {phaseOrder}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setEditingPhaseId(isEditingPhase ? null : phaseIdValue)}
+                            className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500"
+                          >
+                            {isEditingPhase ? "Αρχικό μενού Φάσεων" : "Edit Φάσης"}
+                          </button>
+                        </div>
+                        {phaseBody}
+                      </div>
+                    ) : null}
                   </article>
                 );
-              })() : null}
+              })}
               {finalizePhaseDialog && (
                 <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
                   <div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-2xl">

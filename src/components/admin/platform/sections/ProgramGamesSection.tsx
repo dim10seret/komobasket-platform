@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Field,
   Panel,
@@ -58,6 +58,7 @@ type CompetitionVenueRow = Row & {
 };
 
 type SchedulingMode = "keep" | "set" | "clear";
+type ScheduleDisplayMode = "round" | "all";
 
 type ScheduleEditorState = {
   scheduledDateMode: SchedulingMode;
@@ -262,7 +263,10 @@ export function ProgramGamesSection({
   const [selectedPhaseId, setSelectedPhaseId] = useState("");
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
+  const [openScheduleId, setOpenScheduleId] = useState<string | null>(null);
+  const hasInitializedOpenSchedule = useRef(false);
   const [selectedRoundByScheduleId, setSelectedRoundByScheduleId] = useState<Record<string, number>>({});
+  const [scheduleDisplayModeByScheduleId, setScheduleDisplayModeByScheduleId] = useState<Record<string, ScheduleDisplayMode>>({});
   const [showVenueManager, setShowVenueManager] = useState(false);
   const [showVenueForm, setShowVenueForm] = useState(false);
   const [editingVenueId, setEditingVenueId] = useState("");
@@ -317,6 +321,24 @@ export function ProgramGamesSection({
   const selectedScheduleRounds = useMemo(() => {
     return buildGeneratedRounds(selectedScheduleGames, competitionTeams);
   }, [competitionTeams, selectedScheduleGames]);
+
+  useEffect(() => {
+    if (!schedules.length) {
+      hasInitializedOpenSchedule.current = false;
+      setOpenScheduleId(null);
+      return;
+    }
+    if (hasInitializedOpenSchedule.current) {
+      if (openScheduleId === null) return;
+      if (schedules.some((schedule) => String(schedule.id) === openScheduleId)) return;
+    }
+    const preferredSchedule = schedules.find((schedule) => {
+      const phase = competitionPhases.find((entry) => String(entry.id) === String(schedule.phase_id ?? ""));
+      return String((phase as Row | undefined)?.lifecycle_status ?? "active") === "active";
+    }) ?? schedules[0];
+    hasInitializedOpenSchedule.current = true;
+    setOpenScheduleId(String(preferredSchedule?.id ?? "") || null);
+  }, [openScheduleId, schedules, competitionPhases]);
 
   useEffect(() => {
     if (!selectedSchedule) return;
@@ -393,6 +415,7 @@ export function ProgramGamesSection({
 
   const getSelectedGameIds = (scheduleKey: string) => selectedGameIdsByScheduleId[scheduleKey] ?? [];
   const getScheduleEditor = (scheduleKey: string) => scheduleEditorByScheduleId[scheduleKey] ?? createDefaultScheduleEditorState();
+  const getScheduleDisplayMode = (scheduleKey: string) => scheduleDisplayModeByScheduleId[scheduleKey] ?? "round";
   const updateScheduleEditor = (scheduleKey: string, patch: Partial<ScheduleEditorState>) => {
     setScheduleEditorByScheduleId((current) => ({
       ...current,
@@ -406,6 +429,12 @@ export function ProgramGamesSection({
   const clearScheduleSelection = (scheduleKey: string) => {
     setSelectedGameIdsByScheduleId((current) => ({ ...current, [scheduleKey]: [] }));
     setScheduleEditorByScheduleId((current) => ({ ...current, [scheduleKey]: createDefaultScheduleEditorState() }));
+  };
+  const setScheduleDisplayMode = (scheduleKey: string, mode: ScheduleDisplayMode) => {
+    setScheduleDisplayModeByScheduleId((current) => ({ ...current, [scheduleKey]: mode }));
+    if (mode === "all") {
+      clearScheduleSelection(scheduleKey);
+    }
   };
   const toggleScheduleGame = (scheduleKey: string, gameId: string) => {
     setSelectedGameIdsByScheduleId((current) => {
@@ -488,6 +517,7 @@ export function ProgramGamesSection({
               const selectedRoundGames = displayedRoundGames.filter((game) => selectedGameSet.has(String(game.id)));
               const allRoundSelected = displayedRoundGames.length > 0 && displayedRoundGames.every((game) => selectedGameSet.has(String(game.id)));
               const editor = getScheduleEditor(scheduleKey);
+              const displayMode = getScheduleDisplayMode(scheduleKey);
               const selectedDateValues = [...new Set(selectedRoundGames.map((game) => String(game.scheduled_date ?? "").trim()).filter(Boolean))];
               const selectedTimeValues = [...new Set(selectedRoundGames.map((game) => String(game.scheduled_time ?? "").trim()).filter(Boolean))];
               const selectedVenueValues = [...new Set(selectedRoundGames.map((game) => String(game.venue ?? "").trim()).filter(Boolean))];
@@ -522,148 +552,231 @@ export function ProgramGamesSection({
               const dateDisplayMode = selectedDateValues.length > 1 ? "Διαφορετικές τιμές" : commonDateValue || "—";
               const timeDisplayMode = selectedTimeValues.length > 1 ? "Διαφορετικές τιμές" : commonTimeValue || "—";
               const venueDisplayMode = selectedVenueValues.length > 1 ? "Διαφορετικές τιμές" : commonVenueValue || "—";
+              const isExpanded = openScheduleId === scheduleKey;
+              const phaseLifecycle = String((phase as Row | undefined)?.lifecycle_status ?? "active");
+              const phaseLifecycleLabel = phaseLifecycle === "finalized" ? "Οριστικοποιημένη" : "Σε εξέλιξη";
+              const phaseProgressLabel = `${completedGames}/${totalGames}`;
+              const phaseHeaderSummary = totalGames ? `${phaseLifecycleLabel} · ${phaseProgressLabel}` : phaseLifecycleLabel;
+              const headerLabel = `${String(schedule.phase_name ?? phase?.name ?? "—")}`;
               return (
-                <article key={String(schedule.id)} className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
+                <article key={String(schedule.id)} className="w-full min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setOpenScheduleId(isExpanded ? null : scheduleKey)}
+                    className="flex w-full min-w-0 flex-wrap items-start justify-between gap-3 text-left"
+                  >
                     <div>
-                      <h3 className="text-lg font-black text-zinc-950">{String(schedule.phase_name ?? phase?.name ?? "—")}</h3>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-lg font-black text-zinc-950">{headerLabel}</h3>
+                        <span className={`rounded-full px-3 py-1 text-xs font-black ${phaseLifecycle === "finalized" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                          {phaseLifecycleLabel}
+                        </span>
+                      </div>
                       <p className="mt-1 text-sm text-zinc-600">
                         {phaseFormatLabel(String(schedule.phase_format ?? phase?.format ?? phase?.phase_kind ?? ""))}
                         {typeof schedule.phase_order !== "undefined" ? ` · σειρά ${String(schedule.phase_order ?? phase?.phase_order ?? phase?.order_index ?? "—")}` : ""}
+                        {totalGames ? ` · ${phaseProgressLabel}` : ""}
                       </p>
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-xs font-black ${lifecycle === "published" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-                      {scheduleLifecycleLabels[lifecycle] ?? lifecycle}
+                    <span className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">
+                      {isExpanded ? "Σύμπτυξη" : "Άνοιγμα"}
                     </span>
-                  </div>
-                  <div className="mt-4 space-y-1.5 text-sm text-zinc-700">
-                    {buildPhaseSummary(data, phase).map((line) => <p key={line}>{line}</p>)}
-                    <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">{statusLine}</p>
-                    {hasGames ? (
-                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-sm font-black text-zinc-900">Αγωνιστικές</p>
-                            <button
-                              type="button"
-                              className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
-                              onClick={() => {
-                                if (!displayedRoundGames.length) return;
-                                if (allRoundSelected) {
-                                  clearScheduleSelection(scheduleKey);
-                                  return;
-                                }
-                                setAllScheduleGames(scheduleKey, displayedRoundGames.map((game) => String(game.id)));
-                                if (!selectedGameIdsByScheduleId[scheduleKey]?.length) {
-                                  setScheduleEditorByScheduleId((current) => ({
-                                    ...current,
-                                    [scheduleKey]: current[scheduleKey] ?? createDefaultScheduleEditorState(),
-                                  }));
-                                }
-                              }}
-                            >
-                              Επιλογή όλων
-                            </button>
-                          </div>
-                          <select
-                            className={inputClass}
-                            value={String(activeRoundNumber || "")}
-                            onChange={(event) => {
-                              const nextRoundNumber = Number(event.target.value);
-                              setSelectedRoundByScheduleId((current) => ({
-                                ...current,
-                                [scheduleKey]: nextRoundNumber,
-                              }));
-                              clearScheduleSelection(scheduleKey);
-                            }}
-                          >
-                            {generatedRounds.map((round) => (
-                              <option key={round.roundNumber} value={round.roundNumber}>
-                                {round.roundLabel}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        {activeRound ? (
-                          <div className="mt-4">
-                        <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
-                              <table className="w-full min-w-full table-fixed text-left text-sm">
-                                <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
-                                  <tr>
-                                    <th className="w-12 px-4 py-3" aria-label="Selection"></th>
-                                    <th className="w-28 px-4 py-3">Match Report</th>
-                                    <th className="px-4 py-3">Γηπεδούχος</th>
-                                    <th className="w-28 px-4 py-3">Αποτέλεσμα</th>
-                                    <th className="px-4 py-3">Φιλοξενούμενος</th>
-                                    <th className="w-32 px-4 py-3">Ημερομηνία</th>
-                                    <th className="w-24 px-4 py-3">Ώρα</th>
-                                    <th className="px-4 py-3">Γήπεδο</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {displayedRoundGames.map((game) => {
-                                    const gameId = String(game.id);
-                                    const isSelected = selectedGameSet.has(gameId);
-                                    const date = String(game.scheduled_date ?? "").trim();
-                                    const time = String(game.scheduled_time ?? "").trim();
-                                    const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
-                                    return (
-                                      <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
-                                        <td className="px-4 py-3 align-top">
-                                          <input
-                                            type="checkbox"
-                                            checked={isSelected}
-                                            onChange={() => toggleScheduleGame(scheduleKey, gameId)}
-                                            className="mt-1 h-4 w-4 rounded border-zinc-300 text-orange-600 focus:ring-orange-500"
-                                          />
-                                        </td>
-                                        <td className="px-4 py-3 align-top">
-                                          <button
-                                            type="button"
-                                            disabled
-                                            aria-disabled="true"
-                                            className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 px-3 py-1 text-xs font-black text-zinc-500"
-                                          >
-                                            —
-                                          </button>
-                                        </td>
-                                        <td className="px-4 py-3 align-top text-zinc-800">{String(game.home_team_name ?? "—")}</td>
-                                        <td className="w-28 whitespace-nowrap px-4 py-3 align-top font-black text-zinc-900">
-                                          <button
-                                            type="button"
-                                            onClick={() => openResultForm(game)}
-                                            className="inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
-                                          >
-                                            {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
-                                          </button>
-                                        </td>
-                                        <td className="px-4 py-3 align-top text-zinc-800">{String(game.away_team_name ?? "—")}</td>
-                                        <td className="px-4 py-3 align-top text-zinc-800">
-                                          {date ? parseDateForDisplay(date) : "—"}
-                                        </td>
-                                        <td className="px-4 py-3 align-top text-zinc-800">
-                                          {time || "—"}
-                                        </td>
-                                        <td className="px-4 py-3 align-top text-zinc-800">
-                                          <span className="block max-w-[280px] whitespace-normal break-words">
-                                            {String(game.venue ?? "").trim() || "—"}
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                            {activeRound.byeTeam ? (
-                              <div className="mt-3 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
-                                Ρεπό: <span className="font-black text-zinc-900">{activeRound.byeTeam.name}</span>
+                  </button>
+                  {isExpanded ? (
+                    <div className="mt-4 min-w-0 space-y-1.5 text-sm text-zinc-700">
+                      {buildPhaseSummary(data, phase).map((line) => <p key={line}>{line}</p>)}
+                      <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">{statusLine}</p>
+                      {hasGames ? (
+                        <div className="mt-4 min-w-0 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-black text-zinc-900">Αγωνιστικές</p>
+                              <div className="inline-flex rounded-xl border border-zinc-300 bg-white p-1 text-xs font-black text-zinc-700">
+                                <button
+                                  type="button"
+                                  onClick={() => setScheduleDisplayMode(scheduleKey, "round")}
+                                  className={`rounded-lg px-3 py-2 transition ${displayMode === "round" ? "bg-orange-600 text-white" : "hover:bg-zinc-50"}`}
+                                >
+                                  Ανά αγωνιστική
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setScheduleDisplayMode(scheduleKey, "all")}
+                                  className={`rounded-lg px-3 py-2 transition ${displayMode === "all" ? "bg-orange-600 text-white" : "hover:bg-zinc-50"}`}
+                                >
+                                  Εμφάνιση όλων
+                                </button>
                               </div>
+                              {displayMode === "round" ? (
+                                <button
+                                  type="button"
+                                  className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
+                                  onClick={() => {
+                                    if (!displayedRoundGames.length) return;
+                                    if (allRoundSelected) {
+                                      clearScheduleSelection(scheduleKey);
+                                      return;
+                                    }
+                                    setAllScheduleGames(scheduleKey, displayedRoundGames.map((game) => String(game.id)));
+                                    if (!selectedGameIdsByScheduleId[scheduleKey]?.length) {
+                                      setScheduleEditorByScheduleId((current) => ({
+                                        ...current,
+                                        [scheduleKey]: current[scheduleKey] ?? createDefaultScheduleEditorState(),
+                                      }));
+                                    }
+                                  }}
+                                >
+                                  Επιλογή όλων
+                                </button>
+                              ) : null}
+                            </div>
+                            {displayMode === "round" ? (
+                              <select
+                                className={inputClass}
+                                value={String(activeRoundNumber || "")}
+                                onChange={(event) => {
+                                  const nextRoundNumber = Number(event.target.value);
+                                  setSelectedRoundByScheduleId((current) => ({
+                                    ...current,
+                                    [scheduleKey]: nextRoundNumber,
+                                  }));
+                                  clearScheduleSelection(scheduleKey);
+                                }}
+                              >
+                                {generatedRounds.map((round) => (
+                                  <option key={round.roundNumber} value={round.roundNumber}>
+                                    {round.roundLabel}
+                                  </option>
+                                ))}
+                              </select>
                             ) : null}
                           </div>
-                        ) : null}
+                          {displayMode === "round" ? (
+                            activeRound ? (
+                              <div className="mt-4 min-w-0">
+                                <div className="max-w-full overflow-x-auto rounded-2xl border border-zinc-200 bg-white lg:overflow-x-visible">
+                                  <table className="w-full min-w-0 table-fixed text-left text-sm">
+                                    <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+                                      <tr>
+                                        <th className="w-10 px-3 py-3" aria-label="Selection"></th>
+                                        <th className="w-24 px-3 py-3">Match Report</th>
+                                        <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
+                                        <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
+                                        <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
+                                        <th className="w-28 px-3 py-3">Ημερομηνία</th>
+                                        <th className="w-20 px-3 py-3">Ώρα</th>
+                                        <th className="px-3 py-3">Γήπεδο</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {displayedRoundGames.map((game) => {
+                                        const gameId = String(game.id);
+                                        const isSelected = selectedGameSet.has(gameId);
+                                        const date = String(game.scheduled_date ?? "").trim();
+                                        const time = String(game.scheduled_time ?? "").trim();
+                                        const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
+                                        return (
+                                          <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
+                                            <td className="px-3 py-3 align-top">
+                                              <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onChange={() => toggleScheduleGame(scheduleKey, gameId)}
+                                                className="mt-1 h-4 w-4 rounded border-zinc-300 text-orange-600 focus:ring-orange-500"
+                                              />
+                                            </td>
+                                            <td className="px-3 py-3 align-top">
+                                              <button
+                                                type="button"
+                                                disabled
+                                                aria-disabled="true"
+                                                className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 px-3 py-1 text-xs font-black text-zinc-500"
+                                              >
+                                                —
+                                              </button>
+                                            </td>
+                                            <td className="px-3 py-3 align-top text-zinc-800">
+                                              <span className="block min-w-0 break-words text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
+                                            </td>
+                                            <td className="px-3 py-3 align-top font-black text-zinc-900">
+                                              <button
+                                                type="button"
+                                                onClick={() => openResultForm(game)}
+                                                className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                              >
+                                                {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
+                                              </button>
+                                            </td>
+                                            <td className="px-3 py-3 align-top text-zinc-800">
+                                              <span className="block min-w-0 break-words text-left leading-snug">{String(game.away_team_name ?? "—")}</span>
+                                            </td>
+                                            <td className="px-3 py-3 align-top text-zinc-800">
+                                              {date ? parseDateForDisplay(date) : "—"}
+                                            </td>
+                                            <td className="px-3 py-3 align-top text-zinc-800">
+                                              {time || "—"}
+                                            </td>
+                                            <td className="px-3 py-3 align-top text-zinc-800">
+                                              <span className="block min-w-0 max-w-full whitespace-normal break-words leading-snug [overflow-wrap:anywhere]">
+                                                {String(game.venue ?? "").trim() || "—"}
+                                              </span>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                {activeRound.byeTeam ? (
+                                  <div className="mt-3 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+                                    Ρεπό: <span className="font-black text-zinc-900">{activeRound.byeTeam.name}</span>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null
+                          ) : (
+                            <div className="mt-4 space-y-4">
+                              {generatedRounds.map((round) => (
+                                <section key={round.roundNumber} className="rounded-2xl border border-zinc-200 bg-white p-3">
+                                  <p className="text-sm font-black text-zinc-900">{round.roundLabel}</p>
+                                  <div className="mt-3 overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
+                                    <div className="min-w-[760px]">
+                                      {round.games.map((game) => {
+                                        const gameId = String(game.id);
+                                        const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
+                                        return (
+                                          <div key={gameId} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-8 border-t border-zinc-100 px-4 py-3 first:border-t-0">
+                                            <div className="min-w-0 justify-self-end text-right text-zinc-800">
+                                              <span className="block break-words">{String(game.home_team_name ?? "—")}</span>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              onClick={() => openResultForm(game)}
+                                              className="inline-flex min-h-10 w-[7.5rem] items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                            >
+                                              {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
+                                            </button>
+                                            <div className="min-w-0 text-left text-zinc-800">
+                                              <span className="block break-words">{String(game.away_team_name ?? "—")}</span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                  {round.byeTeam ? (
+                                    <div className="mt-3 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+                                      Ρεπό: <span className="font-black text-zinc-900">{round.byeTeam.name}</span>
+                                    </div>
+                                  ) : null}
+                                </section>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
 
-                        {showResultForm && selectedResultGame ? (
+                      {showResultForm && selectedResultGame ? (
                           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
                             <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
                               <div className="flex items-start justify-between gap-3">
@@ -855,13 +968,12 @@ export function ProgramGamesSection({
                             </div>
                           </div>
                         ) : null}
-                      </div>
-                    ) : (
-                      <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">
-                        {lifecycle === "published" ? "Δημοσιευμένο πρόγραμμα" : "Αναμονή δημιουργίας αγώνων"}
-                      </p>
-                    )}
-                  </div>
+                        </div>
+                      ) : (
+                        <p className="pt-1 text-xs font-black uppercase tracking-wide text-zinc-500">
+                          {lifecycle === "published" ? "Δημοσιευμένο πρόγραμμα" : "Αναμονή δημιουργίας αγώνων"}
+                        </p>
+                      )}
                   {canGenerate ? (
                     <div className="mt-4 flex flex-wrap gap-2">
                       <button
