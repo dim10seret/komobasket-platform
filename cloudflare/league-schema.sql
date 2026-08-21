@@ -1,5 +1,15 @@
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS league_organizations (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active','suspended','archived')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS league_seasons (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, slug TEXT NOT NULL UNIQUE,
   starts_on TEXT, ends_on TEXT, status TEXT NOT NULL DEFAULT 'draft'
@@ -9,7 +19,8 @@ CREATE TABLE IF NOT EXISTS league_seasons (
 );
 
 CREATE TABLE IF NOT EXISTS league_competitions (
-  id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
+  id TEXT PRIMARY KEY, organization_id TEXT REFERENCES league_organizations(id),
+  season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
   name TEXT NOT NULL, slug TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'league'
     CHECK (type IN ('league','cup','tournament')),
   custom_type_label TEXT, logo_url TEXT, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft'
@@ -17,12 +28,17 @@ CREATE TABLE IF NOT EXISTS league_competitions (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(season_id, slug)
 );
+CREATE INDEX IF NOT EXISTS idx_league_competitions_organization
+  ON league_competitions(organization_id);
 
 CREATE TABLE IF NOT EXISTS league_teams (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, city TEXT NOT NULL DEFAULT 'Κομοτηνή',
+  id TEXT PRIMARY KEY, organization_id TEXT REFERENCES league_organizations(id),
+  name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, city TEXT NOT NULL DEFAULT 'Κομοτηνή',
   logo_url TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_league_teams_organization
+  ON league_teams(organization_id);
 
 CREATE TABLE IF NOT EXISTS league_season_teams (
   id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
@@ -37,11 +53,14 @@ CREATE TABLE IF NOT EXISTS league_competition_teams (
 );
 
 CREATE TABLE IF NOT EXISTS league_players (
-  id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, normalized_name TEXT NOT NULL,
+  id TEXT PRIMARY KEY, organization_id TEXT REFERENCES league_organizations(id),
+  slug TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, normalized_name TEXT NOT NULL,
   birth_date TEXT, photo_url TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_league_players_normalized ON league_players(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_league_players_organization
+  ON league_players(organization_id);
 
 CREATE TABLE IF NOT EXISTS league_player_aliases (
   id TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES league_players(id) ON DELETE CASCADE,
@@ -77,13 +96,16 @@ CREATE TABLE IF NOT EXISTS league_player_movements (
 );
 
 CREATE TABLE IF NOT EXISTS league_staff (
-  id TEXT PRIMARY KEY, first_name TEXT, last_name TEXT,
+  id TEXT PRIMARY KEY, organization_id TEXT REFERENCES league_organizations(id),
+  first_name TEXT, last_name TEXT,
   display_name TEXT NOT NULL, normalized_name TEXT NOT NULL,
   birth_date TEXT, photo_url TEXT, active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_league_staff_normalized ON league_staff(normalized_name);
+CREATE INDEX IF NOT EXISTS idx_league_staff_organization
+  ON league_staff(organization_id);
 
 CREATE TABLE IF NOT EXISTS league_staff_memberships (
   id TEXT PRIMARY KEY, staff_id TEXT NOT NULL REFERENCES league_staff(id) ON DELETE CASCADE,
