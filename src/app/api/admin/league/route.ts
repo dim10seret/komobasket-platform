@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/admin-auth";
+import { resolveCanonicalAppUser } from "@/lib/app-user-identity";
 import {
   departPlayer,
   searchAthletesForRosterFoundation,
@@ -27,6 +28,7 @@ export async function GET(request: Request) {
   const authorization = requireAdmin(request);
   if (authorization.response) return authorization.response;
   try {
+    await resolveCanonicalAppUser(authorization.identity);
     const requestUrl = new URL(request.url);
     const view = requestUrl.searchParams.get("view");
     if (view === "team-roster") {
