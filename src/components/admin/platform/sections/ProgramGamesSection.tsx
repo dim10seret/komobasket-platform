@@ -1145,9 +1145,20 @@ export function ProgramGamesSection({
                                           const displayDate = backingGame
                                             ? parseDateForDisplay(String(backingGame.scheduled_date ?? ""))
                                             : planningDateValue ? parseDateForDisplay(planningDateValue) : "—";
-                                          const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : planningTimeValue || "—";
-                                          const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : planningVenueValue || "—";
-                                          return (
+                                           const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : planningTimeValue || "—";
+                                           const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : planningVenueValue || "—";
+                                           if (isQualified) {
+                                             return (
+                                               <tr key={gameId} className="border-t border-zinc-100 bg-white">
+                                                 <td colSpan={8} className="px-3 py-3">
+                                                   <div className="flex min-h-10 w-full items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-center text-sm font-black leading-snug text-emerald-900">
+                                                     <span className="min-w-0 break-words">{displayResult}</span>
+                                                   </div>
+                                                 </td>
+                                               </tr>
+                                             );
+                                           }
+                                           return (
                                             <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
                                               <td className="px-3 py-3 align-top">
                                                 {isRealGame ? (
@@ -1369,10 +1380,17 @@ export function ProgramGamesSection({
                                           : round.homeScore !== null && round.awayScore !== null
                                             ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
                                             : "—";
-                                      const displayDate = backingGame ? parseDateForDisplay(String(backingGame.scheduled_date ?? "")) : "—";
-                                      const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : "—";
-                                      const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : "—";
-                                      return (
+                                       const displayDate = backingGame ? parseDateForDisplay(String(backingGame.scheduled_date ?? "")) : "—";
+                                       const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : "—";
+                                       const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : "—";
+                                       if (isQualified) {
+                                         return (
+                                           <div key={`${entry.matchupId}-${round.seriesRoundNumber}`} className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-sm font-black leading-snug text-emerald-900">
+                                             <span className="break-words">{displayResult}</span>
+                                           </div>
+                                         );
+                                       }
+                                       return (
                                         phaseFormat === "series" ? (
                                           <div key={`${entry.matchupId}-${round.seriesRoundNumber}`} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-8 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3">
                                             <div className="min-w-0 justify-self-end text-right text-zinc-800">

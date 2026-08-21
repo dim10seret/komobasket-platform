@@ -576,12 +576,13 @@ export function PhaseParticipantsBuilder({
   }, [isSeriesMode, participantSourceType]);
 
   const estimatedParticipantCount = useMemo(() => {
+    if (!isSeriesMode) return competitionTeams.length;
     if (participantSourceType === "competition_participants") return competitionTeams.length;
     if (participantSourceType === "selected_teams") return selectedTeamIds.length;
     if (participantSourceType === "standing_positions") return Math.max(0, standingTo - standingFrom + 1);
     if (participantSourceType === "manual") return manualSlotCount;
     return sourceMatchupIds.length;
-  }, [competitionTeams.length, manualSlotCount, participantSourceType, selectedTeamIds.length, standingFrom, standingTo, sourceMatchupIds.length]);
+  }, [competitionTeams.length, isSeriesMode, manualSlotCount, participantSourceType, selectedTeamIds.length, standingFrom, standingTo, sourceMatchupIds.length]);
 
   const isSeriesStepSourceRangeValid = useMemo(() => {
     if (!isSeriesMode) return true;
@@ -1011,8 +1012,8 @@ export function PhaseParticipantsBuilder({
         <>
           <p className="mt-2 text-sm text-zinc-600">Από πού θα προέλθουν οι ομάδες που θα συμμετάσχουν στη φάση.</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {participantSourceOptions.map((option) => {
-              const isChecked = participantSourceType === option.value;
+            {participantSourceOptions.filter((option) => option.value === "competition_participants").map((option) => {
+              const isChecked = true;
               return (
                 <label
                   key={option.value}
@@ -1042,7 +1043,6 @@ export function PhaseParticipantsBuilder({
   );
 
   const renderParticipantSourceInputs = () => {
-    const sourceDescription = participantSourceDescriptions[participantSourceType];
     return (
       <>
         {renderSourcePhaseSelection()}
@@ -1051,8 +1051,8 @@ export function PhaseParticipantsBuilder({
           {!isSeriesMode && (
             <div className="space-y-2">
               <p className="text-xs font-black text-zinc-700">Ενεργή πηγή</p>
-              <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800">{participantSourceOptions.find((option) => option.value === participantSourceType)?.label}</div>
-              <p className="text-xs text-zinc-500">{sourceDescription}</p>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800">Όλες οι ομάδες της διοργάνωσης</div>
+              <p className="text-xs text-zinc-500">{participantSourceDescriptions.competition_participants}</p>
             </div>
           )}
           {isSeriesMode ? (
@@ -1065,7 +1065,7 @@ export function PhaseParticipantsBuilder({
             </Field>
           )}
 
-          {(participantSourceType === "standing_positions" || isSeriesMode) && (
+          {isSeriesMode && (
             <div className="space-y-3">
               {!isSeriesMode && (
                 <Field label="Φάση προέλευσης">
@@ -1093,7 +1093,7 @@ export function PhaseParticipantsBuilder({
             </div>
           )}
 
-          {(participantSourceType === "matchup_winners" || participantSourceType === "matchup_losers") && (
+          {isSeriesMode && (participantSourceType === "matchup_winners" || participantSourceType === "matchup_losers") && (
             <div className="space-y-3">
               <Field label="Φάση προέλευσης">
                 <select
@@ -1122,7 +1122,7 @@ export function PhaseParticipantsBuilder({
             </div>
           )}
 
-          {participantSourceType === "selected_teams" && (
+          {isSeriesMode && participantSourceType === "selected_teams" && (
             <div>
               <Field label="Επιλογή ομάδων">
                 <div className="grid gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
@@ -1144,7 +1144,7 @@ export function PhaseParticipantsBuilder({
             </div>
           )}
 
-          {participantSourceType === "manual" && (
+          {isSeriesMode && participantSourceType === "manual" && (
             <div>
               <Field label="Αριθμός manual slots">
                 <input
@@ -1299,9 +1299,9 @@ export function PhaseParticipantsBuilder({
       <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
         <p className="text-xs uppercase tracking-wide text-zinc-500">Σύνοψη</p>
         <div className="mt-2 grid gap-1 text-sm text-zinc-700 md:grid-cols-2">
-          <p><span className="font-black">Πηγή:</span> {isSeriesMode ? "Σειρά αγώνων" : participantSourceOptions.find((option) => option.value === participantSourceType)?.label ?? participantSourceType}</p>
-          <p><span className="font-black">Θέσεις:</span> {isSeriesMode ? `${standingFrom}–${standingTo}` : `${standingFrom}–${standingTo}`}</p>
-          <p><span className="font-black">Τρόπος:</span> Manual</p>
+          <p><span className="font-black">Πηγή:</span> {isSeriesMode ? "Σειρά αγώνων" : "Όλες οι ομάδες της διοργάνωσης"}</p>
+          {isSeriesMode && <p><span className="font-black">Θέσεις:</span> {`${standingFrom}–${standingTo}`}</p>}
+          {isSeriesMode && <p><span className="font-black">Τρόπος:</span> Manual</p>}
           {isSeriesMode && (
             <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>
           )}
@@ -1319,11 +1319,11 @@ export function PhaseParticipantsBuilder({
           {isSeriesMode && <p><span className="font-black">Μέγιστοι πιθανοί νέοι αγώνες:</span> {Math.max(0, (seriesMaxTotalResults - (carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0)) * matchups.filter((matchup) => classifySeriesBracketEntry(matchup).kind === "playable_matchup").length)}</p>}
           {isSeriesMode && <p><span className="font-black">Ομάδες που προκρίνονται απευθείας:</span> {matchups.filter((matchup) => classifySeriesBracketEntry(matchup).kind === "direct_qualifier").length}</p>}
           <p><span className="font-black">Διαθέσιμα slots:</span> {isSeriesMode ? sourcePoolCount : estimatedParticipantCount}</p>
-          <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>
-          <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>
+          {isSeriesMode && <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>}
+          {isSeriesMode && <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>}
         </div>
       </div>
-      <div className="mt-4 space-y-3">
+      {isSeriesMode ? <div className="mt-4 space-y-3">
         {carryOverResolution.carryOverEnabled ? carryOverResolution.matchups.map((matchup) => (
           <div key={matchup.matchupId} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
             <p className="font-black text-zinc-900">{matchup.label}</p>
@@ -1350,8 +1350,8 @@ export function PhaseParticipantsBuilder({
         )) : (
           <p className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν υπάρχουν ενεργά carry-over matchups.</p>
         )}
-      </div>
-      {sourceValidationMessages.map((message) => <p key={message} className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-700">{message}</p>)}
+      </div> : null}
+      {isSeriesMode ? sourceValidationMessages.map((message) => <p key={message} className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-700">{message}</p>) : null}
     </section>
   );
 
@@ -1360,18 +1360,14 @@ export function PhaseParticipantsBuilder({
       {!isStepMode ? (
         <>
           {renderParticipantSourceInputs()}
-          {renderMatchupsSection()}
+          {isSeriesMode ? renderMatchupsSection() : null}
           {renderPreviewSection()}
-          {!isSeriesMode && <div className="rounded-lg border border-zinc-200 p-3 text-xs text-zinc-700 bg-zinc-50">
-            {`Αξιολόγηση ζευγαρωμάτων: ${matchups.length ? matchups.length : 0} matchup(s).`}
-          </div>}
         </>
       ) : (
         <>
           {(activeStep === 1) && renderParticipantSourceInputs()}
-          {(activeStep === 2) && renderMatchupsSection()}
+          {(activeStep === 2 && isSeriesMode) && renderMatchupsSection()}
           {(activeStep === 3) && renderPreviewSection()}
-          {!isSeriesMode && activeStep === 3 && <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-700">Για μη-series φάση υπάρχουν επιπλέον ρυθμίσεις.</p>}
         </>
       )}
     </div>
@@ -1383,7 +1379,7 @@ export function PhaseParticipantsBuilder({
       type="hidden"
       name="participantConfiguration"
       value={JSON.stringify({
-        participantSourceType: isSeriesMode ? "standing_positions" : participantSourceType,
+        participantSourceType: isSeriesMode ? "standing_positions" : "competition_participants",
         participantSourcePhaseId,
         standingFrom,
         standingTo,
