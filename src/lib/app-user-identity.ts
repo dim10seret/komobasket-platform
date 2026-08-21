@@ -20,6 +20,21 @@ export type CanonicalAppUser = {
   isLocal: boolean;
 };
 
+export const DEFAULT_PLATFORM_ORGANIZATION_ID = "organization_komobasket";
+
+export type AccessibleOrganization = {
+  organizationId: string;
+  slug: string;
+  name: string;
+  role: "super_admin" | "admin" | "viewer";
+};
+
+export type PlatformReadContext = {
+  organizationId: string;
+  organization: AccessibleOrganization;
+  accessibleOrganizations: AccessibleOrganization[];
+};
+
 function normalizeEmail(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? "";
 }
@@ -92,4 +107,67 @@ export async function resolveCanonicalAppUser(
   }
 
   return toCanonicalUser(user, identity.isLocal);
+}
+
+export async function listAccessibleOrganizations(
+  user: CanonicalAppUser,
+): Promise<AccessibleOrganization[]> {
+  const env = await getKomoBasketCloudflareEnv();
+  const db = env?.NEWS_DB;
+  if (!db) {
+    throw new Error("Η canonical βάση Οργανισμών δεν είναι διαθέσιμη.");
+  }
+
+  if (user.isSuperAdmin) {
+    const result = await db
+      .prepare(
+        `SELECT id, slug, name
+         FROM league_organizations
+         WHERE status='active'
+         ORDER BY name, id`,
+      )
+      .all<{ id: string; slug: string; name: string }>();
+    return (result.results ?? []).map((organization) => ({
+      organizationId: organization.id,
+      slug: organization.slug,
+      name: organization.name,
+      role: "super_admin" as const,
+    }));
+  }
+
+  const result = await db
+    .prepare(
+      `SELECT o.id, o.slug, o.name, m.role
+       FROM league_organization_memberships m
+       JOIN league_organizations o ON o.id=m.organization_id
+       WHERE m.user_id=? AND m.status='active' AND o.status='active'
+       ORDER BY o.name, o.id`,
+    )
+    .bind(user.userId)
+    .all<{ id: string; slug: string; name: string; role: "admin" | "viewer" }>();
+
+  return (result.results ?? []).map((organization) => ({
+    organizationId: organization.id,
+    slug: organization.slug,
+    name: organization.name,
+    role: organization.role,
+  }));
+}
+
+export async function resolvePlatformReadContext(
+  user: CanonicalAppUser,
+): Promise<PlatformReadContext> {
+  const accessibleOrganizations = await listAccessibleOrganizations(user);
+  const organization = accessibleOrganizations.find(
+    (candidate) => candidate.organizationId === DEFAULT_PLATFORM_ORGANIZATION_ID,
+  );
+  if (!organization) {
+    throw new Error("Δεν υπάρχει πρόσβαση στον επιλεγμένο Οργανισμό της Πλατφόρμας.");
+  }
+
+  return {
+    organizationId: organization.organizationId,
+    organization,
+    accessibleOrganizations,
+  };
 }

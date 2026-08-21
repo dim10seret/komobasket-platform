@@ -1,5 +1,8 @@
 import { requireAdmin } from "@/lib/admin-auth";
-import { resolveCanonicalAppUser } from "@/lib/app-user-identity";
+import {
+  resolveCanonicalAppUser,
+  resolvePlatformReadContext,
+} from "@/lib/app-user-identity";
 import {
   departPlayer,
   searchAthletesForRosterFoundation,
@@ -28,9 +31,16 @@ export async function GET(request: Request) {
   const authorization = requireAdmin(request);
   if (authorization.response) return authorization.response;
   try {
-    await resolveCanonicalAppUser(authorization.identity);
+    const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
+    const platformContext = await resolvePlatformReadContext(canonicalUser);
     const requestUrl = new URL(request.url);
     const view = requestUrl.searchParams.get("view");
+    if (view === "organizations") {
+      return Response.json({
+        selectedOrganizationId: platformContext.organizationId,
+        organizations: platformContext.accessibleOrganizations,
+      });
+    }
     if (view === "team-roster") {
       const seasonId = requestUrl.searchParams.get("seasonId")?.trim() || "";
       const competitionId = requestUrl.searchParams.get("competitionId")?.trim() || "";
@@ -40,11 +50,16 @@ export async function GET(request: Request) {
       }
       return Response.json({
         view: "team-roster",
-        data: await getTeamRosterManagementView(seasonId, competitionId, teamId),
+        data: await getTeamRosterManagementView(
+          seasonId,
+          competitionId,
+          teamId,
+          platformContext.organizationId,
+        ),
       });
     }
 
-    return Response.json(await getLeagueAdminSnapshot());
+    return Response.json(await getLeagueAdminSnapshot(platformContext.organizationId));
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Αποτυχία φόρτωσης." },
@@ -63,16 +78,20 @@ export async function PATCH(request: Request) {
       return Response.json(await removeAthleteFromRoster({ rosterId: String(input.rosterId ?? ""), effectiveOn: input.effectiveOn ? String(input.effectiveOn) : null }));
     }
     if (action === "searchAthletes") {
+      const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
+      const platformContext = await resolvePlatformReadContext(canonicalUser);
       return Response.json(await searchAthletesForRosterFoundation({
         query: String(input.query ?? ""),
         limit: input.limit ? Number(input.limit) : undefined,
-      }));
+      }, platformContext.organizationId));
     }
     if (action === "searchStaff") {
+      const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
+      const platformContext = await resolvePlatformReadContext(canonicalUser);
       return Response.json(await searchStaffForRosterFoundation({
         query: String(input.query ?? ""),
         limit: input.limit ? Number(input.limit) : undefined,
-      }));
+      }, platformContext.organizationId));
     }
     if (action === "createAthleteWithRoster") {
       return Response.json(await createAthleteWithRoster({

@@ -2785,7 +2785,7 @@ async function normalizeCompetitionPhaseOrder(
   }
 }
 
-export async function getLeagueAdminSnapshot() {
+export async function getLeagueAdminSnapshot(organizationId: string) {
   const db = await database();
   if (!db) {
     return {
@@ -2831,8 +2831,9 @@ export async function getLeagueAdminSnapshot() {
       JOIN league_seasons s ON s.id=c.season_id
       LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
       LEFT JOIN league_competition_formats cf ON cf.competition_id=c.id
-      ORDER BY s.name DESC, c.name`),
-    rows(db, "SELECT * FROM league_teams ORDER BY name"),
+      WHERE c.organization_id=?
+      ORDER BY s.name DESC, c.name`, [organizationId]),
+    rows(db, "SELECT * FROM league_teams WHERE organization_id=? ORDER BY name", [organizationId]),
     rows(db, `SELECT ct.id, ct.competition_id, ct.season_team_id, ct.seed, ct.status,
       st.season_id, st.team_id, st.display_name, st.logo_url,
       s.name AS season_name, t.name AS team_name, c.name AS competition_name
@@ -2841,10 +2842,26 @@ export async function getLeagueAdminSnapshot() {
       JOIN league_seasons s ON s.id=st.season_id
       JOIN league_teams t ON t.id=st.team_id
       JOIN league_competitions c ON c.id=ct.competition_id
-      ORDER BY s.name DESC, c.name, st.display_name`),
-    rows(db, "SELECT * FROM league_players ORDER BY display_name LIMIT 1000"),
-    rows(db, `SELECT r.*, p.display_name AS player_name, t.name AS team_name, s.name AS season_name FROM league_roster_memberships r JOIN league_players p ON p.id=r.player_id JOIN league_teams t ON t.id=r.team_id JOIN league_seasons s ON s.id=r.season_id ORDER BY s.name DESC, t.name, p.display_name LIMIT 2000`),
-    rows(db, `SELECT m.*, p.display_name AS player_name, ft.name AS from_team_name, tt.name AS to_team_name FROM league_player_movements m JOIN league_players p ON p.id=m.player_id LEFT JOIN league_teams ft ON ft.id=m.from_team_id LEFT JOIN league_teams tt ON tt.id=m.to_team_id ORDER BY m.effective_on DESC LIMIT 500`),
+      WHERE c.organization_id=? AND t.organization_id=?
+      ORDER BY s.name DESC, c.name, st.display_name`, [organizationId, organizationId]),
+    rows(db, "SELECT * FROM league_players WHERE organization_id=? ORDER BY display_name LIMIT 1000", [organizationId]),
+    rows(db, `SELECT r.*, p.display_name AS player_name, t.name AS team_name, s.name AS season_name
+      FROM league_roster_memberships r
+      JOIN league_players p ON p.id=r.player_id
+      JOIN league_teams t ON t.id=r.team_id
+      JOIN league_seasons s ON s.id=r.season_id
+      JOIN league_competitions c ON c.id=r.competition_id
+      WHERE c.organization_id=? AND p.organization_id=? AND t.organization_id=?
+      ORDER BY s.name DESC, t.name, p.display_name LIMIT 2000`, [organizationId, organizationId, organizationId]),
+    rows(db, `SELECT m.*, p.display_name AS player_name, ft.name AS from_team_name, tt.name AS to_team_name
+      FROM league_player_movements m
+      JOIN league_players p ON p.id=m.player_id
+      LEFT JOIN league_teams ft ON ft.id=m.from_team_id
+      LEFT JOIN league_teams tt ON tt.id=m.to_team_id
+      WHERE p.organization_id=?
+        AND (ft.id IS NULL OR ft.organization_id=?)
+        AND (tt.id IS NULL OR tt.organization_id=?)
+      ORDER BY m.effective_on DESC LIMIT 500`, [organizationId, organizationId, organizationId]),
     rows(db, `SELECT p.*, c.name AS competition_name, s.name AS season_name,
       p.lifecycle_status, p.finalized_at,
       COALESCE(pr.phase_kind, CASE WHEN p.phase_type='regular' THEN 'regular_season' ELSE p.phase_type END) AS phase_kind,
@@ -2858,7 +2875,8 @@ export async function getLeagueAdminSnapshot() {
       JOIN league_seasons s ON s.id=c.season_id
       LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
       LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
-      ORDER BY s.name DESC, c.name, COALESCE(p.phase_order, p.order_index), p.id`),
+      WHERE c.organization_id=?
+      ORDER BY s.name DESC, c.name, COALESCE(p.phase_order, p.order_index), p.id`, [organizationId]),
     rows(db, `SELECT ps.*, p.name AS phase_name, p.format AS phase_format,
       p.phase_type, p.lifecycle_status, p.finalized_at, COALESCE(p.phase_order, p.order_index) AS phase_order,
       pr.phase_kind, pr.bracket_size, pr.best_of, pr.wins_required,
@@ -2870,18 +2888,30 @@ export async function getLeagueAdminSnapshot() {
       JOIN league_competitions c ON c.id=ps.competition_id
       LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
       LEFT JOIN league_phases source_phase ON source_phase.id=pr.carry_over_source_phase_id
-      ORDER BY c.name, COALESCE(p.phase_order, p.order_index), p.id`),
-    rows(db, `SELECT id, competition_id, phase_id, schedule_id, matchup_id,
-      series_round_number, scheduled_date, scheduled_time, venue, real_game_id,
-      created_at, updated_at
-      FROM league_series_planning_slots
-      ORDER BY schedule_id, matchup_id, series_round_number`),
-    rows(db, `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name FROM league_games g JOIN league_teams ht ON ht.id=g.home_team_id JOIN league_teams at ON at.id=g.away_team_id LEFT JOIN league_phases p ON p.id=g.phase_id ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`),
+      WHERE c.organization_id=?
+      ORDER BY c.name, COALESCE(p.phase_order, p.order_index), p.id`, [organizationId]),
+    rows(db, `SELECT slots.id, slots.competition_id, slots.phase_id,
+      slots.schedule_id, slots.matchup_id, slots.series_round_number,
+      slots.scheduled_date, slots.scheduled_time, slots.venue, slots.real_game_id,
+      slots.created_at, slots.updated_at
+      FROM league_series_planning_slots slots
+      JOIN league_competitions c ON c.id=slots.competition_id
+      WHERE c.organization_id=?
+      ORDER BY slots.schedule_id, slots.matchup_id, slots.series_round_number`, [organizationId]),
+    rows(db, `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name
+      FROM league_games g
+      JOIN league_competitions c ON c.id=g.competition_id
+      JOIN league_teams ht ON ht.id=g.home_team_id
+      JOIN league_teams at ON at.id=g.away_team_id
+      LEFT JOIN league_phases p ON p.id=g.phase_id
+      WHERE c.organization_id=? AND ht.organization_id=? AND at.organization_id=?
+      ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`, [organizationId, organizationId, organizationId]),
     rows(db, `SELECT v.*, c.name AS competition_name, s.name AS season_name
       FROM league_competition_venues v
       JOIN league_competitions c ON c.id=v.competition_id
       JOIN league_seasons s ON s.id=c.season_id
-      ORDER BY c.name, COALESCE(v.sort_order, 0), v.name`),
+      WHERE c.organization_id=?
+      ORDER BY c.name, COALESCE(v.sort_order, 0), v.name`, [organizationId]),
   ]);
   const phases = rawPhases.map((phase) => ({
     ...phase,
@@ -2923,6 +2953,7 @@ async function getPreviousRosterLookupWithDb(
   seasonId: string,
   competitionId: string,
   teamId: string,
+  organizationId: string | null = null,
 ) {
   const targetSelection = await db.prepare(`
     SELECT
@@ -2937,9 +2968,12 @@ async function getPreviousRosterLookupWithDb(
     INNER JOIN league_competitions c ON c.season_id=s.id
     INNER JOIN league_competition_teams ct ON ct.competition_id=c.id
     INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+    INNER JOIN league_teams t ON t.id=st.team_id
     WHERE s.id=? AND c.id=? AND st.team_id=?
+      AND (? IS NULL OR c.organization_id=?)
+      AND (? IS NULL OR t.organization_id=?)
     LIMIT 1
-  `).bind(seasonId, competitionId, teamId).first<{
+  `).bind(seasonId, competitionId, teamId, organizationId, organizationId, organizationId, organizationId).first<{
     season_id: string;
     season_name: string | null;
     starts_on: string | null;
@@ -2979,14 +3013,17 @@ async function getPreviousRosterLookupWithDb(
     INNER JOIN league_competitions c ON c.season_id=s.id
     INNER JOIN league_competition_teams ct ON ct.competition_id=c.id
     INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+    INNER JOIN league_teams t ON t.id=st.team_id
     WHERE st.team_id=?
+      AND (? IS NULL OR c.organization_id=?)
+      AND (? IS NULL OR t.organization_id=?)
       AND (
         EXISTS (SELECT 1 FROM league_roster_memberships r
           WHERE r.season_id=s.id AND r.competition_id=c.id AND r.team_id=st.team_id AND r.status='active')
         OR EXISTS (SELECT 1 FROM league_staff_memberships sm
           WHERE sm.season_id=s.id AND sm.competition_id=c.id AND sm.team_id=st.team_id)
       )
-  `, [teamId]);
+  `, [teamId, organizationId, organizationId, organizationId, organizationId]);
 
   const earlierCandidates = candidates.filter((candidate) => isEarlierSeason(
     seasonSortInfo({ name: candidate.season_name, starts_on: candidate.starts_on }),
@@ -3049,6 +3086,7 @@ export async function getTeamRosterManagementView(
   seasonId: string,
   competitionId: string,
   teamId: string,
+  organizationId: string,
 ) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
@@ -3064,8 +3102,9 @@ export async function getTeamRosterManagementView(
     INNER JOIN league_season_teams st ON st.id=ct.season_team_id
     INNER JOIN league_teams t ON t.id=st.team_id
     WHERE s.id=? AND c.id=? AND t.id=?
+      AND c.organization_id=? AND t.organization_id=?
       AND ct.status IS NOT NULL
-  `).bind(seasonId, competitionId, teamId).first<{
+  `).bind(seasonId, competitionId, teamId, organizationId, organizationId).first<{
     season_id: string;
     season_name: string;
     competition_id: string;
@@ -3087,9 +3126,12 @@ export async function getTeamRosterManagementView(
       r.shirt_number
     FROM league_roster_memberships r
     INNER JOIN league_players p ON p.id = r.player_id
+    INNER JOIN league_teams t ON t.id = r.team_id
+    INNER JOIN league_competitions c ON c.id = r.competition_id
     WHERE r.season_id=? AND r.competition_id=? AND r.team_id=? AND r.status='active'
+      AND p.organization_id=? AND t.organization_id=? AND c.organization_id=?
     ORDER BY COALESCE(p.last_name, p.display_name, ""), COALESCE(p.first_name, p.display_name, "")
-  `, [seasonId, competitionId, teamId]);
+  `, [seasonId, competitionId, teamId, organizationId, organizationId, organizationId]);
 
   const staff = await rows<RosterStaffRow>(db, `
     SELECT
@@ -3104,11 +3146,20 @@ export async function getTeamRosterManagementView(
       sm.custom_role_label
     FROM league_staff_memberships sm
     INNER JOIN league_staff s ON s.id = sm.staff_id
+    INNER JOIN league_teams t ON t.id = sm.team_id
+    INNER JOIN league_competitions c ON c.id = sm.competition_id
     WHERE sm.season_id=? AND sm.competition_id=? AND sm.team_id=?
+      AND s.organization_id=? AND t.organization_id=? AND c.organization_id=?
     ORDER BY COALESCE(s.last_name, s.display_name, ""), COALESCE(s.first_name, s.display_name, "")
-  `, [seasonId, competitionId, teamId]);
+  `, [seasonId, competitionId, teamId, organizationId, organizationId, organizationId]);
 
-  const previousRoster = await getPreviousRosterLookup(seasonId, competitionId, teamId);
+  const previousRoster = await getPreviousRosterLookupWithDb(
+    db,
+    seasonId,
+    competitionId,
+    teamId,
+    organizationId,
+  );
 
   return {
     seasonId: selection.season_id,
@@ -3208,7 +3259,10 @@ export async function copyPreviousRoster(
   };
 }
 
-export async function searchAthletesForRosterFoundation(input: SearchRequestInput) {
+export async function searchAthletesForRosterFoundation(
+  input: SearchRequestInput,
+  organizationId: string,
+) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
   const query = String(input.query ?? "").trim();
@@ -3237,7 +3291,10 @@ export async function searchAthletesForRosterFoundation(input: SearchRequestInpu
         SELECT t.name
         FROM league_roster_memberships r
         JOIN league_teams t ON t.id = r.team_id
+        JOIN league_competitions c ON c.id = r.competition_id
         WHERE r.player_id = p.id AND r.status='active'
+          AND t.organization_id=p.organization_id
+          AND c.organization_id=p.organization_id
         ORDER BY r.created_at DESC
         LIMIT 1
       ) AS last_team_name,
@@ -3245,18 +3302,24 @@ export async function searchAthletesForRosterFoundation(input: SearchRequestInpu
         SELECT s.name
         FROM league_roster_memberships r
         JOIN league_seasons s ON s.id = r.season_id
+        JOIN league_teams t ON t.id = r.team_id
+        JOIN league_competitions c ON c.id = r.competition_id
         WHERE r.player_id = p.id AND r.status='active'
+          AND t.organization_id=p.organization_id
+          AND c.organization_id=p.organization_id
         ORDER BY r.created_at DESC
         LIMIT 1
       ) AS last_season_name
     FROM league_players p
-    WHERE p.normalized_name LIKE ?
-       OR lower(p.display_name) LIKE lower(?)
-       OR (p.first_name IS NOT NULL AND lower(p.first_name) LIKE lower(?))
-       OR (p.last_name IS NOT NULL AND lower(p.last_name) LIKE lower(?))
+    WHERE p.organization_id=? AND (
+         p.normalized_name LIKE ?
+      OR lower(p.display_name) LIKE lower(?)
+      OR (p.first_name IS NOT NULL AND lower(p.first_name) LIKE lower(?))
+      OR (p.last_name IS NOT NULL AND lower(p.last_name) LIKE lower(?))
+    )
     ORDER BY p.display_name ASC
     LIMIT ?`,
-    [wildcard, `%${query}%`, wildcard, wildcard, limit],
+    [organizationId, wildcard, `%${query}%`, wildcard, wildcard, limit],
   );
   if (rowsQuery.length === 0) {
     return [];
@@ -3293,6 +3356,7 @@ export async function searchAthletesForRosterFoundation(input: SearchRequestInpu
     JOIN league_seasons season ON season.id = roster.season_id
     JOIN league_teams team ON team.id = roster.team_id
     JOIN league_competitions competition ON competition.id = roster.competition_id
+    WHERE team.organization_id=? AND competition.organization_id=?
     ORDER BY
       CASE
         WHEN CAST(substr(season.name, 1, 4) AS INTEGER) IS NOT NULL
@@ -3301,7 +3365,7 @@ export async function searchAthletesForRosterFoundation(input: SearchRequestInpu
       END DESC,
       season.name DESC,
       team.name ASC`,
-    [...ids],
+    [...ids, organizationId, organizationId],
   );
 
   const careerHistoryByPlayer = new Map<string, {
@@ -3337,7 +3401,10 @@ export async function searchAthletesForRosterFoundation(input: SearchRequestInpu
   }));
 }
 
-export async function searchStaffForRosterFoundation(input: SearchRequestInput) {
+export async function searchStaffForRosterFoundation(
+  input: SearchRequestInput,
+  organizationId: string,
+) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
   const query = String(input.query ?? "").trim();
@@ -3365,7 +3432,10 @@ export async function searchStaffForRosterFoundation(input: SearchRequestInput) 
         SELECT t.name
         FROM league_staff_memberships m
         JOIN league_teams t ON t.id=m.team_id
+        JOIN league_competitions c ON c.id=m.competition_id
         WHERE m.staff_id=s.id
+          AND t.organization_id=s.organization_id
+          AND c.organization_id=s.organization_id
         ORDER BY m.created_at DESC
         LIMIT 1
       ) AS last_team_name,
@@ -3373,16 +3443,22 @@ export async function searchStaffForRosterFoundation(input: SearchRequestInput) 
         SELECT se.name
         FROM league_staff_memberships m
         JOIN league_seasons se ON se.id=m.season_id
+        JOIN league_teams t ON t.id=m.team_id
+        JOIN league_competitions c ON c.id=m.competition_id
         WHERE m.staff_id=s.id
+          AND t.organization_id=s.organization_id
+          AND c.organization_id=s.organization_id
         ORDER BY m.created_at DESC
         LIMIT 1
       ) AS last_season_name
     FROM league_staff s
-    WHERE s.normalized_name LIKE ?
-       OR lower(s.display_name) LIKE lower(?)
+    WHERE s.organization_id=? AND (
+         s.normalized_name LIKE ?
+      OR lower(s.display_name) LIKE lower(?)
+    )
     ORDER BY s.display_name ASC
     LIMIT ?`,
-    [wildcard, `%${String(query)}%`, limit],
+    [organizationId, wildcard, `%${String(query)}%`, limit],
   );
 
   return rowsQuery.map((row) => ({
