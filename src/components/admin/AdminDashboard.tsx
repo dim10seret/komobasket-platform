@@ -395,7 +395,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
                 setSelectedParticipationTeamIds={setSelectedParticipationTeamIds}
               />
             )}
-            {tab === "players" && <Players data={data} />}
+            {tab === "players" && <Players data={data} onRefreshSnapshot={load} />}
             {tab === "movements" && <Movements data={data} depart={depart} transfer={transfer} busy={busy} />}
           </>
         )}

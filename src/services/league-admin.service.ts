@@ -275,6 +275,8 @@ type RosterStaffRow = {
 type PreviousRosterInfo = {
   seasonId: string | null;
   seasonName: string | null;
+  competitionId: string | null;
+  competitionName: string | null;
   targetAthleteRosterExists: boolean;
   targetAthleteCount: number;
   targetStaffRosterExists: boolean;
@@ -2902,6 +2904,137 @@ async function loadSeasonSortInfo(db: D1DatabaseBinding, seasonId: string) {
     .then((season) => (season ? seasonSortInfo(season) : null));
 }
 
+type PreviousRosterCandidate = {
+  season_id: string;
+  season_name: string | null;
+  starts_on: string | null;
+  competition_id: string;
+  competition_name: string;
+  competition_type: string;
+  custom_type_label: string | null;
+  athlete_count: number;
+  staff_count: number;
+};
+
+const normalizeCompetitionRosterIdentity = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("el-GR");
+
+async function getPreviousRosterLookupWithDb(
+  db: D1DatabaseBinding,
+  seasonId: string,
+  competitionId: string,
+  teamId: string,
+) {
+  const targetSelection = await db.prepare(`
+    SELECT
+      s.id AS season_id,
+      s.name AS season_name,
+      s.starts_on,
+      c.id AS competition_id,
+      c.name AS competition_name,
+      c.type AS competition_type,
+      c.custom_type_label
+    FROM league_seasons s
+    INNER JOIN league_competitions c ON c.season_id=s.id
+    INNER JOIN league_competition_teams ct ON ct.competition_id=c.id
+    INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+    WHERE s.id=? AND c.id=? AND st.team_id=?
+    LIMIT 1
+  `).bind(seasonId, competitionId, teamId).first<{
+    season_id: string;
+    season_name: string | null;
+    starts_on: string | null;
+    competition_id: string;
+    competition_name: string;
+    competition_type: string;
+    custom_type_label: string | null;
+  }>();
+  if (!targetSelection) {
+    throw new Error("Η επιλεγμένη ομάδα δεν συμμετέχει στη συγκεκριμένη διοργάνωση και σεζόν.");
+  }
+
+  const targetSort = seasonSortInfo({ name: targetSelection.season_name, starts_on: targetSelection.starts_on });
+  const targetAthleteCount = await db.prepare(
+    `SELECT COUNT(*) AS count FROM league_roster_memberships
+     WHERE season_id=? AND competition_id=? AND team_id=? AND status='active'`,
+  ).bind(seasonId, competitionId, teamId).first<{ count: number }>();
+  const targetStaffCount = await db.prepare(
+    `SELECT COUNT(*) AS count FROM league_staff_memberships
+     WHERE season_id=? AND competition_id=? AND team_id=?`,
+  ).bind(seasonId, competitionId, teamId).first<{ count: number }>();
+
+  const candidates = await rows<PreviousRosterCandidate>(db, `
+    SELECT
+      s.id AS season_id,
+      s.name AS season_name,
+      s.starts_on,
+      c.id AS competition_id,
+      c.name AS competition_name,
+      c.type AS competition_type,
+      c.custom_type_label,
+      (SELECT COUNT(*) FROM league_roster_memberships r
+       WHERE r.season_id=s.id AND r.competition_id=c.id AND r.team_id=st.team_id AND r.status='active') AS athlete_count,
+      (SELECT COUNT(*) FROM league_staff_memberships sm
+       WHERE sm.season_id=s.id AND sm.competition_id=c.id AND sm.team_id=st.team_id) AS staff_count
+    FROM league_seasons s
+    INNER JOIN league_competitions c ON c.season_id=s.id
+    INNER JOIN league_competition_teams ct ON ct.competition_id=c.id
+    INNER JOIN league_season_teams st ON st.id=ct.season_team_id
+    WHERE st.team_id=?
+      AND (
+        EXISTS (SELECT 1 FROM league_roster_memberships r
+          WHERE r.season_id=s.id AND r.competition_id=c.id AND r.team_id=st.team_id AND r.status='active')
+        OR EXISTS (SELECT 1 FROM league_staff_memberships sm
+          WHERE sm.season_id=s.id AND sm.competition_id=c.id AND sm.team_id=st.team_id)
+      )
+  `, [teamId]);
+
+  const earlierCandidates = candidates.filter((candidate) => isEarlierSeason(
+    seasonSortInfo({ name: candidate.season_name, starts_on: candidate.starts_on }),
+    targetSort,
+  ));
+  earlierCandidates.sort((left, right) => normalizeLookupOrder(
+    seasonSortInfo({ name: left.season_name, starts_on: left.starts_on }),
+    seasonSortInfo({ name: right.season_name, starts_on: right.starts_on }),
+  ));
+  const latestSeasonId = earlierCandidates.at(-1)?.season_id ?? null;
+  const latestSeasonCandidates = latestSeasonId
+    ? earlierCandidates.filter((candidate) => candidate.season_id === latestSeasonId)
+    : [];
+
+  const targetName = normalizeCompetitionRosterIdentity(targetSelection.competition_name);
+  const targetType = normalizeCompetitionRosterIdentity(targetSelection.competition_type);
+  const targetCustomType = normalizeCompetitionRosterIdentity(targetSelection.custom_type_label);
+  const compatibilityScore = (candidate: PreviousRosterCandidate) => {
+    const sameName = normalizeCompetitionRosterIdentity(candidate.competition_name) === targetName;
+    const sameType = normalizeCompetitionRosterIdentity(candidate.competition_type) === targetType;
+    const sameCustomType = normalizeCompetitionRosterIdentity(candidate.custom_type_label) === targetCustomType;
+    if (sameName && sameType && sameCustomType) return 3;
+    if (sameType && sameCustomType) return 2;
+    if (sameType) return 1;
+    return 0;
+  };
+  latestSeasonCandidates.sort((left, right) => (
+    compatibilityScore(right) - compatibilityScore(left)
+    || Number(right.athlete_count ?? 0) - Number(left.athlete_count ?? 0)
+    || Number(right.staff_count ?? 0) - Number(left.staff_count ?? 0)
+    || String(left.competition_id).localeCompare(String(right.competition_id))
+  ));
+  const source = latestSeasonCandidates[0] ?? null;
+
+  return {
+    seasonId: source?.season_id ?? null,
+    seasonName: source?.season_name ?? null,
+    competitionId: source?.competition_id ?? null,
+    competitionName: source?.competition_name ?? null,
+    targetAthleteRosterExists: Number(targetAthleteCount?.count ?? 0) > 0,
+    targetAthleteCount: Number(targetAthleteCount?.count ?? 0),
+    targetStaffRosterExists: Number(targetStaffCount?.count ?? 0) > 0,
+    targetStaffCount: Number(targetStaffCount?.count ?? 0),
+    previousAthleteCount: Number(source?.athlete_count ?? 0),
+    previousStaffCount: Number(source?.staff_count ?? 0),
+  } satisfies PreviousRosterInfo;
+}
+
 export async function getPreviousRosterLookup(
   seasonId: string,
   competitionId: string,
@@ -2909,75 +3042,7 @@ export async function getPreviousRosterLookup(
 ) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
-
-  const target = await loadSeasonSortInfo(db, seasonId);
-  if (!target) throw new Error("Δεν βρέθηκε η επιλεγμένη σεζόν.");
-
-  const targetAthleteCount = await db.prepare(
-    `SELECT COUNT(*) AS count FROM league_roster_memberships
-     WHERE season_id=? AND competition_id=? AND team_id=? AND status='active'`,
-  ).bind(seasonId, competitionId, teamId).first<{ count: number }>();
-
-  const targetStaffCount = await db.prepare(
-    `SELECT COUNT(*) AS count FROM league_staff_memberships
-     WHERE season_id=? AND competition_id=? AND team_id=?`,
-  ).bind(seasonId, competitionId, teamId).first<{ count: number }>();
-
-  const candidateSeasons = await rows<{
-    id: string;
-    name: string | null;
-    starts_on: string | null;
-  }>(
-    db,
-    `SELECT DISTINCT s.id, s.name, s.starts_on
-     FROM league_seasons s
-     JOIN league_competitions c ON c.season_id=s.id
-     JOIN league_competition_teams ct ON ct.competition_id=c.id
-     JOIN league_season_teams st ON st.id=ct.season_team_id
-     WHERE c.id=?
-       AND st.team_id=?
-       AND c.status IS NOT NULL`,
-    [competitionId, teamId],
-  );
-
-  const targetSort = target;
-  const previousCandidate = candidateSeasons
-    .map((season) => ({ ...seasonSortInfo({ name: season.name, starts_on: season.starts_on }), id: season.id }))
-    .filter((info) => isEarlierSeason(info, targetSort))
-    .sort((left, right) => normalizeLookupOrder(left, right))
-    .at(-1);
-
-  const previousSeasonId = previousCandidate?.id ?? null;
-
-  let previousAthleteCount = 0;
-  let previousStaffCount = 0;
-  if (previousSeasonId) {
-    const previousAthletes = await db.prepare(
-      `SELECT COUNT(*) AS count FROM league_roster_memberships
-       WHERE season_id=? AND competition_id=? AND team_id=? AND status='active'`,
-    ).bind(previousSeasonId, competitionId, teamId).first<{ count: number }>();
-    previousAthleteCount = previousAthletes?.count ?? 0;
-
-    const previousStaff = await db.prepare(
-      `SELECT COUNT(*) AS count FROM league_staff_memberships
-       WHERE season_id=? AND competition_id=? AND team_id=?`,
-    ).bind(previousSeasonId, competitionId, teamId).first<{ count: number }>();
-    previousStaffCount = previousStaff?.count ?? 0;
-  }
-
-  const previousSeasonInfo = previousSeasonId ? await loadSeasonSortInfo(db, previousSeasonId) : null;
-  const previousSeasonName = previousSeasonInfo ? previousSeasonInfo.raw : null;
-
-  return {
-    seasonId: previousSeasonId,
-    seasonName: previousSeasonName,
-    targetAthleteRosterExists: (targetAthleteCount?.count ?? 0) > 0,
-    targetAthleteCount: Number(targetAthleteCount?.count ?? 0),
-    targetStaffRosterExists: (targetStaffCount?.count ?? 0) > 0,
-    targetStaffCount: Number(targetStaffCount?.count ?? 0),
-    previousAthleteCount,
-    previousStaffCount,
-  } satisfies PreviousRosterInfo;
+  return getPreviousRosterLookupWithDb(db, seasonId, competitionId, teamId);
 }
 
 export async function getTeamRosterManagementView(
@@ -3065,31 +3130,28 @@ export async function copyPreviousRoster(
   teamId: string,
   includeStaff = false,
 ) {
-  const lookup = await getPreviousRosterLookup(seasonId, competitionId, teamId);
-  if (!lookup.seasonId) return { copiedAthletes: 0, copiedStaff: 0 };
+  const lookup = await getPreviousRosterLookupWithDb(db, seasonId, competitionId, teamId);
+  if (!lookup.seasonId || !lookup.competitionId) {
+    return { copiedAthletes: 0, copiedStaff: 0, skippedAthletes: 0, skippedStaff: 0, sourceSeasonId: null, sourceCompetitionId: null };
+  }
 
   const previousSeasonId = lookup.seasonId;
-
-  let copiedAthletes = 0;
+  const previousCompetitionId = lookup.competitionId;
   const previousAthletes = await rows<{ player_id: string; shirt_number: number | null }>(
     db,
     `SELECT player_id, MAX(shirt_number) AS shirt_number
      FROM league_roster_memberships
      WHERE season_id=? AND team_id=? AND competition_id=? AND status='active'
      GROUP BY player_id`,
-    [previousSeasonId, teamId, competitionId],
+    [previousSeasonId, teamId, previousCompetitionId],
   );
+  const targetAthletes = await rows<{ player_id: string }>(db, `SELECT player_id
+    FROM league_roster_memberships
+    WHERE season_id=? AND competition_id=? AND status='active'`, [seasonId, competitionId]);
+  const targetAthleteIds = new Set(targetAthletes.map((player) => String(player.player_id)));
+  const athletesToCopy = previousAthletes.filter((player) => !targetAthleteIds.has(String(player.player_id)));
 
-  for (const player of previousAthletes) {
-    const existing = await db.prepare(`SELECT id
-      FROM league_roster_memberships
-      WHERE season_id=? AND competition_id=? AND team_id=? AND player_id=? AND status='active'
-      LIMIT 1`)
-      .bind(seasonId, competitionId, teamId, player.player_id)
-      .first<{ id: string }>();
-    if (existing) continue;
-
-    await db.prepare(`INSERT INTO league_roster_memberships
+  const statements = athletesToCopy.map((player) => db.prepare(`INSERT INTO league_roster_memberships
       (id,season_id,competition_id,player_id,team_id,shirt_number,joined_on,left_on,status)
       VALUES (?,?,?,?,?,?,NULL,NULL,'active')`)
       .bind(
@@ -3099,13 +3161,12 @@ export async function copyPreviousRoster(
         player.player_id,
         teamId,
         player.shirt_number,
-      ).run();
-    copiedAthletes += 1;
-  }
+      ));
 
-  let copiedStaff = 0;
+  let previousStaff: Array<{ staff_id: string; role: string; custom_role_label: string | null }> = [];
+  let staffToCopy = previousStaff;
   if (includeStaff) {
-    const previousStaff = await rows<{
+    previousStaff = await rows<{
       staff_id: string;
       role: string;
       custom_role_label: string | null;
@@ -3114,17 +3175,14 @@ export async function copyPreviousRoster(
       `SELECT staff_id, role, custom_role_label
        FROM league_staff_memberships
        WHERE season_id=? AND competition_id=? AND team_id=?`,
-      [previousSeasonId, competitionId, teamId],
+      [previousSeasonId, previousCompetitionId, teamId],
     );
-
-    for (const staff of previousStaff) {
-      const existing = await db.prepare(`SELECT id
-        FROM league_staff_memberships
-        WHERE season_id=? AND competition_id=? AND team_id=? AND staff_id=?`
-      ).bind(seasonId, competitionId, teamId, staff.staff_id).first<{ id: string }>();
-      if (existing) continue;
-
-      await db.prepare(`INSERT INTO league_staff_memberships
+    const targetStaff = await rows<{ staff_id: string }>(db, `SELECT staff_id
+      FROM league_staff_memberships
+      WHERE season_id=? AND competition_id=? AND team_id=?`, [seasonId, competitionId, teamId]);
+    const targetStaffIds = new Set(targetStaff.map((staff) => String(staff.staff_id)));
+    staffToCopy = previousStaff.filter((staff) => !targetStaffIds.has(String(staff.staff_id)));
+    statements.push(...staffToCopy.map((staff) => db.prepare(`INSERT INTO league_staff_memberships
         (id,staff_id,season_id,competition_id,team_id,role,custom_role_label)
         VALUES (?,?,?,?,?,?,?)`)
         .bind(
@@ -3135,12 +3193,19 @@ export async function copyPreviousRoster(
           teamId,
           normalizeStaffRole(staff.role, "other"),
           staff.custom_role_label,
-        ).run();
-      copiedStaff += 1;
-    }
+        )));
   }
 
-  return { copiedAthletes, copiedStaff };
+  if (statements.length) await db.batch(statements);
+
+  return {
+    copiedAthletes: athletesToCopy.length,
+    copiedStaff: staffToCopy.length,
+    skippedAthletes: previousAthletes.length - athletesToCopy.length,
+    skippedStaff: previousStaff.length - staffToCopy.length,
+    sourceSeasonId: previousSeasonId,
+    sourceCompetitionId: previousCompetitionId,
+  };
 }
 
 export async function searchAthletesForRosterFoundation(input: SearchRequestInput) {

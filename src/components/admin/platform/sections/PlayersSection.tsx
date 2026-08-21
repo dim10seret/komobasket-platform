@@ -23,7 +23,13 @@ import {
 import { normalizePlayerName } from "@/lib/player-matching";
 
 
-export function Players({data}:{data:Snapshot}) {
+export function Players({
+  data,
+  onRefreshSnapshot,
+}: {
+  data: Snapshot;
+  onRefreshSnapshot: () => Promise<void>;
+}) {
   const [registryPlayers, setRegistryPlayers] = useState<Row[]>(() => [...(data.players ?? [])]);
   const [selectedSeasonId, setSelectedSeasonId] = useState("");
   const [selectedCompetitionId, setSelectedCompetitionId] = useState("");
@@ -578,6 +584,7 @@ export function Players({data}:{data:Snapshot}) {
       if (!response.ok) throw new Error(responsePayload.error || "Η ενέργεια απέτυχε.");
       showActionNotice(successMessage);
       await refreshSelectedRoster();
+      await onRefreshSnapshot();
     } catch (error) {
       setTeamRosterError(error instanceof Error ? error.message : "Η ενέργεια απέτυχε.");
     } finally {
