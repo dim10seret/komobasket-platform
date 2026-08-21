@@ -24,7 +24,8 @@
     {
       "binding": "NEWS_DB",
       "database_name": "komobasket-news",
-      "database_id": "d7947fb0-124a-4bc0-bdff-a7e1e9664a70"
+      "database_id": "d7947fb0-124a-4bc0-bdff-a7e1e9664a70",
+      "migrations_dir": "cloudflare/migrations"
     }
   ],
   "r2_buckets": [
