@@ -12,6 +12,7 @@ import {
   deleteLeagueParticipation,
   deleteLeagueCompetitionVenue,
   finalizeLeaguePhase,
+  materializePhaseProgram,
   saveSeriesPlanningSlot,
   updateLeagueEntity,
 } from "@/services/league-admin.service";
@@ -67,7 +68,7 @@ export async function POST(
       return Response.json(result);
     }
     if (resource === "phase-schedules" && ["generateRoundRobinGames", "materializePhaseProgram"].includes(String(input.action ?? "").trim())) {
-      const result = await createLeagueEntity(resource, input, authorization.identity.email);
+      const result = await materializePhaseProgram(input, authorization.identity.email);
       return Response.json(result);
     }
 

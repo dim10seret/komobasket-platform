@@ -32,6 +32,7 @@ import {
   resolveFinalizedStandingsPositions,
   resolveSeriesParticipantSourcePhaseId,
 } from "@/lib/series-carry-over";
+import { deriveSeriesPhaseCompletion } from "@/lib/series-phase-completion";
 import { ProgramGamesSection } from "./ProgramGamesSection";
 
 export function CompetitionFields({
@@ -186,7 +187,7 @@ export function CompetitionWorkspaceManager({
   const [newPhaseName, setNewPhaseName] = useState("");
   const [newPhaseFormat, setNewPhaseFormat] = useState<"standings" | "series">("standings");
   const [newPhasePreviousId, setNewPhasePreviousId] = useState("");
-  const [finalizePhaseDialog, setFinalizePhaseDialog] = useState<{ phaseId: string; phaseName: string; competitionId: string } | null>(null);
+  const [finalizePhaseDialog, setFinalizePhaseDialog] = useState<{ phaseId: string; phaseName: string; competitionId: string; phaseFormat: string } | null>(null);
   const [finalizePhaseConfirmation, setFinalizePhaseConfirmation] = useState("");
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
   const [teamRosterLoading,setTeamRosterLoading]=useState(false);
@@ -836,6 +837,9 @@ export function CompetitionWorkspaceManager({
                 const lifecycleStatus = String((phase as Row).lifecycle_status ?? "active");
                 const isFinalized = lifecycleStatus === "finalized";
                 const phaseGames = data.games.filter((game) => String(game.phase_id ?? "") === phaseIdValue);
+                const seriesCompletion = phaseFormat === "series"
+                  ? deriveSeriesPhaseCompletion(data.phases, data.games, data.teams, phase)
+                  : null;
                 const completedGames = phaseGames.filter((game) => String(game.status ?? "") === "completed").length;
                 const totalGames = phaseGames.length;
                 const headerSummary = totalGames ? `${isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"} · ${completedGames}/${totalGames}` : (isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη");
@@ -891,31 +895,6 @@ export function CompetitionWorkspaceManager({
                       return {};
                     }
                   })();
-                  const participantConfiguration = (() => {
-                    const value = ruleSettings.participantConfiguration;
-                    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-                    return {};
-                  })();
-                  const sourcePhaseId = resolveSeriesParticipantSourcePhaseId(seriesSummaryPhase);
-                  const resolvedPositions = resolveFinalizedStandingsPositions(
-                    data.phases,
-                    data.games,
-                    data.teams,
-                    sourcePhaseId,
-                  );
-                  const positionNameMap = new Map<number, string>(
-                    resolvedPositions.positions.map((entry) => [entry.position, entry.teamName]),
-                  );
-                  const decorateStandingLabel = (label: string) => {
-                    if (resolvedPositions.state !== "resolved") return label;
-                    return label.split(" — ").map((part) => {
-                      const match = /^#(\d+)$/.exec(part.trim());
-                      if (!match) return part;
-                      const position = Number(match[1]);
-                      const teamName = positionNameMap.get(position);
-                      return teamName ? `#${position} ${teamName}` : part;
-                    }).join(" — ");
-                  };
                   const summaries = describeSeriesMatchupsFromPhase(data, seriesSummaryPhase);
                   return (
                     <>
@@ -923,21 +902,31 @@ export function CompetitionWorkspaceManager({
                         <span className={isFinalized ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
                           {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
                         </span>
-                        {!isFinalized && phaseFormat === "standings" && (
+                        {!isFinalized && (phaseFormat === "standings" || phaseFormat === "series") && (
                           <button
                             type="button"
+                            disabled={phaseFormat === "series" && !seriesCompletion?.competitivelyComplete}
+                            title={phaseFormat === "series" && !seriesCompletion?.competitivelyComplete
+                              ? seriesCompletion?.blockers.map((entry) => entry.message).join(" ")
+                              : undefined}
                             onClick={() => {
                               setFinalizePhaseConfirmation("");
                               setFinalizePhaseDialog({
                                 phaseId: phaseIdValue,
                                 phaseName: String(phase.name ?? ""),
                                 competitionId: String(phase.competition_id ?? ""),
+                                phaseFormat,
                               });
                             }}
-                            className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100"
+                            className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Οριστικοποίηση φάσης
                           </button>
+                        )}
+                        {!isFinalized && phaseFormat === "series" && seriesCompletion && !seriesCompletion.competitivelyComplete && (
+                          <span className="text-xs font-semibold text-amber-800">
+                            {seriesCompletion.blockers[0]?.message ?? "Η σειρά δεν έχει ολοκληρωθεί ανταγωνιστικά."}
+                          </span>
                         )}
                         {isFinalized ? <span className="text-sm font-black text-zinc-600">{headerSummary}</span> : <span className="text-sm text-zinc-600">{headerSummary}</span>}
                       </div>
@@ -986,7 +975,7 @@ export function CompetitionWorkspaceManager({
                           <div className="mt-3 space-y-2">
                             {summaries.length ? summaries.map((summary) => (
                               <div key={summary.id} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
-                                <p>{decorateStandingLabel(summary.label)}</p>
+                                <p>{summary.label}</p>
                               </div>
                             )) : <p className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-500">Δεν έχουν οριστεί ακόμη διασταυρώσεις.</p>}
                           </div>
@@ -1056,7 +1045,9 @@ export function CompetitionWorkspaceManager({
                       </button>
                     </div>
                     <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                      Η οριστικοποίηση της φάσης καθιστά την τελική κατάταξη διαθέσιμη στις επόμενες φάσεις και κλειδώνει βασικές ρυθμίσεις της φάσης.
+                      {finalizePhaseDialog.phaseFormat === "series"
+                        ? "Όλα τα αποτελέσματα της σειράς έχουν επιλυθεί. Οι ομάδες που προκρίθηκαν θα γίνουν οριστικές για τις επόμενες φάσεις. Τα αποτελέσματα, οι διασταυρώσεις και οι ρυθμίσεις μεταφοράς θα κλειδωθούν."
+                        : "Η οριστικοποίηση της φάσης καθιστά την τελική κατάταξη διαθέσιμη στις επόμενες φάσεις και κλειδώνει βασικές ρυθμίσεις της φάσης."}
                     </p>
                     <form
                       className="mt-4"

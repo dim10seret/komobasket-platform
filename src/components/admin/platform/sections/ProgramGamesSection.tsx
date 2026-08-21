@@ -18,9 +18,8 @@ import {
 } from "../shared/admin-core";
 import { calculateSeriesProgression, calculateSeriesRoundWindow, type SeriesProgressionRoundRow } from "@/lib/series-progression";
 import {
-  resolveFinalizedStandingsPositions,
+  classifySeriesBracketEntry,
   resolveSeriesCarryOver,
-  resolveSeriesParticipantSourcePhaseId,
 } from "@/lib/series-carry-over";
 
 type PhaseScheduleRow = Row & {
@@ -139,33 +138,28 @@ const buildPhaseSummary = (data: Snapshot, phase?: Row | null) => {
     const phaseSettings = parseObject(phase.rule_settings_json);
     const bracketConfig = parseObject(phaseSettings.bracketConfiguration);
     const matchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
+    const entryClassifications = matchups.map((matchup) => ({ matchup, entry: classifySeriesBracketEntry(matchup) }));
+    const playableMatchups = entryClassifications.filter(({ entry }) => entry.kind === "playable_matchup").map(({ matchup }) => matchup);
     const winsRequired = Math.max(1, Math.floor(Number(phase.wins_required ?? 0) || 0));
     const carryOverEnabled = Boolean(Number(phase.carry_over_enabled ?? 0));
     const carryOverMeetingNumbers = Array.isArray(phaseSettings.carryOverMeetingNumbers)
       ? [...new Set(phaseSettings.carryOverMeetingNumbers.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 1))]
       : [];
     const transferredRounds = carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0;
-    const roundWindows = matchups.map((matchup) => {
-      const teamAType = String(matchup?.slotA?.type ?? "");
-      const teamBType = String(matchup?.slotB?.type ?? "");
-      const isBye = teamAType === "bye" || teamBType === "bye";
+    const roundWindows = playableMatchups.map((matchup) => {
       const startingWins = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase).matchups.find((entry) => entry.matchupId === String(matchup?.id ?? "")) ?? null;
       const window = calculateSeriesRoundWindow({
         winsRequired,
         currentWinsA: Number(startingWins?.startingWinsA ?? 0),
         currentWinsB: Number(startingWins?.startingWinsB ?? 0),
-        qualified: Boolean(startingWins?.state !== "resolved" || isBye || startingWins?.currentSeriesDecided),
+        qualified: Boolean(startingWins?.state !== "resolved" || startingWins?.currentSeriesDecided),
       });
-      return { isBye, ...window };
+      return window;
     });
     const minimumNewRounds = roundWindows.length ? Math.max(...roundWindows.map((entry) => entry.minimumNewRounds)) : 0;
     const maximumNewRounds = roundWindows.length ? Math.max(...roundWindows.map((entry) => entry.maximumNewRounds)) : 0;
-    const maxNewGames = maximumNewRounds * matchups.length;
-    const directQualifiers = matchups.reduce((count, matchup) => {
-      const slotAType = String(matchup?.slotA?.type ?? "");
-      const slotBType = String(matchup?.slotB?.type ?? "");
-      return count + (slotAType === "bye" || slotBType === "bye" ? 1 : 0);
-    }, 0);
+    const maxNewGames = maximumNewRounds * playableMatchups.length;
+    const directQualifiers = entryClassifications.filter(({ entry }) => entry.kind === "direct_qualifier").length;
     const totalConcreteTeams = matchups.reduce((count, matchup) => {
       const slotAType = String(matchup?.slotA?.type ?? "");
       const slotBType = String(matchup?.slotB?.type ?? "");
@@ -185,7 +179,7 @@ const buildPhaseSummary = (data: Snapshot, phase?: Row | null) => {
       `Μεταφερόμενοι γύροι: ${transferredRounds}`,
       `Ελάχιστοι νέοι γύροι: ${minimumNewRounds}`,
       `Μέγιστοι νέοι γύροι: ${maximumNewRounds}`,
-      `Διασταυρώσεις ανά γύρο: ${matchups.length}`,
+      `Διασταυρώσεις ανά γύρο: ${playableMatchups.length}`,
       `Μέγιστοι πιθανοί νέοι αγώνες: ${maxNewGames}`,
       `Ομάδες που προκρίνονται απευθείας: ${directQualifiers}`,
       `Υλικοποιημένοι αγώνες: ${materializedSeriesGames.length}`,
@@ -240,35 +234,11 @@ const buildSeriesRounds = (
   phase: Row,
   scheduleId: string,
   scheduleGames: GeneratedGameRow[],
-  competitionTeams: { id: string; name: string }[],
 ) => {
   const phaseSettings = parseObject(phase.rule_settings_json);
   const bracketConfig = parseObject(phaseSettings.bracketConfiguration);
   const matchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
   const carryOver = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase);
-  const participantSourcePhaseId = resolveSeriesParticipantSourcePhaseId(phase);
-  const resolvedPositions = resolveFinalizedStandingsPositions(
-    data.phases,
-    data.games,
-    data.teams,
-    participantSourcePhaseId,
-  );
-  const positionMap = new Map<number, string>(
-    resolvedPositions.positions.map((entry) => [entry.position, entry.teamName]),
-  );
-  const resolveSlotTeam = (slot: { type?: string | null; teamId?: string | null; position?: string | null }) => {
-    const slotType = String(slot.type ?? "").trim();
-    if (slotType === "bye") return { id: "", name: "—" };
-    if (slotType === "standing_position") {
-      const position = Number(String(slot.position ?? "").trim());
-      const teamName = Number.isInteger(position) ? positionMap.get(position) ?? "—" : "—";
-      const resolvedPosition = resolvedPositions.positions.find((entry) => entry.position === position);
-      return { id: resolvedPosition?.teamId ?? "", name: teamName };
-    }
-    const teamId = String(slot.teamId ?? "").trim();
-    const team = competitionTeams.find((entry) => entry.id === teamId) ?? data.teams.find((entry) => String(entry.id ?? "") === teamId);
-    return { id: teamId, name: String(team?.name ?? "—") };
-  };
 
   const materializedSeriesGames = scheduleGames
     .filter((game) => String(game.series_matchup_id ?? "").trim() && Number.isInteger(Number(game.series_round_number ?? 0)))
@@ -297,8 +267,14 @@ const buildSeriesRounds = (
   for (const matchup of matchupsInOrder) {
     const matchupResolution = carryOver.matchups.find((entry) => entry.matchupId === String(matchup.id ?? "")) ?? null;
     if (!matchupResolution) continue;
-    const teamA = resolveSlotTeam(matchup.slotA ?? {});
-    const teamB = resolveSlotTeam(matchup.slotB ?? {});
+    const teamA = {
+      id: String(matchupResolution.teamAId ?? "").trim(),
+      name: String(matchupResolution.teamAName ?? "—"),
+    };
+    const teamB = {
+      id: String(matchupResolution.teamBId ?? "").trim(),
+      name: String(matchupResolution.teamBName ?? "—"),
+    };
     if (!teamA.id || !teamB.id) continue;
     const transferredGames = (matchupResolution.meetingResolutions ?? [])
       .filter((meeting) => meeting.state === "resolved" && meeting.gameId)
@@ -615,7 +591,7 @@ export function ProgramGamesSection({
     const selectedSchedulePhase = competitionPhases.find((phase) => String(phase.id) === String(selectedSchedule.phase_id ?? "")) ?? null;
     const selectedScheduleFormat = String(selectedSchedulePhase?.format ?? selectedSchedulePhase?.phase_kind ?? "standings").trim().toLowerCase();
     const derivedRounds = selectedScheduleFormat === "series"
-      ? buildSeriesRounds(data, selectedSchedulePhase ?? selectedSchedule as unknown as Row, String(selectedSchedule.id), selectedScheduleGames, competitionTeams)
+      ? buildSeriesRounds(data, selectedSchedulePhase ?? selectedSchedule as unknown as Row, String(selectedSchedule.id), selectedScheduleGames)
       : selectedScheduleRounds;
     const currentRound = selectedRoundByScheduleId[String(selectedSchedule.id)]
       ?? (selectedScheduleFormat === "series" ? 1 : Number(selectedScheduleGames[0]?.round_number ?? 0));
@@ -891,7 +867,7 @@ export function ProgramGamesSection({
               const generatedRounds = buildGeneratedRounds(scheduleGames, competitionTeams);
               const lifecycle = String(schedule.lifecycle_status ?? "draft");
               const phaseFormat = String(phase?.format ?? phase?.phase_kind ?? "").toLowerCase();
-              const seriesRounds = phaseFormat === "series" ? buildSeriesRounds(data, phase ?? schedule as unknown as Row, scheduleKey, scheduleGames, competitionTeams) : [];
+              const seriesRounds = phaseFormat === "series" ? buildSeriesRounds(data, phase ?? schedule as unknown as Row, scheduleKey, scheduleGames) : [];
               const hasGames = phaseFormat === "series"
                 ? scheduleGames.some((game) => String(game.series_matchup_id ?? "").trim()) || seriesRounds.length > 0
                 : scheduleGames.length > 0;
@@ -906,6 +882,8 @@ export function ProgramGamesSection({
               const phaseSettings = parseObject(phase?.rule_settings_json);
               const bracketConfig = parseObject(phaseSettings.bracketConfiguration);
               const seriesMatchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
+              const seriesEntryClassifications = seriesMatchups.map((matchup) => classifySeriesBracketEntry(matchup));
+              const playableSeriesMatchupCount = seriesEntryClassifications.filter((entry) => entry.kind === "playable_matchup").length;
               const seriesTeams = seriesMatchups.reduce((count, matchup) => {
                 const slotAType = String(matchup?.slotA?.type ?? "");
                 const slotBType = String(matchup?.slotB?.type ?? "");
@@ -918,7 +896,7 @@ export function ProgramGamesSection({
                 : [];
               const transferredRounds = carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0;
               const carryOverResolution = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase ?? schedule as unknown as Row);
-              const seriesRoundWindows = carryOverResolution.matchups.map((matchup) => {
+              const seriesRoundWindows = carryOverResolution.matchups.filter((matchup) => matchup.playable !== false).map((matchup) => {
                 const window = calculateSeriesRoundWindow({
                   winsRequired,
                   currentWinsA: Number(matchup.startingWinsA ?? 0),
@@ -929,7 +907,7 @@ export function ProgramGamesSection({
               });
               const minimumNewRounds = seriesRoundWindows.length ? Math.max(...seriesRoundWindows.map((entry) => entry.minimumNewRounds)) : 0;
               const maximumNewRounds = seriesRoundWindows.length ? Math.max(...seriesRoundWindows.map((entry) => entry.maximumNewRounds)) : 0;
-              const matchupsPerRound = seriesMatchups.length;
+              const matchupsPerRound = playableSeriesMatchupCount;
               const maxNewGames = maximumNewRounds * matchupsPerRound;
               const materializedSeriesGames = (data.games as GeneratedGameRow[]).filter((game) =>
                 String(game.phase_id ?? "") === String(phase?.id ?? "") &&
@@ -1810,6 +1788,7 @@ export function ProgramGamesSection({
               </button>
             </div>
             <form onSubmit={handleCreate} className="mt-5 space-y-4">
+              <input type="hidden" name="action" value="materializePhaseProgram" />
               <input type="hidden" name="competitionId" value={competitionId} />
               {availablePhases.length ? (
                 <Field label="Φάση">

@@ -1,4 +1,5 @@
 import { calculateStandings } from "@/lib/standings-calculator";
+import { resolveFinalizedSeriesOutcomeReference } from "@/lib/series-phase-completion";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -6,6 +7,9 @@ export type SeriesCarryOverGameLike = {
   id?: string | number | null;
   competition_id?: string | null;
   phase_id?: string | null;
+  schedule_id?: string | null;
+  series_matchup_id?: string | null;
+  series_round_number?: string | number | null;
   cycle_number?: string | number | null;
   round_number?: string | number | null;
   game_order?: string | number | null;
@@ -19,6 +23,7 @@ export type SeriesCarryOverGameLike = {
   scheduled_date?: string | null;
   scheduled_time?: string | null;
   round_label?: string | null;
+  result_source?: string | null;
 };
 
 export type SeriesCarryOverPhaseLike = {
@@ -52,6 +57,43 @@ export type SeriesCarryOverMatchupLike = {
   };
 };
 
+export type SeriesBracketEntryClassification =
+  | { kind: "playable_matchup"; playable: true }
+  | {
+      kind: "direct_qualifier";
+      playable: false;
+      participantSide: "A" | "B";
+      participantSlot: SeriesCarryOverMatchupLike["slotA"];
+    }
+  | { kind: "invalid"; playable: false; message: string };
+
+export const classifySeriesBracketEntry = (
+  matchup?: SeriesCarryOverMatchupLike | null,
+): SeriesBracketEntryClassification => {
+  if (!matchup?.slotA || !matchup?.slotB) {
+    return { kind: "invalid", playable: false, message: "Η διασταύρωση δεν έχει δύο έγκυρα slots." };
+  }
+  const typeA = String(matchup.slotA.type ?? "").trim();
+  const typeB = String(matchup.slotB.type ?? "").trim();
+  if (!typeA || !typeB) {
+    return { kind: "invalid", playable: false, message: "Η διασταύρωση περιέχει slot χωρίς τύπο συμμετέχοντα." };
+  }
+  const byeA = typeA === "bye";
+  const byeB = typeB === "bye";
+  if (byeA && byeB) {
+    return { kind: "invalid", playable: false, message: "Η άμεση πρόκριση δεν μπορεί να περιέχει BYE και στα δύο slots." };
+  }
+  if (byeA || byeB) {
+    return {
+      kind: "direct_qualifier",
+      playable: false,
+      participantSide: byeA ? "B" : "A",
+      participantSlot: byeA ? matchup.slotB : matchup.slotA,
+    };
+  }
+  return { kind: "playable_matchup", playable: true };
+};
+
 export type SeriesCarryOverMeetingResolution = {
   meetingNumber: number;
   state: "resolved" | "pending" | "error";
@@ -77,6 +119,11 @@ export type SeriesCarryOverMatchupResolution = {
   startingWinsB: number | null;
   currentSeriesDecided: boolean;
   maxNewGames: number | null;
+  entryKind?: SeriesBracketEntryClassification["kind"];
+  playable?: boolean;
+  resolution?: "series_matchup" | "direct_qualifier" | null;
+  qualifiedTeamId?: string | null;
+  qualifiedTeamName?: string | null;
   state: "resolved" | "pending" | "error";
   message: string;
 };
@@ -98,6 +145,54 @@ export type FinalizedStandingsPositionLike = {
   position: number;
   teamId: string;
   teamName: string;
+};
+
+export type SeriesPhaseCompletionBlockerCode =
+  | "invalid_phase"
+  | "invalid_bracket"
+  | "unresolved_matchup_teams"
+  | "invalid_carry_over"
+  | "invalid_series_game_identity"
+  | "required_game_incomplete"
+  | "required_game_missing"
+  | "matchup_not_qualified"
+  | "invalid_competitive_result"
+  | "unresolved_direct_qualifier";
+
+export type SeriesPhaseCompletionBlocker = {
+  code: SeriesPhaseCompletionBlockerCode;
+  matchupId: string | null;
+  seriesRoundNumber: number | null;
+  message: string;
+};
+
+export type SeriesPhaseOutcome = {
+  matchupId: string;
+  resolution: "series_winner" | "direct_qualifier";
+  qualifiedTeamId: string;
+  qualifiedTeamName: string;
+  qualificationRoundNumber: number | null;
+  loserTeamId: string | null;
+  loserTeamName: string | null;
+};
+
+export type SeriesPhaseCompletion = {
+  phaseId: string;
+  competitivelyComplete: boolean;
+  outcomes: SeriesPhaseOutcome[];
+  blockers: SeriesPhaseCompletionBlocker[];
+};
+
+export type FinalizedSeriesOutcomeReferenceResolution = {
+  state: "resolved" | "pending" | "error";
+  message: string;
+  sourcePhaseId: string | null;
+  matchupId: string | null;
+  outcomeKind: "winner" | "loser";
+  teamId: string | null;
+  teamName: string | null;
+  blockers?: SeriesPhaseCompletionBlocker[];
+  qualificationRoundNumber: number | null;
 };
 
 const parseJsonRecord = (input: unknown): JsonRecord => {
@@ -387,7 +482,8 @@ export const resolveSeriesCarryOver = (
     positionResolution.positions.map((entry) => [entry.position, entry]),
   );
   const resolveStandingPosition = (position: string | null | undefined) => {
-    const normalized = Number(String(position ?? "").trim());
+    const rawPosition = String(position ?? "").trim();
+    const normalized = Number(rawPosition.startsWith("direct:") ? rawPosition.slice("direct:".length) : rawPosition);
     if (!Number.isInteger(normalized) || normalized < 1) {
       return { teamId: null, teamName: null, message: "Σε αναμονή προσδιορισμού ομάδων." };
     }
@@ -409,6 +505,7 @@ export const resolveSeriesCarryOver = (
   };
 
   const matchupResolutions = matchupDefinitions.map((matchup) => {
+    const entry = classifySeriesBracketEntry(matchup);
     const rawTeamA = getSourceTeam(matchup.slotA, teams);
     const rawTeamB = getSourceTeam(matchup.slotB, teams);
     const standingTeamA = String(matchup.slotA.type ?? "").trim() === "standing_position"
@@ -417,8 +514,73 @@ export const resolveSeriesCarryOver = (
     const standingTeamB = String(matchup.slotB.type ?? "").trim() === "standing_position"
       ? resolveStandingPosition(matchup.slotB.position)
       : { teamId: null, teamName: null, message: "" };
-    const teamA = standingTeamA.teamId ? standingTeamA : rawTeamA;
-    const teamB = standingTeamB.teamId ? standingTeamB : rawTeamB;
+    const resolveOutcomeSlot = (slot: SeriesCarryOverMatchupLike["slotA"] | SeriesCarryOverMatchupLike["slotB"]) => {
+      const type = String(slot.type ?? "").trim();
+      if (type !== "matchup_winner" && type !== "matchup_loser") return { teamId: null, teamName: null, message: "" };
+      const resolved = resolveFinalizedSeriesOutcomeReference(phases, games, teams, participantSourcePhaseId, slot.matchupId, type === "matchup_winner" ? "winner" : "loser");
+      return { teamId: resolved.teamId, teamName: resolved.teamName, message: resolved.message };
+    };
+    const outcomeTeamA = resolveOutcomeSlot(matchup.slotA);
+    const outcomeTeamB = resolveOutcomeSlot(matchup.slotB);
+    const teamA = standingTeamA.teamId ? standingTeamA : outcomeTeamA.teamId ? outcomeTeamA : rawTeamA;
+    const teamB = standingTeamB.teamId ? standingTeamB : outcomeTeamB.teamId ? outcomeTeamB : rawTeamB;
+    if (entry.kind === "invalid") {
+      return {
+        matchupId: matchup.id,
+        label: getMatchupLabel(teamA.teamName, teamB.teamName),
+        teamAId: teamA.teamId,
+        teamAName: teamA.teamName,
+        teamBId: teamB.teamId,
+        teamBName: teamB.teamName,
+        selectedMeetings: [],
+        sourcePhaseId: null,
+        sourcePhaseName: null,
+        sourcePhaseGamesPerPairing: sourceGamesPerPairing,
+        meetingResolutions: [],
+        startingWinsA: null,
+        startingWinsB: null,
+        currentSeriesDecided: false,
+        maxNewGames: null,
+        entryKind: entry.kind,
+        playable: false,
+        resolution: null,
+        qualifiedTeamId: null,
+        qualifiedTeamName: null,
+        state: "error" as const,
+        message: entry.message,
+      };
+    }
+    if (entry.kind === "direct_qualifier") {
+      const participant = entry.participantSide === "A" ? teamA : teamB;
+      const participantMessage = entry.participantSide === "A"
+        ? standingTeamA.message || outcomeTeamA.message
+        : standingTeamB.message || outcomeTeamB.message;
+      const resolved = Boolean(participant.teamId && participant.teamName);
+      return {
+        matchupId: matchup.id,
+        label: resolved ? `Πρόκριση ${participant.teamName} χωρίς αγώνα` : "Άμεση πρόκριση — σε αναμονή",
+        teamAId: teamA.teamId,
+        teamAName: teamA.teamName,
+        teamBId: teamB.teamId,
+        teamBName: teamB.teamName,
+        selectedMeetings: [],
+        sourcePhaseId: null,
+        sourcePhaseName: null,
+        sourcePhaseGamesPerPairing: sourceGamesPerPairing,
+        meetingResolutions: [],
+        startingWinsA: null,
+        startingWinsB: null,
+        currentSeriesDecided: resolved,
+        maxNewGames: resolved ? 0 : null,
+        entryKind: entry.kind,
+        playable: false,
+        resolution: resolved ? "direct_qualifier" as const : null,
+        qualifiedTeamId: resolved ? participant.teamId : null,
+        qualifiedTeamName: resolved ? participant.teamName : null,
+        state: resolved ? "resolved" as const : "pending" as const,
+        message: resolved ? `Πρόκριση ${participant.teamName} χωρίς αγώνα.` : participantMessage || "Σε αναμονή προσδιορισμού ομάδας άμεσης πρόκρισης.",
+      };
+    }
     const concreteTeamsResolved = Boolean(teamA.teamId && teamB.teamId);
     const selectedMeetingResolutions: SeriesCarryOverMeetingResolution[] = [];
     let startingWinsA: number | null = concreteTeamsResolved ? 0 : null;
@@ -446,7 +608,7 @@ export const resolveSeriesCarryOver = (
         state: concreteTeamsResolved ? "resolved" as const : "pending" as const,
         message: concreteTeamsResolved
           ? "Μεταφορά προηγούμενων μεταξύ τους αγώνων: Όχι"
-          : standingTeamA.message || standingTeamB.message || "Σε αναμονή προσδιορισμού ομάδων.",
+          : standingTeamA.message || standingTeamB.message || outcomeTeamA.message || outcomeTeamB.message || "Σε αναμονή προσδιορισμού ομάδων.",
       };
     }
 
@@ -490,7 +652,7 @@ export const resolveSeriesCarryOver = (
         currentSeriesDecided: false,
         maxNewGames: null,
         state: "pending" as const,
-        message: standingTeamA.message || standingTeamB.message || "Σε αναμονή προσδιορισμού ομάδων.",
+        message: standingTeamA.message || standingTeamB.message || outcomeTeamA.message || outcomeTeamB.message || "Σε αναμονή προσδιορισμού ομάδων.",
       };
     }
 

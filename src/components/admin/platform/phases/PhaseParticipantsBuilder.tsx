@@ -8,7 +8,8 @@ import {
   getCompetitionTeamsForStandings,
   inputClass,
 } from "../shared/admin-core";
-import { resolveSeriesCarryOver } from "@/lib/series-carry-over";
+import { resolveParticipantSlotReference } from "@/lib/participant-slot-resolution";
+import { classifySeriesBracketEntry, resolveSeriesCarryOver, resolveSeriesParticipantSourcePhaseId } from "@/lib/series-carry-over";
 
 type ParticipantSourceType =
   | "competition_participants"
@@ -218,8 +219,9 @@ const getSlotPreviewValue = (slot: SlotBuilderSource) => {
   return "—";
 };
 
-const getSeriesOutputOptions = (sourcePhase?: Row, competitionPhases: Row[] = []) => {
+const getSeriesOutputOptions = (sourcePhase: Row | undefined, data: Snapshot) => {
   if (!sourcePhase) return [] as BracketOutputSource[];
+  const competitionPhases = data.phases;
   const format = String(sourcePhase.format ?? sourcePhase.phase_kind ?? "").trim().toLowerCase();
   const settings = getObjectInput(sourcePhase.rule_settings_json);
   const participantConfig = getObjectInput(settings.participantConfiguration);
@@ -246,32 +248,21 @@ const getSeriesOutputOptions = (sourcePhase?: Row, competitionPhases: Row[] = []
       slotB: entry.slotB,
     }));
 
-    const directFromStandings: BracketOutputSource[] = [];
-    for (const matchup of matchups) {
-      const slots = [matchup.slotA, matchup.slotB];
-      const byeSlot = slots.find((slot) => slot.type === "bye");
-      if (!byeSlot) continue;
-      const otherSlot = slots.find((slot) => slot !== byeSlot);
-      const value = otherSlot?.position ? otherSlot.position : otherSlot?.matchupId || otherSlot?.teamId || "";
-      if (!value) continue;
-      const normalized = `direct:${String(value).trim().replace(/^direct:/, "")}`;
-      if (directFromStandings.some((entry) => entry.value === normalized)) continue;
-      directFromStandings.push({
-        value: normalized,
-        label: `${describeSeriesParticipantRef(otherSlot ?? { type: "manual", id: "", position: "", teamId: "", matchupId: "" }, competitionMatchupIndex)} · άνευ αγώνα`,
-        sourceType: "standing_position",
-      });
-    }
-
     const winnerOptions = matchups
-      .filter((matchup) => matchup.id)
-      .map((matchup) => ({
-        value: `winner:${matchup.id}`,
-        label: `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
-        sourceType: "matchup_winner" as SlotSourceType,
-      }));
+      .filter((matchup) => matchup.id && classifySeriesBracketEntry(matchup).kind !== "invalid")
+      .map((matchup) => {
+        const resolved = resolveParticipantSlotReference(data.phases, data.games, data.teams, String(sourcePhase.id ?? ""), {
+          type: "matchup_winner",
+          matchupId: matchup.id,
+        });
+        return {
+          value: `winner:${matchup.id}`,
+          label: resolved.displayLabel ?? `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
+          sourceType: "matchup_winner" as SlotSourceType,
+        };
+      });
 
-    return [...directFromStandings, ...winnerOptions];
+    return winnerOptions;
   }
 
   return [];
@@ -309,7 +300,18 @@ const describeSeriesParticipantRef = (
   slot: SlotBuilderSource,
   competitionMatchupIndex: Map<string, SeriesCompetitionMatchupIndexEntry>,
   visitedMatchupIds = new Set<string>(),
+  resolution?: { data: Snapshot; sourcePhaseId: string | null },
 ): string => {
+  if (resolution) {
+    const resolved = resolveParticipantSlotReference(
+      resolution.data.phases,
+      resolution.data.games,
+      resolution.data.teams,
+      resolution.sourcePhaseId,
+      slot,
+    );
+    if (resolved.displayLabel) return resolved.displayLabel;
+  }
   if (slot.type === "standing_position" && slot.position) {
     const value = String(slot.position).trim();
     if (/^direct:\d+$/.test(value)) return `#${value.replace(/^direct:/, "")}`;
@@ -334,9 +336,10 @@ const describeSeriesMatchupLabel = (
   matchup: BracketBuilderMatchup,
   competitionMatchupIndex: Map<string, SeriesCompetitionMatchupIndexEntry>,
   visitedMatchupIds = new Set<string>(),
+  resolution?: { data: Snapshot; sourcePhaseId: string | null },
 ): string => {
-  const slotA = describeSeriesParticipantRef(matchup.slotA, competitionMatchupIndex, visitedMatchupIds);
-  const slotB = describeSeriesParticipantRef(matchup.slotB, competitionMatchupIndex, visitedMatchupIds);
+  const slotA = describeSeriesParticipantRef(matchup.slotA, competitionMatchupIndex, visitedMatchupIds, resolution);
+  const slotB = describeSeriesParticipantRef(matchup.slotB, competitionMatchupIndex, visitedMatchupIds, resolution);
   if (matchup.slotA.type === "bye" && matchup.slotB.type !== "bye") return `${slotB} → Προκρίνεται άνευ αγώνα`;
   if (matchup.slotB.type === "bye" && matchup.slotA.type !== "bye") return `${slotA} → Προκρίνεται άνευ αγώνα`;
   return `${slotA} — ${slotB}`;
@@ -357,14 +360,18 @@ export const describeSeriesMatchupsFromPhase = (data: Snapshot, phase?: Row): Se
 
   const competitionMatchupIndex = buildSeriesCompetitionMatchupIndex(data.phases);
   const activeMatchups = parsePhaseMatchups(phase);
+  const resolution = {
+    data,
+    sourcePhaseId: resolveSeriesParticipantSourcePhaseId(phase),
+  };
   return activeMatchups.map((matchup) => ({
     id: String(matchup.id),
-    label: describeSeriesMatchupLabel(matchup, competitionMatchupIndex),
+    label: describeSeriesMatchupLabel(matchup, competitionMatchupIndex, new Set<string>(), resolution),
     output: matchup.slotA.type === "bye"
-      ? describeSeriesParticipantRef(matchup.slotB, competitionMatchupIndex)
+      ? describeSeriesParticipantRef(matchup.slotB, competitionMatchupIndex, new Set<string>(), resolution)
       : matchup.slotB.type === "bye"
-        ? describeSeriesParticipantRef(matchup.slotA, competitionMatchupIndex)
-        : `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
+        ? describeSeriesParticipantRef(matchup.slotA, competitionMatchupIndex, new Set<string>(), resolution)
+        : `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex, new Set<string>(), resolution)}`,
   }));
 };
 
@@ -513,7 +520,7 @@ export function PhaseParticipantsBuilder({
   const isSeriesMode = String(selectedFormat) === "series";
   const sourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === participantSourcePhaseId), [phaseList, participantSourcePhaseId]);
   const sourceIsSeries = String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series";
-  const sourceOutputPool = useMemo(() => getSeriesOutputOptions(sourcePhase, phaseList), [sourcePhase, phaseList]);
+  const sourceOutputPool = useMemo(() => getSeriesOutputOptions(sourcePhase, data), [data, sourcePhase]);
   const persistedSourcePhaseId = String(config?.participantSourcePhaseId ?? "").trim();
   const persistedSourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === persistedSourcePhaseId), [phaseList, persistedSourcePhaseId]);
   const sourceRangeSlots = useMemo(() => {
@@ -1308,9 +1315,9 @@ export function PhaseParticipantsBuilder({
             <p><span className="font-black">Μεταφερόμενοι γύροι:</span> {carryOverEnabled ? carryOverMeetingNumbers.length : 0}</p>
           )}
           {isSeriesMode && <p><span className="font-black">Πιθανοί νέοι γύροι:</span> {Math.max(0, seriesMaxTotalResults - (carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0))}</p>}
-          {isSeriesMode && <p><span className="font-black">Διασταυρώσεις ανά γύρο:</span> {Math.max(0, matchups.length)}</p>}
-          {isSeriesMode && <p><span className="font-black">Μέγιστοι πιθανοί νέοι αγώνες:</span> {Math.max(0, (seriesMaxTotalResults - (carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0)) * Math.max(0, matchups.length))}</p>}
-          {isSeriesMode && <p><span className="font-black">Ομάδες που προκρίνονται απευθείας:</span> {matchups.reduce((count, matchup) => count + (String(matchup.slotA?.type ?? "") === "bye" || String(matchup.slotB?.type ?? "") === "bye" ? 1 : 0), 0)}</p>}
+          {isSeriesMode && <p><span className="font-black">Διασταυρώσεις ανά γύρο:</span> {matchups.filter((matchup) => classifySeriesBracketEntry(matchup).kind === "playable_matchup").length}</p>}
+          {isSeriesMode && <p><span className="font-black">Μέγιστοι πιθανοί νέοι αγώνες:</span> {Math.max(0, (seriesMaxTotalResults - (carryOverEnabled ? Math.max(1, carryOverMeetingNumbers.length || 1) : 0)) * matchups.filter((matchup) => classifySeriesBracketEntry(matchup).kind === "playable_matchup").length)}</p>}
+          {isSeriesMode && <p><span className="font-black">Ομάδες που προκρίνονται απευθείας:</span> {matchups.filter((matchup) => classifySeriesBracketEntry(matchup).kind === "direct_qualifier").length}</p>}
           <p><span className="font-black">Διαθέσιμα slots:</span> {isSeriesMode ? sourcePoolCount : estimatedParticipantCount}</p>
           <p><span className="font-black">Χρησιμοποιημένα:</span> {totalSlotsUsed}</p>
           <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>
