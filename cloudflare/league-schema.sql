@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS league_games (
   series_round_number INTEGER CHECK (series_round_number IS NULL OR series_round_number >= 1),
   result_source TEXT CHECK (result_source IS NULL OR result_source IN ('manual','match_report','award')),
   status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','completed','postponed','cancelled')),
-  external_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  external_id TEXT, video_url TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_games_schedule ON league_games(scheduled_at, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_games_schedule_slot

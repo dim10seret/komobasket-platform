@@ -50,7 +50,7 @@ const organizationRoleLabels: Record<AccessibleOrganization["role"], string> = {
 const tabs = [
   ["overview", "Επισκόπηση", LayoutDashboard],
   ["seasons", "Σεζόν", Trophy],
-  ["competitions", "Διοργανώσεις", Trophy],
+  ["competitions", "Προγραμματισμός Διοργανώσεων", Trophy],
   ["teams", "Ομάδες & Συμμετοχές", ShieldCheck],
   ["players", "Παίκτες & Ρόστερ", UsersRound],
   ["movements", "Μεταγραφές & Αποχωρήσεις", UserRoundCog],

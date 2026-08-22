@@ -69,6 +69,7 @@ type CanonicalSeriesGameRow = {
   away_score: number | null;
   status: string;
   result_source: string | null;
+  video_url: string | null;
   scheduled_date: string | null;
   scheduled_time: string | null;
   venue: string | null;
@@ -5467,6 +5468,8 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
     const hasVenue = Object.prototype.hasOwnProperty.call(input, "venue");
     const hasScheduledAt = Object.prototype.hasOwnProperty.call(input, "scheduledAt")
       || Object.prototype.hasOwnProperty.call(input, "scheduled_at");
+    const hasVideoUrl = Object.prototype.hasOwnProperty.call(input, "videoUrl")
+      || Object.prototype.hasOwnProperty.call(input, "video_url");
 
     const scheduledDate = hasScheduledDate
       ? validateIsoDate(input.scheduledDate ?? input.scheduled_date ?? null, "Ημερομηνία αγώνα")
@@ -5483,17 +5486,35 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
     const scheduledAt = hasScheduledAt
       ? (String(input.scheduledAt ?? input.scheduled_at ?? "").trim() || null)
       : (trimmedTextOrNull(current.scheduled_at) ?? null);
+    const rawVideoUrl = String(input.videoUrl ?? input.video_url ?? "").trim();
+    let videoUrl = trimmedTextOrNull(current.video_url);
+    if (hasVideoUrl) {
+      if (!rawVideoUrl) {
+        videoUrl = null;
+      } else {
+        let parsedVideoUrl: URL;
+        try {
+          parsedVideoUrl = new URL(rawVideoUrl);
+        } catch {
+          throw new Error("Το URL του βίντεο δεν είναι έγκυρο.");
+        }
+        if (!["http:", "https:"].includes(parsedVideoUrl.protocol)) {
+          throw new Error("Το URL του βίντεο πρέπει να είναι http ή https.");
+        }
+        videoUrl = rawVideoUrl;
+      }
+    }
 
     await db.prepare(`UPDATE league_games SET
-      scheduled_at=?, scheduled_date=?, scheduled_time=?, venue=?, updated_at=CURRENT_TIMESTAMP
+      scheduled_at=?, scheduled_date=?, scheduled_time=?, venue=?, video_url=?, updated_at=CURRENT_TIMESTAMP
       WHERE id=?`)
-      .bind(scheduledAt, scheduledDate, scheduledTime, venue, id).run();
+      .bind(scheduledAt, scheduledDate, scheduledTime, venue, videoUrl, id).run();
 
     await db.prepare(`INSERT INTO league_audit_log
       (id,actor_email,action,entity_type,entity_id,details_json,created_at)
       VALUES (?,?,?,?,?,?,?)`).bind(
       createEntityId("audit"), actor, "update", resource, id,
-      JSON.stringify({ before: current, after: { scheduledAt, scheduledDate, scheduledTime, venue } }), new Date().toISOString(),
+      JSON.stringify({ before: current, after: { scheduledAt, scheduledDate, scheduledTime, venue, videoUrl } }), new Date().toISOString(),
     ).run();
     return { id };
   }

@@ -54,6 +54,7 @@ type GeneratedGameRow = Row & {
   result_source: string | null;
   status: string | null;
   external_id: string | null;
+  video_url: string | null;
 };
 
 type SeriesRoundViewRow = {
@@ -961,6 +962,7 @@ export function ProgramGamesSection({
               const selectedResultGame = editingResultGameId
                 ? scheduleGames.find((game) => String(game.id) === editingResultGameId) ?? null
                 : null;
+              const selectedGameRows = scheduleGames.filter((game) => selectedGameSet.has(String(game.id)));
               const dateInputValue = editor.scheduledDateMode === "set"
                 ? editor.scheduledDate
                 : editor.scheduledDateMode === "clear"
@@ -1110,6 +1112,7 @@ export function ProgramGamesSection({
                                         <tr>
                                           <th className="w-10 px-3 py-3" aria-label="Selection"></th>
                                           <th className="w-24 px-3 py-3">Match Report</th>
+                                          <th className="w-20 px-3 py-3">ΒΙΝΤΕΟ</th>
                                           <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
                                           <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
                                           <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
@@ -1150,7 +1153,7 @@ export function ProgramGamesSection({
                                            if (isQualified) {
                                              return (
                                                <tr key={gameId} className="border-t border-zinc-100 bg-white">
-                                                 <td colSpan={8} className="px-3 py-3">
+                                                 <td colSpan={9} className="px-3 py-3">
                                                    <div className="flex min-h-10 w-full items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-center text-sm font-black leading-snug text-emerald-900">
                                                      <span className="min-w-0 break-words">{displayResult}</span>
                                                    </div>
@@ -1186,6 +1189,13 @@ export function ProgramGamesSection({
                                                 >
                                                   {isTransferred ? "Από μεταφορά" : isRealGame ? "MATCH REPORT" : "—"}
                                                 </button>
+                                              </td>
+                                              <td className="px-3 py-3 align-top">
+                                                {backingGame?.video_url ? (
+                                                  <a href={String(backingGame.video_url)} target="_blank" rel="noopener noreferrer" className="inline-flex rounded-lg border border-sky-300 bg-sky-50 px-2 py-1 text-xs font-black text-sky-800 transition hover:bg-sky-100">
+                                                    ▶ Βίντεο
+                                                  </a>
+                                                ) : "—"}
                                               </td>
                                               <td className="px-3 py-3 align-top text-zinc-800">
                                                 <span className="block min-w-0 break-words text-right leading-snug">{displayHome}</span>
@@ -1255,6 +1265,7 @@ export function ProgramGamesSection({
                                         <tr>
                                           <th className="w-10 px-3 py-3" aria-label="Selection"></th>
                                           <th className="w-24 px-3 py-3">Match Report</th>
+                                          <th className="w-20 px-3 py-3">ΒΙΝΤΕΟ</th>
                                           <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
                                           <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
                                           <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
@@ -1289,6 +1300,13 @@ export function ProgramGamesSection({
                                                 >
                                                   —
                                                 </button>
+                                              </td>
+                                              <td className="px-3 py-3 align-top">
+                                                {game.video_url ? (
+                                                  <a href={String(game.video_url)} target="_blank" rel="noopener noreferrer" className="inline-flex rounded-lg border border-sky-300 bg-sky-50 px-2 py-1 text-xs font-black text-sky-800 transition hover:bg-sky-100">
+                                                    ▶ Βίντεο
+                                                  </a>
+                                                ) : "—"}
                                               </td>
                                               <td className="px-3 py-3 align-top text-zinc-800">
                                                 <span className="block min-w-0 break-words text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
@@ -1510,7 +1528,16 @@ export function ProgramGamesSection({
                         {!!selectedGameIds.length ? (
                           <div className="mt-4 rounded-2xl border border-orange-200 bg-white p-4">
                             <div className="flex flex-wrap items-center justify-between gap-3">
-                              <p className="text-sm font-black text-zinc-900">Επιλεγμένοι αγώνες: {selectedGameIds.length}</p>
+                              <div className="min-w-0">
+                                <p className="text-sm font-black text-zinc-900">Επιλεγμένοι αγώνες: {selectedGameIds.length}</p>
+                                <div className="mt-2 flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-700">
+                                  {selectedGameRows.map((game) => (
+                                    <span key={String(game.id)} className="min-w-0 break-words">
+                                      {String(game.home_team_name ?? "—")} – {String(game.away_team_name ?? "—")}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -1523,6 +1550,40 @@ export function ProgramGamesSection({
                                 Επεξεργασία επιλεγμένων
                               </button>
                             </div>
+
+                            {selectedGameIds.length === 1 ? (() => {
+                              const selectedVideoGame = scheduleGames.find((game) => String(game.id) === selectedGameIds[0]) ?? null;
+                              return selectedVideoGame ? (
+                                <form
+                                  key={selectedVideoGame.id}
+                                  className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4"
+                                  onSubmit={async (event) => {
+                                    event.preventDefault();
+                                    await updateEntity("games", String(selectedVideoGame.id), event, "Το βίντεο του αγώνα αποθηκεύτηκε.");
+                                  }}
+                                >
+                                  <input type="hidden" name="competitionId" value={competitionId} />
+                                  <Field label="Βίντεο αγώνα (URL)">
+                                    <input
+                                      name="videoUrl"
+                                      type="url"
+                                      inputMode="url"
+                                      placeholder="https://www.youtube.com/watch?v=..."
+                                      defaultValue={String(selectedVideoGame.video_url ?? "")}
+                                      className={inputClass}
+                                    />
+                                    <p className="mt-2 text-xs text-sky-900">Τρέχουσα τιμή: {String(selectedVideoGame.video_url ?? "").trim() || "—"}</p>
+                                  </Field>
+                                  <div className="mt-3 flex justify-end">
+                                    <button disabled={busy} className={buttonClass}>Αποθήκευση βίντεο</button>
+                                  </div>
+                                </form>
+                              ) : null;
+                            })() : (
+                              <p className="mt-4 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+                                Το βίντεο ορίζεται ξεχωριστά για κάθε αγώνα.
+                              </p>
+                            )}
 
                             <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.6fr)]">
                               <Field label="Ημερομηνία">
