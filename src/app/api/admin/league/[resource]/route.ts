@@ -4,13 +4,16 @@ import {
   resolvePlatformReadContext,
 } from "@/lib/app-user-identity";
 import {
+  PlatformAuthorizationError,
   platformAuthorizationErrorResponse,
   requireCompetitionAccess,
   requireCompetitionVenueAccess,
+  requireGameAccess,
   requireOrganizationAccess,
   requireParticipationAccess,
   requirePhaseAccess,
   requireRosterRelationshipAccess,
+  requireScheduleAccess,
   requireSourcePhaseAccess,
   requireSourcePhaseMatchupAccess,
   requireTeamAccess,
@@ -185,6 +188,122 @@ async function requirePhaseConfigurationAccess(
   return { user, competitionId };
 }
 
+function rejectResourceMismatch(): never {
+  throw new PlatformAuthorizationError(
+    "resource_unavailable",
+    "Ο ζητούμενος πόρος δεν είναι διαθέσιμος.",
+    404,
+  );
+}
+
+function requireMatchingId(actual: string | null, expected: string, supplied: unknown) {
+  const requested = String(supplied ?? "").trim();
+  if (requested && requested !== expected) rejectResourceMismatch();
+  if (requested && actual !== null && requested !== actual) rejectResourceMismatch();
+}
+
+async function requirePhaseProgramAccess(
+  identity: AdminIdentity,
+  input: Record<string, unknown>,
+) {
+  const user = await resolveCanonicalAppUser(identity);
+  const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+  const phase = await requirePhaseAccess(user, phaseId, "manage");
+  requireMatchingId(
+    phase.competitionId,
+    phase.competitionId,
+    input.competitionId ?? input.competition_id,
+  );
+
+  const scheduleId = String(input.scheduleId ?? input.schedule_id ?? "").trim();
+  if (scheduleId) {
+    const schedule = await requireScheduleAccess(user, scheduleId, "manage");
+    if (
+      schedule.phaseId !== phase.phaseId
+      || schedule.competitionId !== phase.competitionId
+    ) {
+      rejectResourceMismatch();
+    }
+  }
+  return { user, phase };
+}
+
+async function requireScheduleMutationAccess(
+  identity: AdminIdentity,
+  input: Record<string, unknown>,
+) {
+  const user = await resolveCanonicalAppUser(identity);
+  const scheduleId = String(input.id ?? input.scheduleId ?? input.schedule_id ?? "").trim();
+  const schedule = await requireScheduleAccess(user, scheduleId, "manage");
+  requireMatchingId(
+    schedule.competitionId,
+    schedule.competitionId,
+    input.competitionId ?? input.competition_id,
+  );
+  requireMatchingId(
+    schedule.phaseId,
+    schedule.phaseId,
+    input.phaseId ?? input.phase_id,
+  );
+  return { user, schedule };
+}
+
+async function requireGameMutationAccess(
+  identity: AdminIdentity,
+  input: Record<string, unknown>,
+  existingGameId = "",
+) {
+  const user = await resolveCanonicalAppUser(identity);
+  const gameId = String(existingGameId || input.id || "").trim();
+  const existingGame = gameId
+    ? await requireGameAccess(user, gameId, "manage")
+    : null;
+  const competitionId = String(
+    input.competitionId
+      ?? input.competition_id
+      ?? existingGame?.competitionId
+      ?? "",
+  ).trim();
+  const competition = await requireCompetitionAccess(user, competitionId, "manage");
+  if (existingGame && existingGame.competitionId !== competition.competitionId) {
+    rejectResourceMismatch();
+  }
+
+  const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+  if (phaseId) {
+    const phase = await requirePhaseAccess(user, phaseId, "manage");
+    if (phase.competitionId !== competition.competitionId) rejectResourceMismatch();
+    if (existingGame?.phaseId && existingGame.phaseId !== phase.phaseId) rejectResourceMismatch();
+  }
+
+  const scheduleId = String(input.scheduleId ?? input.schedule_id ?? "").trim();
+  if (scheduleId) {
+    const schedule = await requireScheduleAccess(user, scheduleId, "manage");
+    if (schedule.competitionId !== competition.competitionId) rejectResourceMismatch();
+    if (phaseId && schedule.phaseId !== phaseId) rejectResourceMismatch();
+    if (existingGame?.scheduleId && existingGame.scheduleId !== schedule.scheduleId) {
+      rejectResourceMismatch();
+    }
+  }
+
+  const teamIds = [
+    input.homeTeamId ?? input.home_team_id,
+    input.awayTeamId ?? input.away_team_id,
+  ].map((value) => String(value ?? "").trim()).filter(Boolean);
+  await Promise.all(teamIds.map((teamId) => requireTeamCompetitionAccess(
+    user,
+    { competitionId: competition.competitionId, teamId },
+    "manage",
+  )));
+
+  const venueId = String(input.venueId ?? input.venue_id ?? "").trim();
+  if (venueId) {
+    const venue = await requireCompetitionVenueAccess(user, venueId, "manage");
+    if (venue.competitionId !== competition.competitionId) rejectResourceMismatch();
+  }
+  return { user, competition, existingGame };
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ resource: string }> },
@@ -214,6 +333,7 @@ export async function POST(
       return Response.json(result);
     }
     if (resource === "phase-schedules" && ["generateRoundRobinGames", "materializePhaseProgram"].includes(String(input.action ?? "").trim())) {
+      await requirePhaseProgramAccess(authorization.identity, input);
       const result = await materializePhaseProgram(input, authorization.identity.email);
       return Response.json(result);
     }
@@ -246,6 +366,8 @@ export async function POST(
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
       }, "manage");
+    } else if (resource === "games") {
+      await requireGameMutationAccess(authorization.identity, input);
     }
 
     const result = await createLeagueEntity(
@@ -301,6 +423,15 @@ export async function PATCH(
       return Response.json(result);
     }
     if (resource === "phase-schedules" && String(input.action ?? "").trim() === "saveSeriesPlanningSlot") {
+      const { user, phase } = await requirePhaseProgramAccess(authorization.identity, input);
+      const matchupId = String(input.matchupId ?? input.matchup_id ?? "").trim();
+      if (matchupId) {
+        await requireSourcePhaseMatchupAccess(user, {
+          targetCompetitionId: phase.competitionId,
+          sourcePhaseId: phase.phaseId,
+          matchupId,
+        }, "manage");
+      }
       const result = await saveSeriesPlanningSlot(input, authorization.identity.email);
       return Response.json(result);
     }
@@ -324,6 +455,14 @@ export async function PATCH(
         authorization.identity,
         input,
         phase.competitionId,
+      );
+    } else if (resource === "phase-schedules") {
+      await requireScheduleMutationAccess(authorization.identity, input);
+    } else if (resource === "games") {
+      await requireGameMutationAccess(
+        authorization.identity,
+        input,
+        String(input.id ?? ""),
       );
     }
 
@@ -393,6 +532,12 @@ export async function DELETE(
     } else if (resource === "phases") {
       const user = await resolveCanonicalAppUser(authorization.identity);
       await requirePhaseAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "phase-schedules") {
+      if (String(input.action ?? "").trim() === "deletePhaseProgram") {
+        await requirePhaseProgramAccess(authorization.identity, input);
+      } else {
+        await requireScheduleMutationAccess(authorization.identity, input);
+      }
     }
     const result = resource === "seasons"
       ? await deleteLeagueSeason(input, authorization.identity.email)

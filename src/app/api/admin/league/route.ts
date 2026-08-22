@@ -4,7 +4,11 @@ import {
   resolvePlatformReadContext,
 } from "@/lib/app-user-identity";
 import {
+  PlatformAuthorizationError,
   platformAuthorizationErrorResponse,
+  requireCompetitionAccess,
+  requireCompetitionVenueAccess,
+  requireGameAccess,
   requirePlayerAccess,
   requireRosterMembershipAccess,
   requireRosterRelationshipAccess,
@@ -266,9 +270,38 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "bulkScheduleGames") {
+      const user = await canonicalUser();
+      const competitionId = String(input.competitionId ?? "");
+      const competition = await requireCompetitionAccess(user, competitionId, "manage");
+      const gameIds = Array.isArray(input.gameIds)
+        ? input.gameIds.map((gameId) => String(gameId ?? "").trim()).filter(Boolean)
+        : [];
+      const games = await Promise.all(gameIds.map((gameId) => requireGameAccess(
+        user,
+        gameId,
+        "manage",
+      )));
+      if (games.some((game) => game.competitionId !== competition.competitionId)) {
+        throw new PlatformAuthorizationError(
+          "resource_unavailable",
+          "Ο ζητούμενος πόρος δεν είναι διαθέσιμος.",
+          404,
+        );
+      }
+      const venueId = String(input.venueId ?? input.venue_id ?? "").trim();
+      if (String(input.venueMode ?? input.venue_mode ?? "keep") === "set" && venueId) {
+        const venue = await requireCompetitionVenueAccess(user, venueId, "manage");
+        if (venue.competitionId !== competition.competitionId) {
+          throw new PlatformAuthorizationError(
+            "resource_unavailable",
+            "Ο ζητούμενος πόρος δεν είναι διαθέσιμος.",
+            404,
+          );
+        }
+      }
       return Response.json(await bulkScheduleGames({
-        competitionId: String(input.competitionId ?? ""),
-        gameIds: Array.isArray(input.gameIds) ? input.gameIds : [],
+        competitionId,
+        gameIds,
         scheduledDateMode: String(input.scheduledDateMode ?? input.scheduled_date_mode ?? "keep"),
         scheduledDate: input.scheduledDate ?? input.scheduled_date ?? null,
         scheduledTimeMode: String(input.scheduledTimeMode ?? input.scheduled_time_mode ?? "keep"),
