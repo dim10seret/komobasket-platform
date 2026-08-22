@@ -311,6 +311,103 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
   }
 
   return <>
+    <Panel title="Μητρώο ομάδων" description="Τα στοιχεία εδώ ανήκουν στη μόνιμη εγγραφή της ομάδας. Η επεξεργασία τους δεν δημιουργεί νέα ομάδα και δεν αλλάζει τις παλιές συμμετοχές της.">
+      <div className="grid gap-4">
+        <Field label="Επιλογή ομάδας">
+          <select
+            value={selectedRegistryTeamId}
+            onChange={(event)=>{
+              setSelectedRegistryTeamId(event.target.value);
+              setEditingRegistryTeam(false);
+              setEditLogoUploadMessage("");
+            }}
+            className={inputClass}
+          >
+            <option value="">Επίλεξε ομάδα για επεξεργασία</option>
+            {registryTeams.map((team)=><option key={String(team.id)} value={String(team.id)}>{team.name}</option>)}
+          </select>
+        </Field>
+        {!selectedRegistryTeam && <p className="text-sm text-zinc-500">Διάλεξε μια ομάδα για να την επεξεργαστείς.</p>}
+        {selectedRegistryTeam && (
+          <article className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-black text-zinc-950">{selectedRegistryTeam.name}</h3>
+                <p className="mt-1 text-sm text-zinc-600">{selectedRegistryTeam.city || "—"}</p>
+                <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ${Number(selectedRegistryTeam.active ?? 1)===1?"bg-emerald-100 text-emerald-800":"bg-zinc-200 text-zinc-700"}`}>{Number(selectedRegistryTeam.active ?? 1)===1?"Ενεργή":"Ανενεργή"}</span>
+              </div>
+              <button type="button" onClick={()=>setEditingRegistryTeam((value)=>!value)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{editingRegistryTeam ? "Ακύρωση" : "Edit"}</button>
+            </div>
+            {editingRegistryTeam && (
+              <form
+                key={String(selectedRegistryTeam.id)}
+                onSubmit={async(event)=>{if(await updateEntity("teams",String(selectedRegistryTeam.id),event,"Τα μόνιμα στοιχεία της ομάδας αποθηκεύτηκαν.")){setEditingRegistryTeam(false);}}}
+                className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2"
+              >
+                <Field label="Ονομασία"><input required name="name" defaultValue={String(selectedRegistryTeam.name ?? "")} className={inputClass}/></Field>
+                <Field label="Πόλη"><input name="city" defaultValue={String(selectedRegistryTeam.city ?? "Κομοτηνή")} className={inputClass}/></Field>
+              <Field label="Κατάσταση">
+                  <select name="active" defaultValue={Number(selectedRegistryTeam.active ?? 1)===1 ? "1" : "0"} className={inputClass}>
+                    <option value="1">Ενεργή</option><option value="0">Ανενεργή</option>
+                  </select>
+                </Field>
+                <Field label="Επιλογή Λογότυπου">
+                  <div className="flex flex-col gap-2">
+                    <input ref={editLogoInputRef} type="hidden" name="logoUrl" defaultValue={String(selectedRegistryTeam.logo_url ?? "")} />
+                    <input
+                      ref={editLogoFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/avif"
+                      className="sr-only"
+                      onChange={(event)=>{
+                        const file = event.currentTarget.files?.[0];
+                        if (file) void uploadEditTeamLogo(file);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={uploadingLogo}
+                      onClick={() => editLogoFileInputRef.current?.click()}
+                      className="inline-flex w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {uploadingLogo ? "Μεταφόρτωση..." : "Επιλογή Λογότυπου"}
+                    </button>
+                    {editLogoUploadMessage ? <p className="text-xs text-zinc-500">{editLogoUploadMessage}</p> : null}
+                  </div>
+                </Field>
+                <button disabled={busy} className={`${buttonClass} sm:col-span-2 sm:justify-self-start`}>Αποθήκευση ομάδας</button>
+                <div className="sm:col-span-2 flex flex-wrap gap-3">
+                  {!selectedTeamCanDelete && selectedTeamParticipations.length > 0 ? (
+                    <p className="w-full text-sm text-red-700">
+                      {selectedTeamHasCompletedHistory
+                        ? "Η ομάδα έχει ιστορικό συμμετοχής και δεν μπορεί να διαγραφεί."
+                        : "Η ομάδα συμμετέχει ακόμη σε ενεργή διοργάνωση. Αφαίρεσέ την πρώτα από τη διοργάνωση και δοκίμασε ξανά."}
+                    </p>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={busy || !selectedTeamCanDelete}
+                    onClick={async()=>{
+                      const teamName=String(selectedRegistryTeam.name ?? "");
+                      const confirmMessage = `Να διαγραφεί οριστικά η ομάδα ${teamName} από το Μητρώο; Η ενέργεια δεν μπορεί να αναιρεθεί.`;
+                      if (!window.confirm(confirmMessage)) return;
+                      if (await deleteEntity("teams", String(selectedRegistryTeam.id), `Η ομάδα ${teamName} διαγράφηκε από το Μητρώο.`)) {
+                        setSelectedRegistryTeamId("");
+                        setEditingRegistryTeam(false);
+                      }
+                    }}
+                    className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Διαγραφή ομάδας
+                  </button>
+                </div>
+              </form>
+            )}
+          </article>
+        )}
+      </div>
+    </Panel>
+
     <Panel title="Νέα ομάδα" description="Η ομάδα δημιουργείται μία φορά στο ενιαίο μητρώο και μπορεί να χρησιμοποιείται σε πολλές σεζόν και διοργανώσεις.">
       <form onSubmit={(event)=>void submit("teams",event)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Field label="Ονομασία"><input required name="name" className={inputClass}/></Field>
@@ -443,7 +540,14 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
           </select>
         </Field>
       </div>
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
+        <div className="hidden grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_minmax(100px,.7fr)_minmax(110px,.7fr)_auto] gap-4 bg-zinc-100 px-4 py-3 text-xs font-black uppercase tracking-wide text-zinc-500 md:grid">
+          <span>Ομάδα</span>
+          <span>Διοργάνωση</span>
+          <span>Σεζόν</span>
+          <span>Κατάσταση</span>
+          <span>Ενέργειες</span>
+        </div>
         {data.participations
           .filter((participation) => {
             const participationSeasonId = String(participation.season_id ?? "");
@@ -460,13 +564,24 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
           const participationCompetition = competitionById.get(String(participation.competition_id ?? ""));
           const season = seasonById.get(String(participation.season_id ?? String(participationCompetition?.season_id ?? "")));
           const canRemoveParticipation = !isCompletedCompetition(String(participationCompetition?.lifecycle_status ?? "")) && !isCompletedCompetition(String(season?.status ?? ""));
-          return <article key={id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+          return <article key={id} className="border-t border-zinc-200 first:border-t-0">
+            <div className="grid gap-3 bg-zinc-50/60 p-4 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_minmax(100px,.7fr)_minmax(110px,.7fr)_auto] md:items-center md:gap-4">
+              <div className="min-w-0">
+                <p className="text-xs font-black uppercase tracking-wide text-zinc-500 md:hidden">Ομάδα</p>
+                <h3 className="mt-1 break-words font-black text-zinc-950 md:mt-0">{participation.team_name}</h3>
+                {participation.seed ? <p className="mt-1 text-xs font-bold text-zinc-500">seed {participation.seed}</p> : null}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-black uppercase tracking-wide text-zinc-500 md:hidden">Διοργάνωση</p>
+                <p className="mt-1 break-words text-sm font-bold text-zinc-800 md:mt-0">{participation.competition_name}</p>
+              </div>
               <div>
-                <p className="text-xs font-black uppercase tracking-wider text-orange-600">{participation.season_name} · {participation.competition_name}</p>
-                <h3 className="mt-1 text-lg font-black text-zinc-950">{participation.team_name}</h3>
-                <p className="mt-1 text-sm text-zinc-600">Μόνιμη ομάδα: {participation.team_name}{participation.seed ? ` · seed ${participation.seed}` : ""}</p>
-                <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ${status==="active"?"bg-emerald-100 text-emerald-800":status==="withdrawn"?"bg-red-100 text-red-700":"bg-zinc-200 text-zinc-700"}`}>{participationStatusLabels[status] ?? status}</span>
+                <p className="text-xs font-black uppercase tracking-wide text-zinc-500 md:hidden">Σεζόν</p>
+                <p className="mt-1 text-sm font-bold text-zinc-700 md:mt-0">{participation.season_name}</p>
+              </div>
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-zinc-500 md:hidden">Κατάσταση</p>
+                <span className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-black md:mt-0 ${status==="active"?"bg-emerald-100 text-emerald-800":status==="withdrawn"?"bg-red-100 text-red-700":"bg-zinc-200 text-zinc-700"}`}>{participationStatusLabels[status] ?? status}</span>
               </div>
               <button
                 type="button"
@@ -476,12 +591,12 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                   if (editParticipationLogoInputRef.current) editParticipationLogoInputRef.current.value = String(participation.logo_url ?? "");
                   if (editParticipationLogoFileInputRef.current) editParticipationLogoFileInputRef.current.value = "";
                 }}
-                className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500"
+                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500 md:w-auto"
               >
                 {isEditing ? "Ακύρωση" : "Edit"}
               </button>
             </div>
-            {isEditing && <form onSubmit={async(event)=>{if(await updateEntity("participations",id,event,"Οι αλλαγές στη συμμετοχή της ομάδας αποθηκεύτηκαν."))setEditingParticipationId(null);}} className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2">
+            {isEditing && <form onSubmit={async(event)=>{if(await updateEntity("participations",id,event,"Οι αλλαγές στη συμμετοχή της ομάδας αποθηκεύτηκαν."))setEditingParticipationId(null);}} className="grid gap-3 border-t border-zinc-200 bg-white p-4 sm:grid-cols-2">
               <Field label="Ονομασία στη σεζόν"><input required name="displayName" defaultValue={String(participation.display_name ?? participation.team_name ?? "")} className={inputClass}/></Field>
               <Field label="Επιλογή Λογότυπου στη σεζόν">
                 <div className="flex flex-col gap-2">
@@ -537,104 +652,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
             if (!seasonMatch) return false;
             if (participationFilterCompetitionId && String(participation.competition_id ?? "") !== participationFilterCompetitionId) return false;
             return true;
-          }).length && <p className="text-sm text-zinc-500">Δεν υπάρχουν συμμετοχές για τα επιλεγμένα φίλτρα.</p>}
-      </div>
-    </Panel>
-
-    <Panel title="Μητρώο ομάδων" description="Τα στοιχεία εδώ ανήκουν στη μόνιμη εγγραφή της ομάδας. Η επεξεργασία τους δεν δημιουργεί νέα ομάδα και δεν αλλάζει τις παλιές συμμετοχές της.">
-      <div className="grid gap-4">
-        <Field label="Επιλογή ομάδας">
-          <select
-            value={selectedRegistryTeamId}
-            onChange={(event)=>{
-              setSelectedRegistryTeamId(event.target.value);
-              setEditingRegistryTeam(false);
-              setEditLogoUploadMessage("");
-            }}
-            className={inputClass}
-          >
-            <option value="">Επίλεξε ομάδα για επεξεργασία</option>
-            {registryTeams.map((team)=><option key={String(team.id)} value={String(team.id)}>{team.name}</option>)}
-          </select>
-        </Field>
-        {!selectedRegistryTeam && <p className="text-sm text-zinc-500">Διάλεξε μια ομάδα για να την επεξεργαστείς.</p>}
-        {selectedRegistryTeam && (
-          <article className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-black text-zinc-950">{selectedRegistryTeam.name}</h3>
-                <p className="mt-1 text-sm text-zinc-600">{selectedRegistryTeam.city || "—"}</p>
-                <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ${Number(selectedRegistryTeam.active ?? 1)===1?"bg-emerald-100 text-emerald-800":"bg-zinc-200 text-zinc-700"}`}>{Number(selectedRegistryTeam.active ?? 1)===1?"Ενεργή":"Ανενεργή"}</span>
-              </div>
-              <button type="button" onClick={()=>setEditingRegistryTeam((value)=>!value)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{editingRegistryTeam ? "Ακύρωση" : "Edit"}</button>
-            </div>
-            {editingRegistryTeam && (
-              <form
-                key={String(selectedRegistryTeam.id)}
-                onSubmit={async(event)=>{if(await updateEntity("teams",String(selectedRegistryTeam.id),event,"Τα μόνιμα στοιχεία της ομάδας αποθηκεύτηκαν.")){setEditingRegistryTeam(false);}}}
-                className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2"
-              >
-                <Field label="Ονομασία"><input required name="name" defaultValue={String(selectedRegistryTeam.name ?? "")} className={inputClass}/></Field>
-                <Field label="Πόλη"><input name="city" defaultValue={String(selectedRegistryTeam.city ?? "Κομοτηνή")} className={inputClass}/></Field>
-              <Field label="Κατάσταση">
-                  <select name="active" defaultValue={Number(selectedRegistryTeam.active ?? 1)===1 ? "1" : "0"} className={inputClass}>
-                    <option value="1">Ενεργή</option><option value="0">Ανενεργή</option>
-                  </select>
-                </Field>
-                <Field label="Επιλογή Λογότυπου">
-                  <div className="flex flex-col gap-2">
-                    <input ref={editLogoInputRef} type="hidden" name="logoUrl" defaultValue={String(selectedRegistryTeam.logo_url ?? "")} />
-                    <input
-                      ref={editLogoFileInputRef}
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,image/avif"
-                      className="sr-only"
-                      onChange={(event)=>{
-                        const file = event.currentTarget.files?.[0];
-                        if (file) void uploadEditTeamLogo(file);
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={uploadingLogo}
-                      onClick={() => editLogoFileInputRef.current?.click()}
-                      className="inline-flex w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {uploadingLogo ? "Μεταφόρτωση..." : "Επιλογή Λογότυπου"}
-                    </button>
-                    {editLogoUploadMessage ? <p className="text-xs text-zinc-500">{editLogoUploadMessage}</p> : null}
-                  </div>
-                </Field>
-                <button disabled={busy} className={`${buttonClass} sm:col-span-2 sm:justify-self-start`}>Αποθήκευση ομάδας</button>
-                <div className="sm:col-span-2 flex flex-wrap gap-3">
-                  {!selectedTeamCanDelete && selectedTeamParticipations.length > 0 ? (
-                    <p className="w-full text-sm text-red-700">
-                      {selectedTeamHasCompletedHistory
-                        ? "Η ομάδα έχει ιστορικό συμμετοχής και δεν μπορεί να διαγραφεί."
-                        : "Η ομάδα συμμετέχει ακόμη σε ενεργή διοργάνωση. Αφαίρεσέ την πρώτα από τη διοργάνωση και δοκίμασε ξανά."}
-                    </p>
-                  ) : null}
-                  <button
-                    type="button"
-                    disabled={busy || !selectedTeamCanDelete}
-                    onClick={async()=>{
-                      const teamName=String(selectedRegistryTeam.name ?? "");
-                      const confirmMessage = `Να διαγραφεί οριστικά η ομάδα ${teamName} από το Μητρώο; Η ενέργεια δεν μπορεί να αναιρεθεί.`;
-                      if (!window.confirm(confirmMessage)) return;
-                      if (await deleteEntity("teams", String(selectedRegistryTeam.id), `Η ομάδα ${teamName} διαγράφηκε από το Μητρώο.`)) {
-                        setSelectedRegistryTeamId("");
-                        setEditingRegistryTeam(false);
-                      }
-                    }}
-                    className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    Διαγραφή ομάδας
-                  </button>
-                </div>
-              </form>
-            )}
-          </article>
-        )}
+          }).length && <p className="p-4 text-sm text-zinc-500">Δεν υπάρχουν συμμετοχές για τα επιλεγμένα φίλτρα.</p>}
       </div>
     </Panel>
   </>;
