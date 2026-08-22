@@ -99,6 +99,10 @@ export type SourcePhaseAccessContext = CompetitionAccessContext & {
   sourceCompetitionId: string;
 };
 
+export type SourcePhaseMatchupAccessContext = SourcePhaseAccessContext & {
+  matchupId: string;
+};
+
 export function evaluateOrganizationPermission(input: {
   user: AuthoritativeUserRow | null;
   organization: OrganizationRow | null;
@@ -549,6 +553,88 @@ export async function requireSourcePhaseAccess(
       competitionId: relationship.target_competition_id,
       sourcePhaseId: relationship.source_phase_id,
       sourceCompetitionId: relationship.source_competition_id,
+    };
+  } catch (error) {
+    if (error instanceof PlatformAuthorizationError) {
+      throw authorizationError("resource_unavailable");
+    }
+    throw error;
+  }
+}
+
+type SourcePhaseMatchupRelationshipRow = SourcePhaseRelationshipRow & {
+  settings_json: string | null;
+};
+
+export async function requireSourcePhaseMatchupAccess(
+  identity: CanonicalAppUser | null,
+  input: {
+    targetCompetitionId: string;
+    sourcePhaseId: string;
+    matchupId: string;
+  },
+  mode: PlatformPermissionMode = "manage",
+): Promise<SourcePhaseMatchupAccessContext> {
+  const db = await requireDatabase();
+  const relationship = await db
+    .prepare(
+      `SELECT tc.id AS target_competition_id,
+              tc.organization_id AS target_organization_id,
+              sp.id AS source_phase_id,
+              sc.id AS source_competition_id,
+              sc.organization_id AS source_organization_id,
+              pr.settings_json
+       FROM league_competitions tc
+       JOIN league_phases sp ON sp.id = ?
+       JOIN league_competitions sc ON sc.id = sp.competition_id
+       LEFT JOIN league_phase_rules pr ON pr.phase_id = sp.id
+       WHERE tc.id = ?`,
+    )
+    .bind(input.sourcePhaseId, input.targetCompetitionId)
+    .first<SourcePhaseMatchupRelationshipRow>();
+
+  const organizationId = relationship?.target_organization_id;
+  if (
+    !relationship
+    || !organizationId
+    || relationship.source_organization_id !== organizationId
+  ) {
+    throw authorizationError("resource_unavailable");
+  }
+
+  let matchupExists = false;
+  try {
+    const settings = JSON.parse(relationship.settings_json || "{}") as Record<string, unknown>;
+    const bracket = settings.bracketConfiguration && typeof settings.bracketConfiguration === "object"
+      ? settings.bracketConfiguration as Record<string, unknown>
+      : {};
+    const matchups = Array.isArray(bracket.matchups) ? bracket.matchups : [];
+    matchupExists = matchups.some((matchup) => (
+      matchup
+      && typeof matchup === "object"
+      && String((matchup as Record<string, unknown>).id ?? "") === input.matchupId
+    ));
+  } catch {
+    matchupExists = false;
+  }
+  if (!matchupExists) {
+    throw authorizationError("resource_unavailable");
+  }
+
+  try {
+    const organization = await requireOrganizationAccessWithDb(
+      db,
+      identity,
+      organizationId,
+      mode,
+    );
+    return {
+      ...organization,
+      resourceId: relationship.target_competition_id,
+      competitionId: relationship.target_competition_id,
+      sourcePhaseId: relationship.source_phase_id,
+      sourceCompetitionId: relationship.source_competition_id,
+      matchupId: input.matchupId,
     };
   } catch (error) {
     if (error instanceof PlatformAuthorizationError) {
