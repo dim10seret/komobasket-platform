@@ -45,6 +45,21 @@ CREATE INDEX IF NOT EXISTS idx_organization_memberships_user
 CREATE INDEX IF NOT EXISTS idx_organization_memberships_organization
   ON league_organization_memberships(organization_id, status, role);
 
+CREATE TABLE IF NOT EXISTS league_supporters (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES league_organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  logo_url TEXT NOT NULL,
+  description TEXT,
+  website_url TEXT,
+  display_order INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_league_supporters_organization_status_order
+  ON league_supporters(organization_id, status, display_order, name, id);
+
 CREATE TABLE IF NOT EXISTS league_seasons (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, slug TEXT NOT NULL UNIQUE,
   starts_on TEXT, ends_on TEXT, status TEXT NOT NULL DEFAULT 'draft'

@@ -8,6 +8,7 @@ import {
   Building2,
   Database,
   FileText,
+  Handshake,
   LayoutDashboard,
   RefreshCw,
   ShieldCheck,
@@ -29,6 +30,7 @@ import { Teams } from "./platform/sections/TeamsSection";
 import { Movements } from "./platform/sections/MovementsSection";
 import { PlatformAccessManagement } from "./platform/PlatformAccessManagement";
 import { PlatformOrganizationManagement } from "./platform/PlatformOrganizationManagement";
+import SupportersManager from "@/components/admin/SupportersManager";
 
 type AccessibleOrganization = {
   organizationId: string;
@@ -100,7 +102,7 @@ function AdminHome() {
         <h2 className="text-3xl font-black text-zinc-950 sm:text-4xl">Τι θέλεις να διαχειριστείς;</h2>
         <p className="mx-auto mt-3 max-w-2xl text-zinc-600">Οι ανακοινώσεις και η αγωνιστική πλατφόρμα λειτουργούν ως δύο ανεξάρτητες ενότητες.</p>
       </div>
-      <div className="grid gap-5 md:grid-cols-2">
+      <div className="grid gap-5 md:grid-cols-3">
         <Link href="/admin/news" className="group flex min-h-64 flex-col rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm transition hover:-translate-y-1 hover:border-orange-300 hover:shadow-xl sm:p-9">
           <span className="flex size-14 items-center justify-center rounded-2xl bg-zinc-950 text-orange-500 transition group-hover:bg-orange-600 group-hover:text-white">
             <FileText size={28} />
@@ -115,6 +117,12 @@ function AdminHome() {
           </span>
           <h3 className="mt-7 text-2xl font-black text-zinc-950">KomoBasket Platform</h3>
           <p className="mt-3 flex-1 leading-7 text-zinc-600">Διαχείριση σεζόν, διοργανώσεων, ομάδων, παικτών, ρόστερ και αγώνων.</p>
+          <span className="mt-7 inline-flex items-center gap-2 font-black text-orange-600">Άνοιγμα ενότητας <span aria-hidden="true">→</span></span>
+        </Link>
+        <Link href="/admin/platform?management=supporters" className="group flex min-h-64 flex-col rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm transition hover:-translate-y-1 hover:border-orange-300 hover:shadow-xl sm:p-9">
+          <span className="flex size-14 items-center justify-center rounded-2xl bg-zinc-950 text-orange-500 transition group-hover:bg-orange-600 group-hover:text-white"><Handshake size={28} /></span>
+          <h3 className="mt-7 text-2xl font-black text-zinc-950">Υποστηρικτές &amp; Συνεργάτες</h3>
+          <p className="mt-3 flex-1 leading-7 text-zinc-600">Διαχείριση κεντρικών υποστηρικτών και συνεργατών του KomoBasket.</p>
           <span className="mt-7 inline-flex items-center gap-2 font-black text-orange-600">Άνοιγμα ενότητας <span aria-hidden="true">→</span></span>
         </Link>
       </div>
@@ -199,7 +207,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
 
   const selectedOrganizationId = routeSearchParams.get("organization")?.trim() ?? "";
   const managementView = routeSearchParams.get("management");
-  const isManagementView = managementView === "users" || managementView === "organizations";
+  const isManagementView = managementView === "users" || managementView === "organizations" || managementView === "supporters";
   const selectedOrganization = organizations.find(
     (organization) => organization.organizationId === selectedOrganizationId,
   );
@@ -468,6 +476,13 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     return <div className="min-h-screen bg-zinc-100">
       <AdminHeader view="platform" />
       <PlatformOrganizationManagement initialCreate={routeSearchParams.get("create") === "1"} />
+    </div>;
+  }
+
+  if (managementView === "supporters" && canManagePlatform) {
+    return <div className="min-h-screen bg-zinc-100">
+      <AdminHeader view="platform" />
+      <SupportersManager />
     </div>;
   }
 

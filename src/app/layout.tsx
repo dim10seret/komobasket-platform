@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import SupportersFooter from "@/components/layout/SupportersFooter";
 
 const siteUrl = "https://komobasket.gr";
 const siteTitle = "KomoBasket";
@@ -135,6 +136,7 @@ export default function RootLayout({
         />
 
         {children}
+        <SupportersFooter />
       </body>
     </html>
   );
