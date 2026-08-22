@@ -243,6 +243,36 @@ export async function requireOrganizationAccess(
   return requireOrganizationAccessWithDb(db, identity, organizationId, mode);
 }
 
+export async function requirePlatformSuperAdmin(
+  identity: CanonicalAppUser | null,
+) {
+  if (!identity) {
+    throw authorizationError("unauthenticated");
+  }
+
+  const db = await requireDatabase();
+  const user = await db
+    .prepare(
+      `SELECT id, status, is_super_admin
+       FROM league_app_users
+       WHERE id = ?`,
+    )
+    .bind(identity.userId)
+    .first<AuthoritativeUserRow>();
+
+  if (!user) {
+    throw authorizationError("unauthenticated");
+  }
+  if (user.status !== "active") {
+    throw authorizationError("inactive_user");
+  }
+  if (user.is_super_admin !== 1) {
+    throw authorizationError("insufficient_permission");
+  }
+
+  return identity;
+}
+
 type OwnedResourceRow = {
   id: string;
   organization_id: string | null;
