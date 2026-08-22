@@ -161,7 +161,7 @@ export function Players({
     setTeamRosterLoading(true);
     setTeamRosterError("");
     try {
-      const request = await fetch(`/api/admin/league?view=team-roster&seasonId=${selectedSeasonId}&competitionId=${selectedCompetitionId}&teamId=${selectedTeamId}`, { cache: "no-store" });
+      const request = await fetch(`/api/admin/league?view=team-roster&organizationId=${encodeURIComponent(data.organizationContext.organizationId)}&seasonId=${selectedSeasonId}&competitionId=${selectedCompetitionId}&teamId=${selectedTeamId}`, { cache: "no-store" });
       const payload = await request.json();
       if (!request.ok || payload?.view !== "team-roster") {
         throw new Error(payload?.error || "Αποτυχία φόρτωσης ρόστερ.");
@@ -359,6 +359,7 @@ export function Players({
       const fd = new FormData();
       fd.append("logo", file);
       fd.append("teamId", "");
+      fd.append("organizationId", data.organizationContext.organizationId);
       const response = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Το upload απέτυχε.");
@@ -500,6 +501,7 @@ export function Players({
     const fd = new FormData();
     fd.append("logo", file);
     fd.append("teamId", "");
+    fd.append("organizationId", data.organizationContext.organizationId);
     busySetter(true);
     messageSetter("");
     try {
@@ -603,6 +605,7 @@ export function Players({
         body: JSON.stringify({
           action: searchMode === "athlete" ? "searchAthletes" : "searchStaff",
           query: searchText.trim(),
+          organizationId: data.organizationContext.organizationId,
         }),
       });
       const payload = await response.json();

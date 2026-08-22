@@ -6,6 +6,12 @@ import type { FormEvent } from "react";
 export type Row = Record<string, string | number | null>;
 export type Snapshot = {
   mode: "preview" | "database";
+  organizationContext: {
+    organizationId: string;
+    slug: string;
+    name: string;
+    role: "super_admin" | "admin" | "viewer";
+  };
   seasons: Row[];
   competitions: Row[];
   teams: Row[];

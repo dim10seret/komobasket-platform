@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/lib/admin-auth";
 import {
+  listAccessibleOrganizations,
   resolveCanonicalAppUser,
   resolvePlatformReadContext,
 } from "@/lib/app-user-identity";
@@ -9,6 +10,7 @@ import {
   requireCompetitionAccess,
   requireCompetitionVenueAccess,
   requireGameAccess,
+  requireOrganizationAccess,
   requirePhaseDependencyGraphAccess,
   requirePlayerAccess,
   requireRosterMembershipAccess,
@@ -48,15 +50,26 @@ export async function GET(request: Request) {
   if (authorization.response) return authorization.response;
   try {
     const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
-    const platformContext = await resolvePlatformReadContext(canonicalUser);
     const requestUrl = new URL(request.url);
     const view = requestUrl.searchParams.get("view");
     if (view === "organizations") {
+      const organizations = await listAccessibleOrganizations(canonicalUser);
       return Response.json({
-        selectedOrganizationId: platformContext.organizationId,
-        organizations: platformContext.accessibleOrganizations,
+        organizations: organizations.map((organization) => ({
+          ...organization,
+          status: "active" as const,
+        })),
       });
     }
+    const requestedOrganizationId = requestUrl.searchParams.get("organizationId")?.trim() || "";
+    const selectedOrganization = requestedOrganizationId
+      ? await requireOrganizationAccess(canonicalUser, requestedOrganizationId, "read")
+      : await resolvePlatformReadContext(canonicalUser).then((context) => ({
+          organizationId: context.organizationId,
+          organizationSlug: context.organization.slug,
+          organizationName: context.organization.name,
+          role: context.organization.role,
+        }));
     if (view === "team-roster") {
       const seasonId = requestUrl.searchParams.get("seasonId")?.trim() || "";
       const competitionId = requestUrl.searchParams.get("competitionId")?.trim() || "";
@@ -70,13 +83,23 @@ export async function GET(request: Request) {
           seasonId,
           competitionId,
           teamId,
-          platformContext.organizationId,
+          selectedOrganization.organizationId,
         ),
       });
     }
 
-    return Response.json(await getLeagueAdminSnapshot(platformContext.organizationId));
+    return Response.json({
+      ...(await getLeagueAdminSnapshot(selectedOrganization.organizationId)),
+      organizationContext: {
+        organizationId: selectedOrganization.organizationId,
+        slug: selectedOrganization.organizationSlug,
+        name: selectedOrganization.organizationName,
+        role: selectedOrganization.role,
+      },
+    });
   } catch (error) {
+    const authorizationResponse = platformAuthorizationErrorResponse(error);
+    if (authorizationResponse) return authorizationResponse;
     return Response.json(
       { error: error instanceof Error ? error.message : "Αποτυχία φόρτωσης." },
       { status: 500 },
@@ -101,7 +124,10 @@ export async function PATCH(request: Request) {
     }
     if (action === "searchAthletes") {
       const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
-      const platformContext = await resolvePlatformReadContext(canonicalUser);
+      const requestedOrganizationId = String(input.organizationId ?? input.organization_id ?? "").trim();
+      const platformContext = requestedOrganizationId
+        ? await requireOrganizationAccess(canonicalUser, requestedOrganizationId, "read")
+        : await resolvePlatformReadContext(canonicalUser);
       return Response.json(await searchAthletesForRosterFoundation({
         query: String(input.query ?? ""),
         limit: input.limit ? Number(input.limit) : undefined,
@@ -109,7 +135,10 @@ export async function PATCH(request: Request) {
     }
     if (action === "searchStaff") {
       const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
-      const platformContext = await resolvePlatformReadContext(canonicalUser);
+      const requestedOrganizationId = String(input.organizationId ?? input.organization_id ?? "").trim();
+      const platformContext = requestedOrganizationId
+        ? await requireOrganizationAccess(canonicalUser, requestedOrganizationId, "read")
+        : await resolvePlatformReadContext(canonicalUser);
       return Response.json(await searchStaffForRosterFoundation({
         query: String(input.query ?? ""),
         limit: input.limit ? Number(input.limit) : undefined,

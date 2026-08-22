@@ -266,7 +266,7 @@ export function CompetitionWorkspaceManager({
     setTeamRosterError("");
     setTeamRosterNotice("");
     try {
-      const request = await fetch(`/api/admin/league?view=team-roster&seasonId=${seasonId}&competitionId=${competitionId}&teamId=${teamId}`, { cache: "no-store" });
+      const request = await fetch(`/api/admin/league?view=team-roster&organizationId=${encodeURIComponent(data.organizationContext.organizationId)}&seasonId=${seasonId}&competitionId=${competitionId}&teamId=${teamId}`, { cache: "no-store" });
       const payload = await request.json();
       if (!request.ok || payload?.view !== "team-roster") throw new Error(payload?.error || "Αποτυχία φόρτωσης ρόστερ.");
       setTeamRoster(payload.data as TeamRosterManagementView);
@@ -339,6 +339,7 @@ export function CompetitionWorkspaceManager({
       const payload = new FormData();
       payload.append("logo", file);
       payload.append("teamId", "");
+      payload.append("organizationId", data.organizationContext.organizationId);
       try {
         const response = await fetch("/api/admin/team-logo-route", { method: "POST", body: payload });
         const result = await response.json();
@@ -445,6 +446,7 @@ export function CompetitionWorkspaceManager({
       const fd = new FormData();
       fd.append("logo", file);
       fd.append("teamId", "");
+      fd.append("organizationId", data.organizationContext.organizationId);
       const response = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Αποτυχία μεταφόρτωσης.");
@@ -681,7 +683,7 @@ export function CompetitionWorkspaceManager({
                         const response = await fetch("/api/admin/league/competitions", {
                           method: "POST",
                           headers: { "content-type": "application/json" },
-                          body: JSON.stringify({ id: workspaceCompetitionId, action: "cleanup" }),
+                          body: JSON.stringify({ id: workspaceCompetitionId, action: "cleanup", organizationId: data.organizationContext.organizationId }),
                         });
                         const payload = await response.json();
                         if (!response.ok) throw new Error(payload.error || "Ο καθαρισμός απέτυχε.");

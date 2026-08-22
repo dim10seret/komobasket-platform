@@ -250,6 +250,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
       const fd = new FormData();
       fd.append("logo", file);
       fd.append("teamId", ""); // temporary bucket path
+      fd.append("organizationId", data.organizationContext.organizationId);
       const resp = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
       const payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || "Upload failed");
@@ -272,6 +273,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
       const fd = new FormData();
       fd.append("logo", file);
       fd.append("teamId", "");
+      fd.append("organizationId", data.organizationContext.organizationId);
       const resp = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
       const payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || "Upload failed");
@@ -293,6 +295,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
       const fd = new FormData();
       fd.append("logo", file);
       fd.append("teamId", teamId);
+      fd.append("organizationId", data.organizationContext.organizationId);
       const resp = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
       const payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || "Upload failed");

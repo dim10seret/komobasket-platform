@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
+  Building2,
   Database,
   FileText,
   LayoutDashboard,
@@ -25,6 +26,20 @@ import { Overview } from "./platform/sections/OverviewSection";
 import { Players } from "./platform/sections/PlayersSection";
 import { Teams } from "./platform/sections/TeamsSection";
 import { Movements } from "./platform/sections/MovementsSection";
+
+type AccessibleOrganization = {
+  organizationId: string;
+  slug: string;
+  name: string;
+  status: "active";
+  role: "super_admin" | "admin" | "viewer";
+};
+
+const organizationRoleLabels: Record<AccessibleOrganization["role"], string> = {
+  super_admin: "Super Admin",
+  admin: "Διαχειριστής",
+  viewer: "Προβολή",
+};
 
 const tabs = [
   ["overview", "Επισκόπηση", LayoutDashboard],
@@ -117,6 +132,43 @@ function Message({ text, kind }: { text: string; kind: "notice" | "error" }) {
   return <div className={`${base} ${kind === "notice" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-700"}`}>{text}</div>;
 }
 
+function OrganizationEntry({
+  organizations,
+}: {
+  organizations: AccessibleOrganization[];
+}) {
+  return <main className="mx-auto max-w-5xl px-4 py-10 sm:px-7 sm:py-14">
+    <div className="mb-8">
+      <p className="text-xs font-black uppercase tracking-[.22em] text-orange-600">KomoBasket Platform</p>
+      <h2 className="mt-2 text-3xl font-black text-zinc-950 sm:text-4xl">Επιλέξτε Οργανισμό</h2>
+      <p className="mt-3 max-w-2xl leading-7 text-zinc-600">Επιλέξτε τον Οργανισμό που θέλετε να διαχειριστείτε.</p>
+    </div>
+    {organizations.length === 0 ? (
+      <div className="rounded-3xl border border-zinc-200 bg-white p-7 text-zinc-700 shadow-sm">
+        Δεν έχετε πρόσβαση σε κάποιον Οργανισμό.
+      </div>
+    ) : (
+      <div className="grid gap-5 md:grid-cols-2">
+        {organizations.map((organization) => (
+          <article key={organization.organizationId} className="flex min-w-0 flex-col rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm sm:p-7">
+            <div className="flex items-start justify-between gap-4">
+              <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-zinc-950 text-orange-500">
+                <Building2 size={24} />
+              </span>
+              <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Ενεργός</span>
+            </div>
+            <h3 className="mt-6 break-words text-2xl font-black text-zinc-950">{organization.name}</h3>
+            <p className="mt-2 text-sm font-bold text-zinc-500">{organizationRoleLabels[organization.role]}</p>
+            <Link href={`/admin/platform?organization=${encodeURIComponent(organization.organizationId)}`} className="mt-7 inline-flex items-center justify-center rounded-xl bg-orange-600 px-4 py-3 font-black text-white transition hover:bg-orange-700">
+              Είσοδος στον Οργανισμό
+            </Link>
+          </article>
+        ))}
+      </div>
+    )}
+  </main>;
+}
+
 export default function AdminDashboard({ view }: { view: AdminView }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -127,14 +179,25 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [organizations, setOrganizations] = useState<AccessibleOrganization[]>([]);
 
   const [teamSeasonFilter, setTeamSeasonFilter] = useState("all");
   const [selectedParticipationTeamIds, setSelectedParticipationTeamIds] = useState<string[]>([]);
   const [competitionWorkspaceMode, setCompetitionWorkspaceMode] = useState<CompetitionWorkspaceMode>("settings");
 
+  const selectedOrganizationId = routeSearchParams.get("organization")?.trim() ?? "";
+  const selectedOrganization = organizations.find(
+    (organization) => organization.organizationId === selectedOrganizationId,
+  );
+
   const load = useCallback(async () => {
+    if (!selectedOrganizationId) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     try {
-      const response = await fetch("/api/admin/league", { cache: "no-store" });
+      const response = await fetch(`/api/admin/league?organizationId=${encodeURIComponent(selectedOrganizationId)}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Αποτυχία φόρτωσης.");
       setData(payload);
@@ -143,13 +206,48 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedOrganizationId]);
+
+  const initializePlatform = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/league?view=organizations", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Αποτυχία φόρτωσης Οργανισμών.");
+      const accessible = Array.isArray(payload.organizations)
+        ? payload.organizations as AccessibleOrganization[]
+        : [];
+      setOrganizations(accessible);
+      if (!selectedOrganizationId) {
+        setData(null);
+        if (accessible.length === 1) {
+          router.replace(`/admin/platform?organization=${encodeURIComponent(accessible[0].organizationId)}`);
+          return;
+        }
+        setLoading(false);
+        return;
+      }
+      if (!accessible.some((organization) => organization.organizationId === selectedOrganizationId)) {
+        setData(null);
+        setError("Ο επιλεγμένος Οργανισμός δεν είναι διαθέσιμος.");
+        router.replace("/admin/platform");
+        setLoading(false);
+        return;
+      }
+      await load();
+    } catch (caught) {
+      setData(null);
+      setError(caught instanceof Error ? caught.message : "Αποτυχία φόρτωσης.");
+      setLoading(false);
+    }
+  }, [load, router, selectedOrganizationId]);
 
   useEffect(() => {
     if (view !== "platform") return;
-    const request = window.setTimeout(() => { void load(); }, 0);
+    const request = window.setTimeout(() => { void initializePlatform(); }, 0);
     return () => window.clearTimeout(request);
-  }, [load, view]);
+  }, [initializePlatform, view]);
 
   const competitionWorkspaceId = routeSearchParams.get("competitionId") ?? "";
 
@@ -175,7 +273,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch(`/api/admin/league/${resource}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({ ...input, organizationId: selectedOrganizationId }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Η αποθήκευση απέτυχε.");
@@ -212,7 +310,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch(`/api/admin/league/${resource}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id, ...Object.fromEntries(new FormData(event.currentTarget).entries()) }),
+        body: JSON.stringify({ id, ...Object.fromEntries(new FormData(event.currentTarget).entries()), organizationId: selectedOrganizationId }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Η επεξεργασία απέτυχε.");
@@ -235,7 +333,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch(`/api/admin/league/${resource}`, {
         method: "DELETE",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ id, organizationId: selectedOrganizationId }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Η διαγραφή απέτυχε.");
@@ -258,7 +356,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch("/api/admin/league", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "departure", ...payload }),
+        body: JSON.stringify({ action: "departure", ...payload, organizationId: selectedOrganizationId }),
       });
       const responsePayload = await response.json();
       if (!response.ok) throw new Error(responsePayload.error || "Η αποχώρηση απέτυχε.");
@@ -281,7 +379,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch("/api/admin/league", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "transferAthlete", ...payload }),
+        body: JSON.stringify({ action: "transferAthlete", ...payload, organizationId: selectedOrganizationId }),
       });
       const payloadResponse = await response.json();
       if (!response.ok) throw new Error(payloadResponse.error || "Η μεταγραφή απέτυχε.");
@@ -304,7 +402,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       const response = await fetch("/api/admin/league", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "bulkScheduleGames", ...payload }),
+        body: JSON.stringify({ action: "bulkScheduleGames", ...payload, organizationId: selectedOrganizationId }),
       });
       const responsePayload = await response.json();
       if (!response.ok) throw new Error(responsePayload.error || "Η ενημέρωση προγράμματος απέτυχε.");
@@ -338,8 +436,26 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
   if (view === "home") return <AdminHome />;
   if (view === "news") return <NewsAdmin />;
 
+  if (!selectedOrganizationId || !selectedOrganization) {
+    return <div className="min-h-screen bg-zinc-100">
+      <AdminHeader view="platform" />
+      {loading && <div className="mx-auto max-w-5xl px-4 py-10 text-center text-zinc-500 sm:px-7">Φόρτωση Οργανισμών…</div>}
+      {!loading && error && <div className="mx-auto max-w-5xl px-4 pt-6 sm:px-7"><Message text={error} kind="error" /></div>}
+      {!loading && <OrganizationEntry organizations={organizations} />}
+    </div>;
+  }
+
   return <div className="min-h-screen bg-zinc-100">
-    <AdminHeader view="platform" onRefresh={() => void load()} />
+    <AdminHeader view="platform" onRefresh={() => void initializePlatform()} />
+    <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3 px-4 pt-6 lg:px-7">
+      <div className="min-w-0">
+        <p className="text-xs font-black uppercase tracking-[.18em] text-zinc-500">Τρέχων Οργανισμός</p>
+        <p className="truncate text-lg font-black text-zinc-950">{selectedOrganization.name} <span className="text-sm text-zinc-500">· {organizationRoleLabels[selectedOrganization.role]}</span></p>
+      </div>
+      <Link href="/admin/platform" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-400 hover:text-orange-700">
+        Αλλαγή Οργανισμού
+      </Link>
+    </div>
     <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-6 lg:grid-cols-[270px_1fr] lg:px-7">
       <nav className="h-fit rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm lg:sticky lg:top-5">
         {tabs.map(([id, label, Icon]) => (
