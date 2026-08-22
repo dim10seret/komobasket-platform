@@ -3180,8 +3180,16 @@ export async function copyPreviousRoster(
   competitionId: string,
   teamId: string,
   includeStaff = false,
+  organizationId?: string,
 ) {
-  const lookup = await getPreviousRosterLookupWithDb(db, seasonId, competitionId, teamId);
+  const canonicalOrganizationId = String(organizationId ?? "").trim();
+  const lookup = await getPreviousRosterLookupWithDb(
+    db,
+    seasonId,
+    competitionId,
+    teamId,
+    canonicalOrganizationId || undefined,
+  );
   if (!lookup.seasonId || !lookup.competitionId) {
     return { copiedAthletes: 0, copiedStaff: 0, skippedAthletes: 0, skippedStaff: 0, sourceSeasonId: null, sourceCompetitionId: null };
   }
@@ -3190,11 +3198,13 @@ export async function copyPreviousRoster(
   const previousCompetitionId = lookup.competitionId;
   const previousAthletes = await rows<{ player_id: string; shirt_number: number | null }>(
     db,
-    `SELECT player_id, MAX(shirt_number) AS shirt_number
-     FROM league_roster_memberships
-     WHERE season_id=? AND team_id=? AND competition_id=? AND status='active'
-     GROUP BY player_id`,
-    [previousSeasonId, teamId, previousCompetitionId],
+    `SELECT r.player_id, MAX(r.shirt_number) AS shirt_number
+     FROM league_roster_memberships r
+     JOIN league_players p ON p.id=r.player_id
+     WHERE r.season_id=? AND r.team_id=? AND r.competition_id=? AND r.status='active'
+       AND (?='' OR p.organization_id=?)
+     GROUP BY r.player_id`,
+    [previousSeasonId, teamId, previousCompetitionId, canonicalOrganizationId, canonicalOrganizationId],
   );
   const targetAthletes = await rows<{ player_id: string }>(db, `SELECT player_id
     FROM league_roster_memberships
@@ -3223,10 +3233,12 @@ export async function copyPreviousRoster(
       custom_role_label: string | null;
     }>(
       db,
-      `SELECT staff_id, role, custom_role_label
-       FROM league_staff_memberships
-       WHERE season_id=? AND competition_id=? AND team_id=?`,
-      [previousSeasonId, previousCompetitionId, teamId],
+      `SELECT sm.staff_id, sm.role, sm.custom_role_label
+       FROM league_staff_memberships sm
+       JOIN league_staff s ON s.id=sm.staff_id
+       WHERE sm.season_id=? AND sm.competition_id=? AND sm.team_id=?
+         AND (?='' OR s.organization_id=?)`,
+      [previousSeasonId, previousCompetitionId, teamId, canonicalOrganizationId, canonicalOrganizationId],
     );
     const targetStaff = await rows<{ staff_id: string }>(db, `SELECT staff_id
       FROM league_staff_memberships
@@ -3545,6 +3557,7 @@ export async function createAthleteCanonical(input: {
   lastName: string;
   birthDate?: string | null;
   photoUrl?: string | null;
+  organizationId: string;
 }) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
@@ -3558,6 +3571,8 @@ export async function createAthleteCanonical(input: {
   const id = createEntityId("player");
   const birthDate = input.birthDate ? String(input.birthDate) : null;
   const photoUrl = input.photoUrl ? String(input.photoUrl) : null;
+  const organizationId = String(input.organizationId ?? "").trim();
+  if (!organizationId) throw new Error("Ο Οργανισμός είναι υποχρεωτικός.");
   const baseSlug = slugify(displayName);
   const existingSlugs = await rows<{ slug: string }>(
     db,
@@ -3575,9 +3590,9 @@ export async function createAthleteCanonical(input: {
   }
 
   await db.prepare(`INSERT INTO league_players
-    (id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active, slug)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`)
-    .bind(id, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, slug)
+    (id, organization_id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active, slug)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`)
+    .bind(id, organizationId, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, slug)
     .run();
 
   return { playerId: id };
@@ -3754,6 +3769,7 @@ export async function createAthleteWithRoster(input: {
   competitionId: string;
   teamId: string;
   shirtNumber?: number | null;
+  organizationId: string;
 }) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
@@ -3770,6 +3786,7 @@ export async function createAthleteWithRoster(input: {
     lastName: input.lastName,
     birthDate: input.birthDate,
     photoUrl: input.photoUrl,
+    organizationId: input.organizationId,
   });
 
   const roster = await addExistingAthleteToRoster({
@@ -3790,6 +3807,7 @@ export async function createStaffInFoundation(input: {
   birthDate?: string | null;
   photoUrl?: string | null;
   active?: boolean;
+  organizationId: string;
 }) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
@@ -3803,11 +3821,13 @@ export async function createStaffInFoundation(input: {
   const birthDate = input.birthDate ? String(input.birthDate) : null;
   const photoUrl = input.photoUrl ? String(input.photoUrl) : null;
   const active = input.active === undefined ? 1 : (input.active ? 1 : 0);
+  const organizationId = String(input.organizationId ?? "").trim();
+  if (!organizationId) throw new Error("Ο Οργανισμός είναι υποχρεωτικός.");
 
   await db.prepare(`INSERT INTO league_staff
-    (id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, active)
+    (id, organization_id, first_name, last_name, display_name, normalized_name, birth_date, photo_url, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, organizationId, firstName, lastName, displayName, normalizedName, birthDate, photoUrl, active)
     .run();
   return { staffId: id };
 }
@@ -3822,12 +3842,14 @@ export async function createStaffWithRoster(input: {
   seasonId: string;
   competitionId: string;
   teamId: string;
+  organizationId: string;
 }) {
   const staff = await createStaffInFoundation({
     firstName: input.firstName,
     lastName: input.lastName,
     birthDate: input.birthDate ?? null,
     photoUrl: input.photoUrl ?? null,
+    organizationId: input.organizationId,
   });
 
   const staffId = staff.staffId;
@@ -3886,6 +3908,7 @@ export async function copyPreviousRosterForTeam(input: {
   seasonId: string;
   competitionId: string;
   teamId: string;
+  organizationId: string;
 }) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
@@ -3895,7 +3918,7 @@ export async function copyPreviousRosterForTeam(input: {
   if (!seasonId || !competitionId || !teamId) throw new Error("Λείπουν στοιχεία στοχευμένου ρόστερ.");
   await assertRosterTargetWritable(db, seasonId, competitionId);
 
-  return copyPreviousRoster(db, seasonId, competitionId, teamId, true);
+  return copyPreviousRoster(db, seasonId, competitionId, teamId, true, input.organizationId);
 }
 
 export async function updateStaffCanonical(input: {
@@ -4000,7 +4023,7 @@ export async function removeStaffFromRoster(input: { membershipId: string }) {
   return { staffMembershipId: membershipId };
 }
 
-export async function createLeagueEntity(resource: string, input: Record<string, unknown>, actor: string) {
+export async function createLeagueEntity(resource: string, input: Record<string, unknown>, actor: string, organizationId?: string) {
   const db = await database();
   if (!db) throw new Error("Η αποθήκευση διοργανώσεων είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
   let id = createResourceEntityId(resource);
@@ -4015,16 +4038,19 @@ export async function createLeagueEntity(resource: string, input: Record<string,
     await db.prepare(`INSERT INTO league_seasons (id,name,slug,starts_on,ends_on,status) VALUES (?,?,?,?,?,?)`)
       .bind(id, season.name, String(input.slug || slugify(season.name)), season.startsOn, season.endsOn, season.status).run();
   } else if (resource === "competitions") {
+    const canonicalOrganizationId = String(organizationId ?? "").trim();
+    if (!canonicalOrganizationId) throw new Error("Ο Οργανισμός είναι υποχρεωτικός.");
     const competition = await competitionInput(db, input);
     const duplicate = await db.prepare(
-      "SELECT id FROM league_competitions WHERE season_id=? AND slug=?",
-    ).bind(competition.seasonId, competition.slug).first<{ id: string }>();
+      "SELECT id FROM league_competitions WHERE organization_id=? AND season_id=? AND slug=?",
+    ).bind(canonicalOrganizationId, competition.seasonId, competition.slug).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη διοργάνωση με αυτή την ονομασία στη συγκεκριμένη σεζόν.");
     await db.prepare(`INSERT INTO league_competitions
-      (id,season_id,name,slug,type,description,status,custom_type_label,logo_url)
-      VALUES (?,?,?,?,?,?,?,?,?)`)
+      (id,organization_id,season_id,name,slug,type,description,status,custom_type_label,logo_url)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
       .bind(
         id,
+        canonicalOrganizationId,
         competition.seasonId,
         competition.name,
         competition.slug,
@@ -4111,13 +4137,15 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       VALUES (?,?,?,?,?,?)`)
       .bind(id, competitionId, venue.name, venue.address, venue.mapUrl, sortOrder).run();
   } else if (resource === "teams") {
+    const canonicalOrganizationId = String(organizationId ?? "").trim();
+    if (!canonicalOrganizationId) throw new Error("Ο Οργανισμός είναι υποχρεωτικός.");
     const team = teamInput(input);
     const duplicate = await db.prepare(
-      "SELECT id FROM league_teams WHERE slug=? OR LOWER(TRIM(name))=LOWER(TRIM(?))",
-    ).bind(team.slug, team.name).first<{ id: string }>();
+      "SELECT id FROM league_teams WHERE organization_id=? AND (slug=? OR LOWER(TRIM(name))=LOWER(TRIM(?)))",
+    ).bind(canonicalOrganizationId, team.slug, team.name).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη ομάδα με αυτή την ονομασία.");
-    await db.prepare(`INSERT INTO league_teams (id,name,slug,city,logo_url,active) VALUES (?,?,?,?,?,?)`)
-      .bind(id, team.name, team.slug, team.city, team.logoUrl, team.active ? 1 : 0).run();
+    await db.prepare(`INSERT INTO league_teams (id,organization_id,name,slug,city,logo_url,active) VALUES (?,?,?,?,?,?,?)`)
+      .bind(id, canonicalOrganizationId, team.name, team.slug, team.city, team.logoUrl, team.active ? 1 : 0).run();
   } else if (resource === "participations") {
     const seasonId = String(input.seasonId ?? "").trim();
     const competitionId = String(input.competitionId ?? "").trim();
@@ -4248,16 +4276,18 @@ export async function createLeagueEntity(resource: string, input: Record<string,
       message: `Προστέθηκαν ${created} ομάδες. ${existing > 0 ? `${existing} υπήρχαν ήδη στη διοργάνωση.` : ""}`.trim(),
     };
   } else if (resource === "players") {
+    const canonicalOrganizationId = String(organizationId ?? "").trim();
+    if (!canonicalOrganizationId) throw new Error("Ο Οργανισμός είναι υποχρεωτικός.");
     const name = String(input.displayName ?? "").trim();
-    const existing = await rows<{ id: string; display_name: string }>(db, "SELECT id,display_name FROM league_players");
+    const existing = await rows<{ id: string; display_name: string }>(db, "SELECT id,display_name FROM league_players WHERE organization_id=?", [canonicalOrganizationId]);
     const match = findAutomaticPlayerMatch(name, existing.map((row) => ({ id: row.id, displayName: row.display_name })));
     if (match) {
       await db.prepare(`INSERT OR IGNORE INTO league_player_aliases (id,player_id,alias,normalized_alias,source,confidence) VALUES (?,?,?,?,?,?)`)
         .bind(createEntityId("alias"), match.candidate.id, name, normalizePlayerName(name), "automatic", match.confidence).run();
       return { id: match.candidate.id, automaticallyMatched: true };
     }
-    await db.prepare(`INSERT INTO league_players (id,slug,display_name,normalized_name,active) VALUES (?,?,?,?,1)`)
-      .bind(id, String(input.slug || slugify(name)), name, normalizePlayerName(name)).run();
+    await db.prepare(`INSERT INTO league_players (id,organization_id,slug,display_name,normalized_name,active) VALUES (?,?,?,?,?,1)`)
+      .bind(id, canonicalOrganizationId, String(input.slug || slugify(name)), name, normalizePlayerName(name)).run();
   } else if (resource === "rosters") {
     await addRosterMembership(db, id, input);
   } else if (resource === "phases") {
@@ -5475,8 +5505,8 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
 
     const team = teamInput(input, current);
     const duplicate = await db.prepare(
-      "SELECT id FROM league_teams WHERE (slug=? OR LOWER(TRIM(name))=LOWER(TRIM(?))) AND id<>?",
-    ).bind(team.slug, team.name, id).first<{ id: string }>();
+      "SELECT id FROM league_teams WHERE organization_id=? AND (slug=? OR LOWER(TRIM(name))=LOWER(TRIM(?))) AND id<>?",
+    ).bind(String(current.organization_id ?? ""), team.slug, team.name, id).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη άλλη ομάδα με αυτή την ονομασία.");
 
     await db.prepare(`UPDATE league_teams SET
@@ -5549,8 +5579,8 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
       throw new Error(`Δεν μπορείτε να ορίσετε ${competition.expectedTeamCount} αναμενόμενες ομάδες, επειδή η διοργάνωση έχει ήδη ${currentActiveParticipationCount} συμμετοχές.`);
     }
     const duplicate = await db.prepare(
-      "SELECT id FROM league_competitions WHERE season_id=? AND slug=? AND id<>?",
-    ).bind(competition.seasonId, competition.slug, id).first<{ id: string }>();
+      "SELECT id FROM league_competitions WHERE organization_id=? AND season_id=? AND slug=? AND id<>?",
+    ).bind(String(current.organization_id ?? ""), competition.seasonId, competition.slug, id).first<{ id: string }>();
     if (duplicate) throw new Error("Υπάρχει ήδη άλλη διοργάνωση με αυτή την ονομασία στη συγκεκριμένη σεζόν.");
     await db.prepare(`UPDATE league_competitions SET
       season_id=?, name=?, slug=?, type=?, description=?, custom_type_label=?, logo_url=?, status=?, updated_at=CURRENT_TIMESTAMP

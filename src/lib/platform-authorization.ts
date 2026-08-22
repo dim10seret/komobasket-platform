@@ -557,3 +557,321 @@ export async function requireSourcePhaseAccess(
     throw error;
   }
 }
+
+export type TeamCompetitionAccessContext = OrganizationAccessContext & {
+  competitionId: string;
+  teamId: string;
+};
+
+export type StaffRosterRelationshipAccessContext = TeamCompetitionAccessContext & {
+  staffId: string;
+};
+
+export type TransferRelationshipAccessContext = TeamCompetitionAccessContext & {
+  playerId: string;
+  fromTeamId: string;
+  toTeamId: string;
+};
+
+type TeamCompetitionRow = {
+  competition_id: string;
+  competition_organization_id: string | null;
+  team_id: string;
+  team_organization_id: string | null;
+};
+
+export async function requireTeamCompetitionAccess(
+  identity: CanonicalAppUser | null,
+  input: { competitionId: string; teamId: string },
+  mode: PlatformPermissionMode = "manage",
+): Promise<TeamCompetitionAccessContext> {
+  const db = await requireDatabase();
+  const relationship = await db
+    .prepare(
+      `SELECT c.id AS competition_id,
+              c.organization_id AS competition_organization_id,
+              t.id AS team_id,
+              t.organization_id AS team_organization_id
+       FROM league_competitions c
+       JOIN league_teams t ON t.id = ?
+       WHERE c.id = ?`,
+    )
+    .bind(input.teamId, input.competitionId)
+    .first<TeamCompetitionRow>();
+  const organizationId = relationship?.competition_organization_id;
+  if (
+    !relationship ||
+    !organizationId ||
+    relationship.team_organization_id !== organizationId
+  ) {
+    throw authorizationError("resource_unavailable");
+  }
+  try {
+    const organization = await requireOrganizationAccessWithDb(
+      db,
+      identity,
+      organizationId,
+      mode,
+    );
+    return {
+      ...organization,
+      competitionId: relationship.competition_id,
+      teamId: relationship.team_id,
+    };
+  } catch (error) {
+    if (error instanceof PlatformAuthorizationError) {
+      throw authorizationError("resource_unavailable");
+    }
+    throw error;
+  }
+}
+
+export async function requireRosterMembershipAccess(
+  identity: CanonicalAppUser | null,
+  rosterId: string,
+  mode: PlatformPermissionMode = "manage",
+) {
+  const db = await requireDatabase();
+  const membership = await db
+    .prepare(
+      `SELECT player_id, team_id, competition_id
+       FROM league_roster_memberships
+       WHERE id = ? AND competition_id IS NOT NULL`,
+    )
+    .bind(rosterId)
+    .first<{ player_id: string; team_id: string; competition_id: string }>();
+  if (!membership) {
+    throw authorizationError("resource_unavailable");
+  }
+  return requireRosterRelationshipAccess(
+    identity,
+    {
+      playerId: membership.player_id,
+      teamId: membership.team_id,
+      competitionId: membership.competition_id,
+    },
+    mode,
+  );
+}
+
+type StaffRosterRelationshipRow = TeamCompetitionRow & {
+  staff_id: string;
+  staff_organization_id: string | null;
+};
+
+export async function requireStaffRosterRelationshipAccess(
+  identity: CanonicalAppUser | null,
+  input: { staffId: string; teamId: string; competitionId: string },
+  mode: PlatformPermissionMode = "manage",
+): Promise<StaffRosterRelationshipAccessContext> {
+  const db = await requireDatabase();
+  const relationship = await db
+    .prepare(
+      `SELECT s.id AS staff_id,
+              s.organization_id AS staff_organization_id,
+              t.id AS team_id,
+              t.organization_id AS team_organization_id,
+              c.id AS competition_id,
+              c.organization_id AS competition_organization_id
+       FROM league_staff s
+       JOIN league_teams t ON t.id = ?
+       JOIN league_competitions c ON c.id = ?
+       WHERE s.id = ?`,
+    )
+    .bind(input.teamId, input.competitionId, input.staffId)
+    .first<StaffRosterRelationshipRow>();
+  const organizationId = relationship?.competition_organization_id;
+  if (
+    !relationship ||
+    !organizationId ||
+    relationship.staff_organization_id !== organizationId ||
+    relationship.team_organization_id !== organizationId
+  ) {
+    throw authorizationError("resource_unavailable");
+  }
+  try {
+    const organization = await requireOrganizationAccessWithDb(
+      db,
+      identity,
+      organizationId,
+      mode,
+    );
+    return {
+      ...organization,
+      staffId: relationship.staff_id,
+      teamId: relationship.team_id,
+      competitionId: relationship.competition_id,
+    };
+  } catch (error) {
+    if (error instanceof PlatformAuthorizationError) {
+      throw authorizationError("resource_unavailable");
+    }
+    throw error;
+  }
+}
+
+export async function requireStaffMembershipAccess(
+  identity: CanonicalAppUser | null,
+  membershipId: string,
+  mode: PlatformPermissionMode = "manage",
+) {
+  const db = await requireDatabase();
+  const membership = await db
+    .prepare(
+      `SELECT staff_id, team_id, competition_id
+       FROM league_staff_memberships
+       WHERE id = ?`,
+    )
+    .bind(membershipId)
+    .first<{ staff_id: string; team_id: string; competition_id: string }>();
+  if (!membership) {
+    throw authorizationError("resource_unavailable");
+  }
+  return requireStaffRosterRelationshipAccess(
+    identity,
+    {
+      staffId: membership.staff_id,
+      teamId: membership.team_id,
+      competitionId: membership.competition_id,
+    },
+    mode,
+  );
+}
+
+export async function requireTransferRelationshipAccess(
+  identity: CanonicalAppUser | null,
+  input: {
+    playerId: string;
+    competitionId: string;
+    fromTeamId: string;
+    toTeamId: string;
+  },
+  mode: PlatformPermissionMode = "manage",
+): Promise<TransferRelationshipAccessContext> {
+  const db = await requireDatabase();
+  const relationship = await db
+    .prepare(
+      `SELECT p.id AS player_id,
+              p.organization_id AS player_organization_id,
+              ft.id AS from_team_id,
+              ft.organization_id AS from_organization_id,
+              tt.id AS to_team_id,
+              tt.organization_id AS to_organization_id,
+              c.id AS competition_id,
+              c.organization_id AS competition_organization_id
+       FROM league_players p
+       JOIN league_teams ft ON ft.id = ?
+       JOIN league_teams tt ON tt.id = ?
+       JOIN league_competitions c ON c.id = ?
+       WHERE p.id = ?`,
+    )
+    .bind(input.fromTeamId, input.toTeamId, input.competitionId, input.playerId)
+    .first<{
+      player_id: string;
+      player_organization_id: string | null;
+      from_team_id: string;
+      from_organization_id: string | null;
+      to_team_id: string;
+      to_organization_id: string | null;
+      competition_id: string;
+      competition_organization_id: string | null;
+    }>();
+  const organizationId = relationship?.competition_organization_id;
+  if (
+    !relationship ||
+    !organizationId ||
+    relationship.player_organization_id !== organizationId ||
+    relationship.from_organization_id !== organizationId ||
+    relationship.to_organization_id !== organizationId
+  ) {
+    throw authorizationError("resource_unavailable");
+  }
+  try {
+    const organization = await requireOrganizationAccessWithDb(
+      db,
+      identity,
+      organizationId,
+      mode,
+    );
+    return {
+      ...organization,
+      playerId: relationship.player_id,
+      teamId: relationship.to_team_id,
+      fromTeamId: relationship.from_team_id,
+      toTeamId: relationship.to_team_id,
+      competitionId: relationship.competition_id,
+    };
+  } catch (error) {
+    if (error instanceof PlatformAuthorizationError) {
+      throw authorizationError("resource_unavailable");
+    }
+    throw error;
+  }
+}
+
+async function requireCompetitionChildAccess(
+  identity: CanonicalAppUser | null,
+  table: "league_competition_teams" | "league_competition_venues",
+  resourceId: string,
+  mode: PlatformPermissionMode,
+) {
+  const db = await requireDatabase();
+  const resource = await db
+    .prepare(
+      `SELECT child.id, child.competition_id, c.organization_id
+       FROM ${table} child
+       JOIN league_competitions c ON c.id = child.competition_id
+       WHERE child.id = ?`,
+    )
+    .bind(resourceId)
+    .first<PhaseRow>();
+  const authorized = await authorizeOwnedResource(db, identity, mode, resource);
+  return {
+    ...authorized.organization,
+    resourceId: authorized.resource.id,
+    competitionId: authorized.resource.competition_id,
+  };
+}
+
+export function requireParticipationAccess(
+  identity: CanonicalAppUser | null,
+  participationId: string,
+  mode: PlatformPermissionMode = "manage",
+) {
+  return requireCompetitionChildAccess(
+    identity,
+    "league_competition_teams",
+    participationId,
+    mode,
+  );
+}
+
+export function requireCompetitionVenueAccess(
+  identity: CanonicalAppUser | null,
+  venueId: string,
+  mode: PlatformPermissionMode = "manage",
+) {
+  return requireCompetitionChildAccess(
+    identity,
+    "league_competition_venues",
+    venueId,
+    mode,
+  );
+}
+
+export function platformAuthorizationErrorResponse(error: unknown) {
+  if (!(error instanceof PlatformAuthorizationError)) {
+    return null;
+  }
+  const status = error.code === "unauthenticated" ? 401 : 403;
+  return Response.json(
+    {
+      code: status === 401 ? "UNAUTHENTICATED" : "FORBIDDEN",
+      error:
+        status === 401
+          ? "Απαιτείται πιστοποιημένη ταυτότητα."
+          : "Δεν επιτρέπεται η συγκεκριμένη ενέργεια.",
+    },
+    { status },
+  );
+}

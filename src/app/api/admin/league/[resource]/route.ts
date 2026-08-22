@@ -1,4 +1,18 @@
-import { requireAdmin } from "@/lib/admin-auth";
+import { requireAdmin, type AdminIdentity } from "@/lib/admin-auth";
+import {
+  resolveCanonicalAppUser,
+  resolvePlatformReadContext,
+} from "@/lib/app-user-identity";
+import {
+  platformAuthorizationErrorResponse,
+  requireCompetitionAccess,
+  requireCompetitionVenueAccess,
+  requireOrganizationAccess,
+  requireParticipationAccess,
+  requireRosterRelationshipAccess,
+  requireTeamAccess,
+  requireTeamCompetitionAccess,
+} from "@/lib/platform-authorization";
 import {
   createLeagueEntity,
   cleanupLeagueCompetition,
@@ -41,6 +55,20 @@ const editableResources = new Set([
   "games",
 ]);
 
+async function requireCreateOrganization(
+  identity: AdminIdentity,
+  input: Record<string, unknown>,
+) {
+  const user = await resolveCanonicalAppUser(identity);
+  const requestedOrganizationId = String(
+    input.organizationId ?? input.organization_id ?? "",
+  ).trim();
+  const organizationId = requestedOrganizationId
+    || (await resolvePlatformReadContext(user)).organizationId;
+  const organization = await requireOrganizationAccess(user, organizationId, "manage");
+  return { user, organizationId: organization.organizationId };
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ resource: string }> },
@@ -64,6 +92,8 @@ export async function POST(
     const input = (await request.json()) as Record<string, unknown>;
 
     if (resource === "competitions" && String(input.action ?? "").trim() === "cleanup") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireCompetitionAccess(user, String(input.id ?? ""), "manage");
       const result = await cleanupLeagueCompetition(input, authorization.identity.email);
       return Response.json(result);
     }
@@ -72,14 +102,45 @@ export async function POST(
       return Response.json(result);
     }
 
+    let organizationId: string | undefined;
+    if (["competitions", "teams", "players"].includes(resource)) {
+      organizationId = (await requireCreateOrganization(authorization.identity, input)).organizationId;
+    } else if (resource === "competition-venues") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireCompetitionAccess(user, String(input.competitionId ?? ""), "manage");
+    } else if (resource === "participations") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      const competitionId = String(input.competitionId ?? "");
+      const teamIds = Array.isArray(input.teamIds)
+        ? input.teamIds.map(String)
+        : [String(input.teamId ?? "")].filter(Boolean);
+      await Promise.all(
+        teamIds.map((teamId) => requireTeamCompetitionAccess(
+          user,
+          { competitionId, teamId },
+          "manage",
+        )),
+      );
+    } else if (resource === "rosters") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireRosterRelationshipAccess(user, {
+        playerId: String(input.playerId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage");
+    }
+
     const result = await createLeagueEntity(
       resource,
       input,
       authorization.identity.email,
+      organizationId,
     );
 
     return Response.json(result, { status: 201 });
   } catch (error) {
+    const authorizationResponse = platformAuthorizationErrorResponse(error);
+    if (authorizationResponse) return authorizationResponse;
     return Response.json(
       {
         error:
@@ -126,6 +187,20 @@ export async function PATCH(
       return Response.json(result);
     }
 
+    if (resource === "competitions") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireCompetitionAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "teams") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireTeamAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "participations") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireParticipationAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "competition-venues") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireCompetitionVenueAccess(user, String(input.id ?? ""), "manage");
+    }
+
     const result = await updateLeagueEntity(
       resource,
       input,
@@ -134,6 +209,8 @@ export async function PATCH(
 
     return Response.json(result);
   } catch (error) {
+    const authorizationResponse = platformAuthorizationErrorResponse(error);
+    if (authorizationResponse) return authorizationResponse;
     return Response.json(
       {
         error:
@@ -175,6 +252,19 @@ export async function DELETE(
 
   try {
     const input = (await request.json()) as Record<string, unknown>;
+    if (resource === "competitions") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireCompetitionAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "teams") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireTeamAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "participations") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireParticipationAccess(user, String(input.id ?? ""), "manage");
+    } else if (resource === "competition-venues") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      await requireCompetitionVenueAccess(user, String(input.id ?? ""), "manage");
+    }
     const result = resource === "seasons"
       ? await deleteLeagueSeason(input, authorization.identity.email)
       : resource === "competitions"
@@ -193,6 +283,8 @@ export async function DELETE(
 
     return Response.json(result);
   } catch (error) {
+    const authorizationResponse = platformAuthorizationErrorResponse(error);
+    if (authorizationResponse) return authorizationResponse;
     const phaseProgramError = error instanceof DeletePhaseProgramError ? error : null;
     return Response.json(
       {

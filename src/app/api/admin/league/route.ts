@@ -4,6 +4,17 @@ import {
   resolvePlatformReadContext,
 } from "@/lib/app-user-identity";
 import {
+  platformAuthorizationErrorResponse,
+  requirePlayerAccess,
+  requireRosterMembershipAccess,
+  requireRosterRelationshipAccess,
+  requireStaffAccess,
+  requireStaffMembershipAccess,
+  requireStaffRosterRelationshipAccess,
+  requireTeamCompetitionAccess,
+  requireTransferRelationshipAccess,
+} from "@/lib/platform-authorization";
+import {
   departPlayer,
   searchAthletesForRosterFoundation,
   searchStaffForRosterFoundation,
@@ -74,7 +85,13 @@ export async function PATCH(request: Request) {
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const action = String(input.action ?? "");
+    let canonicalUserPromise: ReturnType<typeof resolveCanonicalAppUser> | null = null;
+    const canonicalUser = () => {
+      canonicalUserPromise ??= resolveCanonicalAppUser(authorization.identity);
+      return canonicalUserPromise;
+    };
     if (action === "departure" || action === "removeAthleteFromRoster") {
+      await requireRosterMembershipAccess(await canonicalUser(), String(input.rosterId ?? ""), "manage");
       return Response.json(await removeAthleteFromRoster({ rosterId: String(input.rosterId ?? ""), effectiveOn: input.effectiveOn ? String(input.effectiveOn) : null }));
     }
     if (action === "searchAthletes") {
@@ -94,6 +111,10 @@ export async function PATCH(request: Request) {
       }, platformContext.organizationId));
     }
     if (action === "createAthleteWithRoster") {
+      const relationship = await requireTeamCompetitionAccess(await canonicalUser(), {
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage");
       return Response.json(await createAthleteWithRoster({
         firstName: String(input.firstName ?? ""),
         lastName: String(input.lastName ?? ""),
@@ -103,9 +124,15 @@ export async function PATCH(request: Request) {
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
         shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+        organizationId: relationship.organizationId,
       }));
     }
     if (action === "addExistingAthlete") {
+      await requireRosterRelationshipAccess(await canonicalUser(), {
+        playerId: String(input.playerId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage");
       return Response.json(await addExistingAthleteToRoster({
         playerId: String(input.playerId ?? ""),
         seasonId: String(input.seasonId ?? ""),
@@ -115,6 +142,12 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "transferAthlete") {
+      await requireTransferRelationshipAccess(await canonicalUser(), {
+        playerId: String(input.playerId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        fromTeamId: String(input.fromTeamId ?? ""),
+        toTeamId: String(input.toTeamId ?? ""),
+      }, "manage");
       return Response.json(await transferAthleteBetweenTeams({
         playerId: String(input.playerId ?? ""),
         seasonId: String(input.seasonId ?? ""),
@@ -127,6 +160,15 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "bulkAddExistingAthletes") {
+      const user = await canonicalUser();
+      const playerIds = Array.isArray(input.items)
+        ? input.items.map((item) => String((item as Record<string, unknown>).playerId ?? ""))
+        : [];
+      await Promise.all(playerIds.map((playerId) => requireRosterRelationshipAccess(user, {
+        playerId,
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage")));
       return Response.json(await bulkAddExistingAthletesToRoster({
         seasonId: String(input.seasonId ?? ""),
         competitionId: String(input.competitionId ?? ""),
@@ -138,6 +180,7 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "updateAthleteCanonical") {
+      await requirePlayerAccess(await canonicalUser(), String(input.playerId ?? ""), "manage");
       return Response.json(await updateAthleteCanonical({
         playerId: String(input.playerId ?? ""),
         firstName: input.firstName === undefined ? undefined : input.firstName === null ? null : String(input.firstName),
@@ -148,12 +191,17 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "updateAthleteShirt") {
+      await requireRosterMembershipAccess(await canonicalUser(), String(input.rosterId ?? ""), "manage");
       return Response.json(await updateRosterShirtNumber({
         rosterId: String(input.rosterId ?? ""),
         shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
       }));
     }
     if (action === "createStaffWithRoster") {
+      const relationship = await requireTeamCompetitionAccess(await canonicalUser(), {
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage");
       return Response.json(await createStaffWithRoster({
         firstName: String(input.firstName ?? ""),
         lastName: String(input.lastName ?? ""),
@@ -164,9 +212,15 @@ export async function PATCH(request: Request) {
         seasonId: String(input.seasonId ?? ""),
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
+        organizationId: relationship.organizationId,
       }));
     }
     if (action === "addExistingStaff") {
+      await requireStaffRosterRelationshipAccess(await canonicalUser(), {
+        staffId: String(input.staffId ?? ""),
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage");
       return Response.json(await addExistingStaffToRoster({
         staffId: String(input.staffId ?? ""),
         seasonId: String(input.seasonId ?? ""),
@@ -177,6 +231,7 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "updateStaffCanonical") {
+      await requireStaffAccess(await canonicalUser(), String(input.staffId ?? ""), "manage");
       return Response.json(await updateStaffCanonical({
         staffId: String(input.staffId ?? ""),
         firstName: input.firstName === undefined ? undefined : input.firstName === null ? null : String(input.firstName),
@@ -187,6 +242,7 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "updateStaffMembership") {
+      await requireStaffMembershipAccess(await canonicalUser(), String(input.membershipId ?? ""), "manage");
       return Response.json(await updateStaffMembership({
         membershipId: String(input.membershipId ?? ""),
         role: String(input.role ?? "other"),
@@ -194,13 +250,19 @@ export async function PATCH(request: Request) {
       }));
     }
     if (action === "removeStaffFromRoster") {
+      await requireStaffMembershipAccess(await canonicalUser(), String(input.membershipId ?? ""), "manage");
       return Response.json(await removeStaffFromRoster({ membershipId: String(input.membershipId ?? "") }));
     }
     if (action === "copyPreviousRoster") {
+      const relationship = await requireTeamCompetitionAccess(await canonicalUser(), {
+        competitionId: String(input.competitionId ?? ""),
+        teamId: String(input.teamId ?? ""),
+      }, "manage");
       return Response.json(await copyPreviousRosterForTeam({
         seasonId: String(input.seasonId ?? ""),
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
+        organizationId: relationship.organizationId,
       }));
     }
     if (action === "bulkScheduleGames") {
@@ -224,11 +286,14 @@ export async function PATCH(request: Request) {
       return Response.json(await finalizeLeaguePhase({ phaseId, competitionId }, authorization.identity.email));
     }
     if (action === "departPlayerLegacy") {
+      await requireRosterMembershipAccess(await canonicalUser(), String(input.rosterId ?? ""), "manage");
       return Response.json(await departPlayer(input, authorization.identity.email));
     }
 
     return Response.json({ error: "Μη υποστηριζόμενη ενέργεια." }, { status: 400 });
   } catch (error) {
+    const authorizationResponse = platformAuthorizationErrorResponse(error);
+    if (authorizationResponse) return authorizationResponse;
     return Response.json(
       { error: error instanceof Error ? error.message : "Η ενέργεια απέτυχε." },
       { status: 400 },

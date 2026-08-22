@@ -1,6 +1,15 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { requireAdmin } from "@/lib/admin-auth";
+import {
+  resolveCanonicalAppUser,
+  resolvePlatformReadContext,
+} from "@/lib/app-user-identity";
+import {
+  platformAuthorizationErrorResponse,
+  requireOrganizationAccess,
+  requireTeamAccess,
+} from "@/lib/platform-authorization";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import { updateLeagueEntity } from "@/services/league-admin.service";
 
@@ -21,6 +30,7 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const file = formData.get("logo");
     const teamId = String(formData.get("teamId") ?? "").trim();
+    const user = await resolveCanonicalAppUser(authorization.identity);
 
     if (!(file instanceof File)) {
       return Response.json(
@@ -38,6 +48,17 @@ export async function POST(request: Request) {
         },
         { status: 400 },
       );
+    }
+
+    if (teamId) {
+      await requireTeamAccess(user, teamId, "manage");
+    } else {
+      const requestedOrganizationId = String(
+        formData.get("organizationId") ?? "",
+      ).trim();
+      const organizationId = requestedOrganizationId
+        || (await resolvePlatformReadContext(user)).organizationId;
+      await requireOrganizationAccess(user, organizationId, "manage");
     }
 
     const safeTeamId = teamId || "pending-team";
@@ -83,6 +104,8 @@ export async function POST(request: Request) {
 
     return Response.json({ id: teamId || null, logoUrl });
   } catch (error) {
+    const authorizationResponse = platformAuthorizationErrorResponse(error);
+    if (authorizationResponse) return authorizationResponse;
     return Response.json(
       { error: error instanceof Error ? error.message : String(error) },
       { status: 500 },
