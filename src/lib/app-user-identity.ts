@@ -26,6 +26,7 @@ export type AccessibleOrganization = {
   organizationId: string;
   slug: string;
   name: string;
+  logoUrl: string | null;
   role: "super_admin" | "admin" | "viewer";
 };
 
@@ -121,35 +122,37 @@ export async function listAccessibleOrganizations(
   if (user.isSuperAdmin) {
     const result = await db
       .prepare(
-        `SELECT id, slug, name
+        `SELECT id, slug, name, logo_url
          FROM league_organizations
          WHERE status='active'
          ORDER BY name, id`,
       )
-      .all<{ id: string; slug: string; name: string }>();
+      .all<{ id: string; slug: string; name: string; logo_url: string | null }>();
     return (result.results ?? []).map((organization) => ({
       organizationId: organization.id,
       slug: organization.slug,
       name: organization.name,
+      logoUrl: organization.logo_url,
       role: "super_admin" as const,
     }));
   }
 
   const result = await db
     .prepare(
-      `SELECT o.id, o.slug, o.name, m.role
+      `SELECT o.id, o.slug, o.name, o.logo_url, m.role
        FROM league_organization_memberships m
        JOIN league_organizations o ON o.id=m.organization_id
        WHERE m.user_id=? AND m.status='active' AND o.status='active'
        ORDER BY o.name, o.id`,
     )
     .bind(user.userId)
-    .all<{ id: string; slug: string; name: string; role: "admin" | "viewer" }>();
+    .all<{ id: string; slug: string; name: string; logo_url: string | null; role: "admin" | "viewer" }>();
 
   return (result.results ?? []).map((organization) => ({
     organizationId: organization.id,
     slug: organization.slug,
     name: organization.name,
+    logoUrl: organization.logo_url,
     role: organization.role,
   }));
 }

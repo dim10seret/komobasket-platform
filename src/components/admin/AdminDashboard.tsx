@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
@@ -26,11 +27,14 @@ import { Overview } from "./platform/sections/OverviewSection";
 import { Players } from "./platform/sections/PlayersSection";
 import { Teams } from "./platform/sections/TeamsSection";
 import { Movements } from "./platform/sections/MovementsSection";
+import { PlatformAccessManagement } from "./platform/PlatformAccessManagement";
+import { PlatformOrganizationManagement } from "./platform/PlatformOrganizationManagement";
 
 type AccessibleOrganization = {
   organizationId: string;
   slug: string;
   name: string;
+  logoUrl: string | null;
   status: "active";
   role: "super_admin" | "admin" | "viewer";
 };
@@ -134,14 +138,21 @@ function Message({ text, kind }: { text: string; kind: "notice" | "error" }) {
 
 function OrganizationEntry({
   organizations,
+  showAccessManagement,
 }: {
   organizations: AccessibleOrganization[];
+  showAccessManagement: boolean;
 }) {
   return <main className="mx-auto max-w-5xl px-4 py-10 sm:px-7 sm:py-14">
     <div className="mb-8">
       <p className="text-xs font-black uppercase tracking-[.22em] text-orange-600">KomoBasket Platform</p>
       <h2 className="mt-2 text-3xl font-black text-zinc-950 sm:text-4xl">Επιλέξτε Οργανισμό</h2>
       <p className="mt-3 max-w-2xl leading-7 text-zinc-600">Επιλέξτε τον Οργανισμό που θέλετε να διαχειριστείτε.</p>
+      {showAccessManagement && <div className="mt-5 flex flex-wrap gap-3">
+        <Link href="/admin/platform?management=organizations&create=1" className="inline-flex rounded-xl bg-orange-600 px-4 py-3 text-sm font-black text-white transition hover:bg-orange-700">+ Νέος Οργανισμός</Link>
+        <Link href="/admin/platform?management=organizations" className="inline-flex rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-black text-zinc-900 transition hover:border-orange-400 hover:text-orange-700">Οργανισμοί</Link>
+        <Link href="/admin/platform?management=users" className="inline-flex rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-black text-zinc-900 transition hover:border-orange-400 hover:text-orange-700">Χρήστες &amp; Δικαιώματα</Link>
+      </div>}
     </div>
     {organizations.length === 0 ? (
       <div className="rounded-3xl border border-zinc-200 bg-white p-7 text-zinc-700 shadow-sm">
@@ -152,8 +163,8 @@ function OrganizationEntry({
         {organizations.map((organization) => (
           <article key={organization.organizationId} className="flex min-w-0 flex-col rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm sm:p-7">
             <div className="flex items-start justify-between gap-4">
-              <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-zinc-950 text-orange-500">
-                <Building2 size={24} />
+              <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-zinc-950 text-orange-500">
+                {organization.logoUrl ? <Image src={organization.logoUrl} alt="" width={48} height={48} className="size-12 object-contain" /> : <Building2 size={24} />}
               </span>
               <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">Ενεργός</span>
             </div>
@@ -180,12 +191,15 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [organizations, setOrganizations] = useState<AccessibleOrganization[]>([]);
+  const [canManagePlatform, setCanManagePlatform] = useState(false);
 
   const [teamSeasonFilter, setTeamSeasonFilter] = useState("all");
   const [selectedParticipationTeamIds, setSelectedParticipationTeamIds] = useState<string[]>([]);
   const [competitionWorkspaceMode, setCompetitionWorkspaceMode] = useState<CompetitionWorkspaceMode>("settings");
 
   const selectedOrganizationId = routeSearchParams.get("organization")?.trim() ?? "";
+  const managementView = routeSearchParams.get("management");
+  const isManagementView = managementView === "users" || managementView === "organizations";
   const selectedOrganization = organizations.find(
     (organization) => organization.organizationId === selectedOrganizationId,
   );
@@ -219,6 +233,13 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
         ? payload.organizations as AccessibleOrganization[]
         : [];
       setOrganizations(accessible);
+      const isSuperAdmin = payload.isSuperAdmin === true;
+      setCanManagePlatform(isSuperAdmin);
+      if (isManagementView && isSuperAdmin) {
+        setData(null);
+        setLoading(false);
+        return;
+      }
       if (!selectedOrganizationId) {
         setData(null);
         if (accessible.length === 1) {
@@ -241,7 +262,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
       setError(caught instanceof Error ? caught.message : "Αποτυχία φόρτωσης.");
       setLoading(false);
     }
-  }, [load, router, selectedOrganizationId]);
+  }, [isManagementView, load, router, selectedOrganizationId]);
 
   useEffect(() => {
     if (view !== "platform") return;
@@ -436,21 +457,38 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
   if (view === "home") return <AdminHome />;
   if (view === "news") return <NewsAdmin />;
 
+  if (managementView === "users" && canManagePlatform) {
+    return <div className="min-h-screen bg-zinc-100">
+      <AdminHeader view="platform" />
+      <PlatformAccessManagement />
+    </div>;
+  }
+
+  if (managementView === "organizations" && canManagePlatform) {
+    return <div className="min-h-screen bg-zinc-100">
+      <AdminHeader view="platform" />
+      <PlatformOrganizationManagement initialCreate={routeSearchParams.get("create") === "1"} />
+    </div>;
+  }
+
   if (!selectedOrganizationId || !selectedOrganization) {
     return <div className="min-h-screen bg-zinc-100">
       <AdminHeader view="platform" />
       {loading && <div className="mx-auto max-w-5xl px-4 py-10 text-center text-zinc-500 sm:px-7">Φόρτωση Οργανισμών…</div>}
       {!loading && error && <div className="mx-auto max-w-5xl px-4 pt-6 sm:px-7"><Message text={error} kind="error" /></div>}
-      {!loading && <OrganizationEntry organizations={organizations} />}
+      {!loading && <OrganizationEntry organizations={organizations} showAccessManagement={canManagePlatform} />}
     </div>;
   }
 
   return <div className="min-h-screen bg-zinc-100">
     <AdminHeader view="platform" onRefresh={() => void initializePlatform()} />
     <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3 px-4 pt-6 lg:px-7">
-      <div className="min-w-0">
+      <div className="flex min-w-0 items-center gap-3">
+        {selectedOrganization.logoUrl ? <Image src={selectedOrganization.logoUrl} alt="" width={40} height={40} className="size-10 rounded-xl object-contain" /> : null}
+        <div className="min-w-0">
         <p className="text-xs font-black uppercase tracking-[.18em] text-zinc-500">Τρέχων Οργανισμός</p>
         <p className="truncate text-lg font-black text-zinc-950">{selectedOrganization.name} <span className="text-sm text-zinc-500">· {organizationRoleLabels[selectedOrganization.role]}</span></p>
+        </div>
       </div>
       <Link href="/admin/platform" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-400 hover:text-orange-700">
         Αλλαγή Οργανισμού

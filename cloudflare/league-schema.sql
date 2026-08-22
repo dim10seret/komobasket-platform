@@ -6,6 +6,10 @@ CREATE TABLE IF NOT EXISTS league_organizations (
   name TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active','suspended','archived')),
+  logo_url TEXT,
+  publication_status TEXT NOT NULL DEFAULT 'unpublished'
+    CHECK (publication_status IN ('unpublished','published')),
+  published_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

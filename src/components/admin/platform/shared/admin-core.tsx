@@ -10,6 +10,7 @@ export type Snapshot = {
     organizationId: string;
     slug: string;
     name: string;
+    logoUrl: string | null;
     role: "super_admin" | "admin" | "viewer";
   };
   seasons: Row[];

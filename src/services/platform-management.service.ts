@@ -2,17 +2,30 @@ import "server-only";
 
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { isReservedOrganizationSlug } from "@/lib/organization-slug";
 
 type OrganizationStatus = "active" | "suspended" | "archived";
+type OrganizationPublicationStatus = "unpublished" | "published";
 type AppUserStatus = "active" | "disabled";
 type MembershipRole = "admin" | "viewer";
 type MembershipStatus = "active" | "invited" | "revoked";
+
+export type OrganizationDependencyCounts = {
+  competitions: number;
+  teams: number;
+  players: number;
+  staff: number;
+  memberships: number;
+};
 
 type OrganizationRow = {
   id: string;
   slug: string;
   name: string;
   status: OrganizationStatus;
+  logo_url: string | null;
+  publication_status: OrganizationPublicationStatus;
+  published_at: string | null;
   created_at: string;
   updated_at: string;
   role?: "super_admin" | MembershipRole;
@@ -58,6 +71,10 @@ const ORGANIZATION_STATUSES = new Set<OrganizationStatus>([
   "active",
   "suspended",
   "archived",
+]);
+const ORGANIZATION_PUBLICATION_STATUSES = new Set<OrganizationPublicationStatus>([
+  "unpublished",
+  "published",
 ]);
 const USER_STATUSES = new Set<AppUserStatus>(["active", "disabled"]);
 const MEMBERSHIP_ROLES = new Set<MembershipRole>(["admin", "viewer"]);
@@ -142,6 +159,13 @@ function normalizeSlug(value: unknown) {
       400,
     );
   }
+  if (isReservedOrganizationSlug(slug)) {
+    throw new PlatformManagementError(
+      "reserved_organization_slug",
+      "Το slug είναι δεσμευμένο από την πλατφόρμα.",
+      400,
+    );
+  }
   return slug;
 }
 
@@ -184,11 +208,48 @@ async function loadOrganization(id: string) {
   const db = await requireDatabase();
   return db
     .prepare(
-      `SELECT id, slug, name, status, created_at, updated_at
+      `SELECT id, slug, name, status, logo_url, publication_status, published_at,
+              created_at, updated_at
        FROM league_organizations WHERE id = ?`,
     )
     .bind(id)
     .first<OrganizationRow>();
+}
+
+const EMPTY_ORGANIZATION_GUARD = `
+  NOT EXISTS (SELECT 1 FROM league_competitions c WHERE c.organization_id = league_organizations.id)
+  AND NOT EXISTS (SELECT 1 FROM league_teams t WHERE t.organization_id = league_organizations.id)
+  AND NOT EXISTS (SELECT 1 FROM league_players p WHERE p.organization_id = league_organizations.id)
+  AND NOT EXISTS (SELECT 1 FROM league_staff s WHERE s.organization_id = league_organizations.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM league_organization_memberships m
+    WHERE m.organization_id = league_organizations.id
+  )`;
+
+export async function getManagedOrganizationDependencies(
+  organizationId: string,
+): Promise<OrganizationDependencyCounts> {
+  const id = requiredText(organizationId, "organizationId");
+  const organization = await loadOrganization(id);
+  if (!organization) {
+    throw new PlatformManagementError("organization_not_found", "Ο Οργανισμός δεν βρέθηκε.", 404);
+  }
+  const db = await requireDatabase();
+  const counts = await db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM league_competitions c WHERE c.organization_id = ?) AS competitions,
+       (SELECT COUNT(*) FROM league_teams t WHERE t.organization_id = ?) AS teams,
+       (SELECT COUNT(*) FROM league_players p WHERE p.organization_id = ?) AS players,
+       (SELECT COUNT(*) FROM league_staff s WHERE s.organization_id = ?) AS staff,
+       (SELECT COUNT(*) FROM league_organization_memberships m WHERE m.organization_id = ?) AS memberships`,
+  ).bind(id, id, id, id, id).first<Record<keyof OrganizationDependencyCounts, number>>();
+  return {
+    competitions: Number(counts?.competitions ?? 0),
+    teams: Number(counts?.teams ?? 0),
+    players: Number(counts?.players ?? 0),
+    staff: Number(counts?.staff ?? 0),
+    memberships: Number(counts?.memberships ?? 0),
+  };
 }
 
 async function loadUser(id: string) {
@@ -225,7 +286,8 @@ export async function listManagedOrganizations(user: CanonicalAppUser) {
   if (user.isSuperAdmin) {
     const result = await db
       .prepare(
-        `SELECT id, slug, name, status, created_at, updated_at
+        `SELECT id, slug, name, status, logo_url, publication_status, published_at,
+                created_at, updated_at
          FROM league_organizations ORDER BY name, id`,
       )
       .all<OrganizationRow>();
@@ -234,7 +296,8 @@ export async function listManagedOrganizations(user: CanonicalAppUser) {
 
   const result = await db
     .prepare(
-      `SELECT o.id, o.slug, o.name, o.status, o.created_at, o.updated_at, m.role
+      `SELECT o.id, o.slug, o.name, o.status, o.logo_url, o.publication_status,
+              o.published_at, o.created_at, o.updated_at, m.role
        FROM league_organization_memberships m
        JOIN league_organizations o ON o.id = m.organization_id
        WHERE m.user_id = ? AND m.status = 'active' AND o.status = 'active'
@@ -294,7 +357,7 @@ export async function createManagedOrganization(
   input: Record<string, unknown>,
   actorEmail: string,
 ) {
-  rejectKeys(input, ["id"]);
+  rejectKeys(input, ["id", "logoUrl", "logo_url", "publicationStatus", "publication_status", "publishedAt", "published_at"]);
   const name = requiredText(input.name, "name");
   const slug = normalizeSlug(input.slug);
   const status = enumValue(input.status ?? "active", ORGANIZATION_STATUSES, "status");
@@ -332,7 +395,7 @@ export async function updateManagedOrganization(
   input: Record<string, unknown>,
   actorEmail: string,
 ) {
-  rejectKeys(input, ["organization_id"]);
+  rejectKeys(input, ["organization_id", "logoUrl", "logo_url", "publishedAt", "published_at"]);
   const id = requiredText(input.organizationId, "organizationId");
   const current = await loadOrganization(id);
   if (!current) {
@@ -343,6 +406,13 @@ export async function updateManagedOrganization(
   const status = input.status === undefined
     ? current.status
     : enumValue(input.status, ORGANIZATION_STATUSES, "status");
+  const publicationStatus = input.publicationStatus === undefined && input.publication_status === undefined
+    ? current.publication_status
+    : enumValue(
+        input.publicationStatus ?? input.publication_status,
+        ORGANIZATION_PUBLICATION_STATUSES,
+        "publicationStatus",
+      );
   const db = await requireDatabase();
   const duplicate = await db
     .prepare("SELECT id FROM league_organizations WHERE slug = ? AND id <> ?")
@@ -359,16 +429,91 @@ export async function updateManagedOrganization(
     db
       .prepare(
         `UPDATE league_organizations
-         SET name = ?, slug = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+         SET name = ?, slug = ?, status = ?, publication_status = ?,
+             published_at = CASE
+               WHEN ? = 'published' THEN COALESCE(published_at, CURRENT_TIMESTAMP)
+               ELSE published_at
+             END,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
       )
-      .bind(name, slug, status, id),
+      .bind(name, slug, status, publicationStatus, publicationStatus, id),
     auditStatement(db, actorEmail, "update", "organization", id, {
-      before: { name: current.name, slug: current.slug, status: current.status },
-      after: { name, slug, status },
+      before: { name: current.name, slug: current.slug, status: current.status, publicationStatus: current.publication_status },
+      after: { name, slug, status, publicationStatus },
     }),
   ]);
   return loadOrganization(id);
+}
+
+export async function updateManagedOrganizationLogo(
+  organizationId: string,
+  logoUrl: string,
+  actorEmail: string,
+) {
+  const current = await loadOrganization(organizationId);
+  if (!current) {
+    throw new PlatformManagementError("organization_not_found", "Ο Οργανισμός δεν βρέθηκε.", 404);
+  }
+  const db = await requireDatabase();
+  await db.batch([
+    db.prepare(
+      `UPDATE league_organizations
+       SET logo_url = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    ).bind(logoUrl, organizationId),
+    auditStatement(db, actorEmail, "update_logo", "organization", organizationId, {
+      before: { logoUrl: current.logo_url },
+      after: { logoUrl },
+    }),
+  ]);
+  return loadOrganization(organizationId);
+}
+
+export async function deleteManagedOrganization(
+  input: Record<string, unknown>,
+  actorEmail: string,
+) {
+  rejectKeys(input, ["id"]);
+  const id = requiredText(input.organizationId, "organizationId");
+  const current = await loadOrganization(id);
+  if (!current) {
+    throw new PlatformManagementError("organization_not_found", "Ο Οργανισμός δεν βρέθηκε.", 404);
+  }
+  const dependencies = await getManagedOrganizationDependencies(id);
+  if (Object.values(dependencies).some((count) => count > 0)) {
+    throw new PlatformManagementError(
+      "organization_not_empty",
+      "Ο Οργανισμός περιέχει δεδομένα και δεν μπορεί να διαγραφεί. Μπορείτε να τον αρχειοθετήσετε.",
+      409,
+    );
+  }
+
+  const db = await requireDatabase();
+  const auditId = createId("audit");
+  const details = JSON.stringify({ deleted: current, dependencies });
+  await db.batch([
+    db.prepare(
+      `INSERT INTO league_audit_log
+       (id, actor_email, action, entity_type, entity_id, details_json, created_at)
+       SELECT ?, ?, 'delete', 'organization', id, ?, CURRENT_TIMESTAMP
+       FROM league_organizations
+       WHERE id = ? AND ${EMPTY_ORGANIZATION_GUARD}`,
+    ).bind(auditId, actorEmail, details, id),
+    db.prepare(
+      `DELETE FROM league_organizations
+       WHERE id = ? AND ${EMPTY_ORGANIZATION_GUARD}`,
+    ).bind(id),
+  ]);
+
+  if (await loadOrganization(id)) {
+    throw new PlatformManagementError(
+      "organization_not_empty",
+      "Ο Οργανισμός περιέχει δεδομένα και δεν μπορεί να διαγραφεί. Μπορείτε να τον αρχειοθετήσετε.",
+      409,
+    );
+  }
+  return { deleted: true, organizationId: id };
 }
 
 export async function createManagedUser(

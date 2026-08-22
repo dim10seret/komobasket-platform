@@ -8,6 +8,7 @@ import {
   createManagedMembership,
   createManagedOrganization,
   createManagedUser,
+  deleteManagedOrganization,
   listManagedMemberships,
   listManagedOrganizations,
   listManagedUsers,
@@ -128,6 +129,26 @@ export async function PATCH(
     }
     return Response.json({
       membership: await updateManagedMembership(input, actorEmail),
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  context: { params: Promise<{ resource: string }> },
+) {
+  try {
+    const resolved = await requestContext(request, context);
+    if (resolved.response) return resolved.response;
+    await requirePlatformSuperAdmin(resolved.user);
+    if (resolved.resource !== "organizations") {
+      return Response.json({ error: "Η διαγραφή δεν υποστηρίζεται για αυτόν τον πόρο." }, { status: 405 });
+    }
+    const input = (await request.json()) as Record<string, unknown>;
+    return Response.json({
+      result: await deleteManagedOrganization(input, resolved.authorization.identity.email),
     });
   } catch (error) {
     return errorResponse(error);

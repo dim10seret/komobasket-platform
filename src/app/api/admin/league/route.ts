@@ -50,12 +50,13 @@ export async function GET(request: Request) {
   if (authorization.response) return authorization.response;
   try {
     const canonicalUser = await resolveCanonicalAppUser(authorization.identity);
+    const accessibleOrganizations = await listAccessibleOrganizations(canonicalUser);
     const requestUrl = new URL(request.url);
     const view = requestUrl.searchParams.get("view");
     if (view === "organizations") {
-      const organizations = await listAccessibleOrganizations(canonicalUser);
       return Response.json({
-        organizations: organizations.map((organization) => ({
+        isSuperAdmin: canonicalUser.isSuperAdmin,
+        organizations: accessibleOrganizations.map((organization) => ({
           ...organization,
           status: "active" as const,
         })),
@@ -94,6 +95,9 @@ export async function GET(request: Request) {
         organizationId: selectedOrganization.organizationId,
         slug: selectedOrganization.organizationSlug,
         name: selectedOrganization.organizationName,
+        logoUrl: accessibleOrganizations.find(
+          (organization) => organization.organizationId === selectedOrganization.organizationId,
+        )?.logoUrl ?? null,
         role: selectedOrganization.role,
       },
     });
