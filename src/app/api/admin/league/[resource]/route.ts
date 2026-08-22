@@ -12,6 +12,7 @@ import {
   requireOrganizationAccess,
   requireParticipationAccess,
   requirePhaseAccess,
+  requirePhaseDependencyGraphAccess,
   requireRosterRelationshipAccess,
   requireScheduleAccess,
   requireSourcePhaseAccess,
@@ -269,6 +270,23 @@ async function requireGameMutationAccess(
     rejectResourceMismatch();
   }
 
+  if (existingGame?.phaseId) {
+    const canonicalPhase = await requirePhaseAccess(user, existingGame.phaseId, "manage");
+    if (canonicalPhase.competitionId !== competition.competitionId) {
+      rejectResourceMismatch();
+    }
+  }
+
+  if (existingGame?.scheduleId) {
+    const canonicalSchedule = await requireScheduleAccess(user, existingGame.scheduleId, "manage");
+    if (
+      canonicalSchedule.competitionId !== competition.competitionId
+      || (existingGame.phaseId && canonicalSchedule.phaseId !== existingGame.phaseId)
+    ) {
+      rejectResourceMismatch();
+    }
+  }
+
   const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
   if (phaseId) {
     const phase = await requirePhaseAccess(user, phaseId, "manage");
@@ -419,6 +437,14 @@ export async function PATCH(
     const input = (await request.json()) as Record<string, unknown>;
 
     if (resource === "phases" && String(input.action ?? "").trim() === "finalizePhase") {
+      const user = await resolveCanonicalAppUser(authorization.identity);
+      const phaseId = String(input.phaseId ?? input.phase_id ?? input.id ?? "").trim();
+      const phase = await requirePhaseDependencyGraphAccess(user, phaseId, "manage");
+      requireMatchingId(
+        phase.competitionId,
+        phase.competitionId,
+        input.competitionId ?? input.competition_id,
+      );
       const result = await finalizeLeaguePhase(input, authorization.identity.email);
       return Response.json(result);
     }

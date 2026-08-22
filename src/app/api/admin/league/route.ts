@@ -9,6 +9,7 @@ import {
   requireCompetitionAccess,
   requireCompetitionVenueAccess,
   requireGameAccess,
+  requirePhaseDependencyGraphAccess,
   requirePlayerAccess,
   requireRosterMembershipAccess,
   requireRosterRelationshipAccess,
@@ -315,6 +316,14 @@ export async function PATCH(request: Request) {
       const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
       if (!phaseId || !competitionId) {
         return Response.json({ error: "Λείπει phaseId ή competitionId." }, { status: 400 });
+      }
+      const phase = await requirePhaseDependencyGraphAccess(await canonicalUser(), phaseId, "manage");
+      if (phase.competitionId !== competitionId) {
+        throw new PlatformAuthorizationError(
+          "resource_unavailable",
+          "Ο ζητούμενος πόρος δεν είναι διαθέσιμος.",
+          404,
+        );
       }
       return Response.json(await finalizeLeaguePhase({ phaseId, competitionId }, authorization.identity.email));
     }

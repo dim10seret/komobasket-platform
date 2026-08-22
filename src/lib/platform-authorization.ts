@@ -327,6 +327,66 @@ export async function requirePhaseAccess(
   };
 }
 
+type PhaseDependencyRow = {
+  id: string;
+  competition_id: string;
+  previous_phase_id: string | null;
+  carry_over_source_phase_id: string | null;
+  participant_source_phase_id: string | null;
+};
+
+export async function requirePhaseDependencyGraphAccess(
+  identity: CanonicalAppUser | null,
+  phaseId: string,
+  mode: PlatformPermissionMode,
+): Promise<PhaseAccessContext> {
+  const phase = await requirePhaseAccess(identity, phaseId, mode);
+  const db = await requireDatabase();
+  const current = await db.prepare(`
+    SELECT p.id, p.competition_id, p.previous_phase_id,
+      pr.carry_over_source_phase_id,
+      json_extract(pr.settings_json, '$.participantConfiguration.participantSourcePhaseId')
+        AS participant_source_phase_id
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.id=?
+  `).bind(phaseId).first<PhaseDependencyRow>();
+  if (!current) throw authorizationError("resource_unavailable");
+
+  const sourcePhaseIds = new Set([
+    current.previous_phase_id,
+    current.carry_over_source_phase_id,
+    current.participant_source_phase_id,
+  ].map((value) => String(value ?? "").trim()).filter(Boolean));
+
+  for (const sourcePhaseId of sourcePhaseIds) {
+    const source = await requirePhaseAccess(identity, sourcePhaseId, mode);
+    if (source.organizationId !== phase.organizationId) {
+      throw authorizationError("resource_unavailable");
+    }
+  }
+
+  const downstream = await db.prepare(`
+    SELECT p.id, p.competition_id, p.previous_phase_id,
+      pr.carry_over_source_phase_id,
+      json_extract(pr.settings_json, '$.participantConfiguration.participantSourcePhaseId')
+        AS participant_source_phase_id
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.previous_phase_id=?
+      OR pr.carry_over_source_phase_id=?
+      OR json_extract(pr.settings_json, '$.participantConfiguration.participantSourcePhaseId')=?
+  `).bind(phaseId, phaseId, phaseId).all<PhaseDependencyRow>();
+  for (const dependency of downstream.results ?? []) {
+    const dependentPhase = await requirePhaseAccess(identity, dependency.id, mode);
+    if (dependentPhase.organizationId !== phase.organizationId) {
+      throw authorizationError("resource_unavailable");
+    }
+  }
+
+  return phase;
+}
+
 type ScheduleRow = PhaseRow & {
   phase_id: string;
 };
