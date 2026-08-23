@@ -185,6 +185,16 @@ CREATE TABLE IF NOT EXISTS league_phases (
   settings_json TEXT NOT NULL DEFAULT '{}', UNIQUE(competition_id, slug)
 );
 
+CREATE TABLE IF NOT EXISTS league_phase_standings_presentation (
+  phase_id TEXT NOT NULL REFERENCES league_phases(id) ON DELETE CASCADE,
+  category TEXT NOT NULL CHECK (category IN ('direct_qualification','play_out','eliminated')),
+  position INTEGER NOT NULL CHECK (position >= 1),
+  PRIMARY KEY (phase_id, category, position),
+  UNIQUE (phase_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_phase_standings_presentation_phase
+  ON league_phase_standings_presentation(phase_id, category, position);
+
 CREATE TABLE IF NOT EXISTS league_games (
   id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id) ON DELETE CASCADE,
   phase_id TEXT REFERENCES league_phases(id) ON DELETE SET NULL,

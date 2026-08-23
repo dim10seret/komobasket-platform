@@ -58,6 +58,29 @@ export function PhaseFields({
   lockedSeriesRangeTo?: number;
   isContinuationSeries?: boolean;
 }) {
+  type StandingsPresentationCategory = "direct_qualification" | "play_out" | "eliminated";
+  type StandingsPresentation = Record<StandingsPresentationCategory, number[]>;
+  const emptyStandingsPresentation = (): StandingsPresentation => ({
+    direct_qualification: [],
+    play_out: [],
+    eliminated: [],
+  });
+  const parseStandingsPresentation = (value: unknown): StandingsPresentation => {
+    const next = emptyStandingsPresentation();
+    try {
+      const entries = JSON.parse(String(value ?? "[]"));
+      if (!Array.isArray(entries)) return next;
+      for (const entry of entries) {
+        const category = String(entry?.category ?? "") as StandingsPresentationCategory;
+        const position = Number(entry?.position);
+        if (!(category in next) || !Number.isInteger(position) || position < 1) continue;
+        if (!next[category].includes(position)) next[category].push(position);
+      }
+    } catch {
+      return next;
+    }
+    return next;
+  };
   const canonicalFormat = (value: string) => {
     const normalized = String(value ?? "").trim().toLowerCase();
     return normalized === "knockout" ? "series" : normalized;
@@ -67,6 +90,7 @@ export function PhaseFields({
   const [isSaving, setIsSaving] = useState(false);
   const rules = parseStandingsRules(phase?.rule_settings_json);
   const [tieBreakers,setTieBreakers]=useState<string[]>(() => normalizeStandingsTieBreakers(rules.tieBreakers));
+  const [standingsPresentation, setStandingsPresentation] = useState<StandingsPresentation>(() => parseStandingsPresentation(phase?.standings_presentation_json));
   const [activeStep,setActiveStep]=useState(1);
   const isC4Format = ["series"].includes(selectedFormat);
   const shouldUseStepper = Boolean(editing && isC4Format);
@@ -122,6 +146,53 @@ export function PhaseFields({
   useEffect(() => {
     setPhaseNameInput(String(phase?.name ?? ""));
   }, [phase?.id, phase?.name]);
+
+  useEffect(() => {
+    setStandingsPresentation(parseStandingsPresentation(phase?.standings_presentation_json));
+  }, [phase?.id, phase?.standings_presentation_json]);
+
+  const standingsPositionCount = Math.max(
+    0,
+    Number(data.competitions.find((competition) => String(competition.id) === String(competitionId ?? phase?.competition_id ?? ""))?.expected_team_count ?? 0),
+  );
+  const toggleStandingsPresentationPosition = (category: StandingsPresentationCategory, position: number) => {
+    setStandingsPresentation((current) => {
+      const selected = current[category].includes(position);
+      const next = emptyStandingsPresentation();
+      for (const currentCategory of Object.keys(next) as StandingsPresentationCategory[]) {
+        next[currentCategory] = current[currentCategory].filter((value) => value !== position);
+      }
+      next[category] = selected ? current[category].filter((value) => value !== position) : [...current[category], position].sort((left, right) => left - right);
+      return next;
+    });
+  };
+  const renderStandingsPresentation = () => {
+    const categories: Array<{ key: StandingsPresentationCategory; label: string }> = [
+      { key: "direct_qualification", label: "Απευθείας πρόκριση" },
+      { key: "play_out", label: "Play Out" },
+      { key: "eliminated", label: "Εκτός συνέχειας" },
+    ];
+    return <div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+      <p className="text-sm font-black text-zinc-800">ΔΗΜΟΣΙΑ ΑΠΕΙΚΟΝΙΣΗ ΒΑΘΜΟΛΟΓΙΑΣ</p>
+      <p className="mt-1 text-sm text-zinc-700">Οι επιλογές χρησιμοποιούνται μόνο για την παρουσίαση της βαθμολογίας στο site και δεν επηρεάζουν την εξέλιξη της διοργάνωσης.</p>
+      {standingsPositionCount > 0 ? <div className="mt-3 space-y-3">
+        {categories.map(({ key, label }) => <div key={key}>
+          <p className="mb-1 text-sm font-black text-zinc-800">{label}</p>
+          <div className="flex flex-wrap gap-2">
+            {Array.from({ length: standingsPositionCount }, (_, index) => index + 1).map((position) => {
+              const assignedCategory = (Object.keys(standingsPresentation) as StandingsPresentationCategory[]).find((candidate) => standingsPresentation[candidate].includes(position));
+              const checked = assignedCategory === key;
+              return <label key={position} className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-sm ${assignedCategory && !checked ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400" : "border-sky-200 bg-white text-zinc-800"}`}>
+                <input type="checkbox" checked={checked} disabled={Boolean(assignedCategory && !checked)} onChange={() => toggleStandingsPresentationPosition(key, position)} />
+                Θέση {position}
+              </label>;
+            })}
+          </div>
+        </div>)}
+      </div> : <p className="mt-3 text-sm text-zinc-600">Οι διαθέσιμες θέσεις θα εμφανιστούν όταν είναι γνωστός ο αριθμός ομάδων της διοργάνωσης.</p>}
+      <input type="hidden" name="standingsPresentation" value={JSON.stringify(standingsPresentation)} />
+    </div>;
+  };
 
   useEffect(() => {
     if (initialName !== undefined) {
@@ -247,6 +318,7 @@ export function PhaseFields({
             </div>
             <input type="hidden" name="tieBreakers" value={JSON.stringify(tieBreakers)} />
           </div>
+          {renderStandingsPresentation()}
         </>}
       </>
     );
@@ -361,6 +433,7 @@ export function PhaseFields({
               </div>
               <input type="hidden" name="tieBreakers" value={JSON.stringify(tieBreakers)} />
             </div>
+            {renderStandingsPresentation()}
           </div>
         )}
 
@@ -979,6 +1052,4 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
 
   </>;
 }
-
-
 

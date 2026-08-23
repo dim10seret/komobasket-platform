@@ -2761,6 +2761,67 @@ async function savePhaseRules(
     ).run();
 }
 
+type StandingsPresentationCategory = "direct_qualification" | "play_out" | "eliminated";
+type StandingsPresentation = Record<StandingsPresentationCategory, number[]>;
+
+const standingsPresentationCategories = new Set<StandingsPresentationCategory>([
+  "direct_qualification",
+  "play_out",
+  "eliminated",
+]);
+
+function parseStandingsPresentation(input: Record<string, unknown>): StandingsPresentation | null {
+  if (input.standingsPresentation === undefined) return null;
+  const raw = parseJsonRecord(input.standingsPresentation);
+  const presentation: StandingsPresentation = {
+    direct_qualification: [],
+    play_out: [],
+    eliminated: [],
+  };
+  const assignedPositions = new Set<number>();
+
+  for (const [category, value] of Object.entries(raw)) {
+    if (!standingsPresentationCategories.has(category as StandingsPresentationCategory)) {
+      throw new Error("Μη έγκυρη κατηγορία δημόσιας απεικόνισης βαθμολογίας.");
+    }
+    if (!Array.isArray(value)) {
+      throw new Error("Οι θέσεις δημόσιας απεικόνισης βαθμολογίας πρέπει να είναι λίστα.");
+    }
+    const positions = value.map((position) => Number(position));
+    if (positions.some((position) => !Number.isInteger(position) || position < 1)) {
+      throw new Error("Οι θέσεις δημόσιας απεικόνισης βαθμολογίας πρέπει να είναι θετικοί ακέραιοι.");
+    }
+    if (new Set(positions).size !== positions.length) {
+      throw new Error("Η ίδια θέση εμφανίζεται περισσότερες από μία φορές στην ίδια κατηγορία.");
+    }
+    for (const position of positions) {
+      if (assignedPositions.has(position)) {
+        throw new Error("Η ίδια θέση δεν μπορεί να ανήκει σε περισσότερες από μία κατηγορίες δημόσιας απεικόνισης.");
+      }
+      assignedPositions.add(position);
+    }
+    presentation[category as StandingsPresentationCategory] = positions.sort((left, right) => left - right);
+  }
+
+  return presentation;
+}
+
+async function savePhaseStandingsPresentation(
+  db: D1DatabaseBinding,
+  phaseId: string,
+  presentation: StandingsPresentation | null,
+) {
+  if (!presentation) return;
+  await db.batch([
+    db.prepare("DELETE FROM league_phase_standings_presentation WHERE phase_id=?").bind(phaseId),
+    ...Object.entries(presentation).flatMap(([category, positions]) => positions.map((position) =>
+      db.prepare(`INSERT INTO league_phase_standings_presentation (phase_id, category, position)
+        VALUES (?, ?, ?)`)
+        .bind(phaseId, category, position),
+    )),
+  ]);
+}
+
 async function normalizeCompetitionPhaseOrder(
   db: D1DatabaseBinding,
   competitionId: string,
@@ -2870,7 +2931,9 @@ export async function getLeagueAdminSnapshot(organizationId: string) {
       p.previous_phase_id,
       pr.bracket_size, pr.best_of, pr.wins_required, pr.carry_over_enabled,
       pr.carry_over_source_phase_id, source_phase.name AS carry_over_source_name,
-      pr.settings_json AS rule_settings_json
+      pr.settings_json AS rule_settings_json,
+      COALESCE((SELECT json_group_array(json_object('category', sp.category, 'position', sp.position))
+        FROM league_phase_standings_presentation sp WHERE sp.phase_id=p.id), '[]') AS standings_presentation_json
       FROM league_phases p
       JOIN league_competitions c ON c.id=p.competition_id
       JOIN league_seasons s ON s.id=c.season_id
@@ -4293,6 +4356,7 @@ export async function createLeagueEntity(resource: string, input: Record<string,
     await addRosterMembership(db, id, input);
   } else if (resource === "phases") {
     const phase = await phaseInput(db, input);
+    const standingsPresentation = parseStandingsPresentation(input);
     const duplicate = await db.prepare(
       "SELECT id FROM league_phases WHERE competition_id=? AND slug=?",
     ).bind(phase.competitionId, phase.slug).first<{ id: string }>();
@@ -4312,6 +4376,7 @@ export async function createLeagueEntity(resource: string, input: Record<string,
         phase.previousPhaseId,
       ).run();
     await savePhaseRules(db, id, phase);
+    await savePhaseStandingsPresentation(db, id, standingsPresentation);
     await normalizeCompetitionPhaseOrder(db, phase.competitionId);
   } else if (resource === "phase-schedules") {
     if (!["materializePhaseProgram", "generateRoundRobinGames"].includes(String(input.action ?? "").trim())) {
@@ -5641,6 +5706,7 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
       throw new Error("Η οριστικοποιημένη φάση δεν μπορεί να τροποποιηθεί.");
     }
     const phase = await phaseInput(db, input, current);
+    const standingsPresentation = parseStandingsPresentation(input);
     const generatedSchedule = await db.prepare(
       "SELECT id FROM league_phase_schedules WHERE phase_id=? LIMIT 1",
     ).bind(id).first<{ id: string }>();
@@ -5675,6 +5741,7 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
         id,
       ).run();
     await savePhaseRules(db, id, phase);
+    await savePhaseStandingsPresentation(db, id, standingsPresentation);
     await normalizeCompetitionPhaseOrder(db, phase.competitionId);
     await db.prepare("UPDATE league_phase_schedules SET competition_id=?, updated_at=CURRENT_TIMESTAMP WHERE phase_id=?")
       .bind(phase.competitionId, id).run();
