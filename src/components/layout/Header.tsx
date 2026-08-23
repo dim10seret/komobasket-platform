@@ -32,6 +32,7 @@ function YouTubeIcon() {
 
 const navigation = [
   { href: "/", label: "Αρχική" },
+  { href: "/competitions", label: "Διοργανώσεις" },
   { href: "/schedule", label: "Πρόγραμμα" },
   { href: "/results", label: "Αποτελέσματα" },
   { href: "/standings", label: "Βαθμολογία" },
