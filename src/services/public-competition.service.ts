@@ -45,6 +45,11 @@ export type PublicGame = {
 export type PublicStandingRow = { rank: number; team: PublicGameTeam; gamesPlayed: number; wins: number; losses: number; standingsPoints: number; pointsFor: number; pointsAgainst: number; pointDifference: number };
 export type PublicSeriesRound = { roundNumber: number; kind: "transferred" | "game" | "not_needed"; sourcePhaseName: string | null; game: PublicGame | null };
 export type PublicSeriesMatchupHistory = { matchupId: string; label: string; maximumSeriesRounds: number; rounds: PublicSeriesRound[] };
+export type PublicBracketParticipant = { slot: "A" | "B"; team: PublicGameTeam | null; originLabel: string | null };
+export type PublicBracketMatchup = { matchupId: string; kind: "series" | "direct_qualifier" | "standings_origin"; participants: PublicBracketParticipant[]; winnerTeamId: string | null; seriesScore: { winsA: number; winsB: number; winsRequired: number } | null; directAdvancement: boolean };
+export type PublicBracketStage = { phaseId: string; phaseSlug: string; label: string; order: number; kind: "standings_origin" | "series"; matchups: PublicBracketMatchup[] };
+export type PublicBracketEdge = { id: string; from: { phaseId: string; matchupId: string; outcome: "winner" | "loser" | "standing_position" }; to: { phaseId: string; matchupId: string; slot: "A" | "B" } };
+export type CompetitionBracketProjection = { meaningful: boolean; stages: PublicBracketStage[]; edges: PublicBracketEdge[] };
 
 export type PublicPhase = {
   id: string;
@@ -80,6 +85,7 @@ export type PublicCompetitionContext = {
   games: PublicGame[];
   standings: PublicStandingRow[];
   seriesHistory: PublicSeriesMatchupHistory[];
+  bracket: CompetitionBracketProjection | null;
   selectedSeason: PublicSeason | null;
   selectedCompetition: PublicCompetition | null;
   selectedPhase: PublicPhase | null;
@@ -104,6 +110,7 @@ type PublicPhaseRow = {
   phase_type: string;
   phase_kind: string | null;
   lifecycle_status: string | null;
+  phase_order: number | null;
   previous_phase_id: string | null;
   participant_count: number | null;
   round_count: number | null;
@@ -289,6 +296,119 @@ function toSeriesPhase(row: PublicPhaseRow, competitionId: string): SeriesCarryO
   };
 }
 
+type BracketSlot = { type: string; position: string | null; teamId: string | null; matchupId: string | null };
+type BracketDefinition = { id: string; slotA: BracketSlot; slotB: BracketSlot };
+
+function bracketDefinitions(settingsJson: string | null): BracketDefinition[] {
+  const settings = parseJsonRecord(settingsJson);
+  const bracket = parseRecord(settings.bracketConfiguration);
+  const matchups = Array.isArray(bracket.matchups) ? bracket.matchups : [];
+  const slot = (value: unknown): BracketSlot => {
+    const record = parseRecord(value);
+    return {
+      type: String(record.type ?? "").trim(),
+      position: String(record.position ?? "").trim() || null,
+      teamId: String(record.teamId ?? "").trim() || null,
+      matchupId: String(record.matchupId ?? "").trim() || null,
+    };
+  };
+  return matchups.flatMap((value) => {
+    const matchup = parseRecord(value);
+    const id = String(matchup.id ?? "").trim();
+    return id ? [{ id, slotA: slot(matchup.slotA), slotB: slot(matchup.slotB) }] : [];
+  });
+}
+
+function slotOriginLabel(slot: BracketSlot): string | null {
+  if (slot.type === "standing_position" && slot.position) return `#${slot.position}`;
+  if (slot.type === "matchup_winner") return "Νικητής διασταύρωσης";
+  if (slot.type === "matchup_loser") return "Ηττημένος διασταύρωσης";
+  if (slot.type === "fixed_team") return "Επιλεγμένη ομάδα";
+  return null;
+}
+
+function canonicalSeriesState(matchup: ReturnType<typeof resolveSeriesCarryOver>["matchups"][number], phase: PublicPhaseRow, games: PublicGameRow[]) {
+  const transferred: SeriesProgressionTransferredGame[] = matchup.meetingResolutions.flatMap((meeting, index) => {
+    const game = games.find((item) => item.id === meeting.gameId);
+    return meeting.state === "resolved" && game && game.home_score !== null && game.away_score !== null
+      ? [{ sourceGameId: game.id, seriesRoundNumber: index + 1, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: Number(game.home_score), awayScore: Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.venue }]
+      : [];
+  });
+  const materialized: SeriesProgressionMaterializedGame[] = games
+    .filter((game) => game.phase_id === phase.id && game.series_matchup_id === matchup.matchupId && game.series_round_number !== null)
+    .map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.venue }));
+  if (!matchup.teamAId || !matchup.teamBId) return { transferred, materialized, progression: null };
+  return {
+    transferred,
+    materialized,
+    progression: calculateSeriesProgression({
+      matchupId: matchup.matchupId,
+      teamA: { id: matchup.teamAId, name: matchup.teamAName ?? matchup.teamAId },
+      teamB: { id: matchup.teamBId, name: matchup.teamBName ?? matchup.teamBId },
+      winsRequired: Math.max(1, Number(phase.wins_required ?? 2)),
+      transferredGames: transferred,
+      materializedGames: materialized,
+      planningSlots: [],
+    }),
+  };
+}
+
+function buildCompetitionBracketProjection(phaseRows: PublicPhaseRow[], phases: PublicPhase[], competitionId: string, games: PublicGameRow[], teams: PublicTeamRow[]): CompetitionBracketProjection | null {
+  const phaseById = new Map(phaseRows.map((phase) => [phase.id, phase]));
+  const publicPhaseById = new Map(phases.map((phase) => [phase.id, phase]));
+  const teamById = new Map(teams.map((team) => [team.id, { id: team.id, name: team.name, logoUrl: team.logo_url?.trim() || null }]));
+  const seriesRows = phaseRows.filter((phase) => phase.format === "series");
+  if (!seriesRows.length) return null;
+  const carries = new Map(seriesRows.map((phase) => [phase.id, resolveSeriesCarryOver(phaseRows.map((row) => toSeriesPhase(row, competitionId)), games as SeriesCarryOverGameLike[], teams, toSeriesPhase(phase, competitionId))]));
+  const stages: PublicBracketStage[] = [];
+  const edges: PublicBracketEdge[] = [];
+  const originEntries = new Map<string, { phaseId: string; position: string; team: PublicGameTeam | null }>();
+
+  for (const phase of seriesRows) {
+    const carry = carries.get(phase.id);
+    const definitions = new Map(bracketDefinitions(phase.rule_settings_json).map((definition) => [definition.id, definition]));
+    const participantSourcePhaseId = String(parseRecord(parseJsonRecord(phase.rule_settings_json).participantConfiguration).participantSourcePhaseId ?? "").trim() || null;
+    const matchups: PublicBracketMatchup[] = (carry?.matchups ?? []).flatMap((resolution) => {
+      const definition = definitions.get(resolution.matchupId);
+      if (!definition) return [];
+      const direct = resolution.entryKind === "direct_qualifier";
+      const playable = resolution.entryKind === undefined && resolution.playable !== false;
+      if (!direct && !playable) return [];
+      const sides: Array<["A" | "B", BracketSlot, string | null]> = [["A", definition.slotA, resolution.teamAId], ["B", definition.slotB, resolution.teamBId]];
+      const participants = sides.flatMap(([slot, source, teamId]) => source.type === "bye" ? [] : [{ slot, team: teamId ? teamById.get(teamId) ?? null : null, originLabel: slotOriginLabel(source) }]);
+      for (const [slot, source, teamId] of sides) {
+        if (source.type === "standing_position" && source.position && participantSourcePhaseId) {
+          originEntries.set(`${participantSourcePhaseId}:${source.position}`, { phaseId: participantSourcePhaseId, position: source.position, team: teamId ? teamById.get(teamId) ?? null : null });
+          edges.push({ id: `${participantSourcePhaseId}:seed-${source.position}->${phase.id}:${resolution.matchupId}:${slot}`, from: { phaseId: participantSourcePhaseId, matchupId: `seed-${source.position}`, outcome: "standing_position" }, to: { phaseId: phase.id, matchupId: resolution.matchupId, slot } });
+        }
+        if ((source.type === "matchup_winner" || source.type === "matchup_loser") && source.matchupId && participantSourcePhaseId) {
+          edges.push({ id: `${participantSourcePhaseId}:${source.matchupId}:${source.type}->${phase.id}:${resolution.matchupId}:${slot}`, from: { phaseId: participantSourcePhaseId, matchupId: source.matchupId, outcome: source.type === "matchup_winner" ? "winner" : "loser" }, to: { phaseId: phase.id, matchupId: resolution.matchupId, slot } });
+        }
+      }
+      const state = direct ? null : canonicalSeriesState(resolution, phase, games).progression;
+      return [{ matchupId: resolution.matchupId, kind: direct ? "direct_qualifier" as const : "series" as const, participants, winnerTeamId: direct ? resolution.qualifiedTeamId ?? null : state?.qualifiedTeamId ?? null, seriesScore: state ? { winsA: state.currentWinsA, winsB: state.currentWinsB, winsRequired: state.winsRequired } : null, directAdvancement: direct }];
+    });
+    if (!matchups.length) continue;
+    const publicPhase = publicPhaseById.get(phase.id);
+    stages.push({ phaseId: phase.id, phaseSlug: publicPhase?.slug ?? phase.id, label: phase.name, order: Number(phase.phase_order ?? 0), kind: "series", matchups });
+  }
+
+  for (const entry of originEntries.values()) {
+    const source = phaseById.get(entry.phaseId);
+    const publicPhase = publicPhaseById.get(entry.phaseId);
+    if (!source || source.format !== "standings") continue;
+    const stage = stages.find((candidate) => candidate.phaseId === entry.phaseId);
+    const matchup: PublicBracketMatchup = { matchupId: `seed-${entry.position}`, kind: "standings_origin", participants: [{ slot: "A", team: entry.team, originLabel: `#${entry.position}` }], winnerTeamId: entry.team?.id ?? null, seriesScore: null, directAdvancement: false };
+    if (stage) stage.matchups.push(matchup);
+    else stages.push({ phaseId: entry.phaseId, phaseSlug: publicPhase?.slug ?? entry.phaseId, label: `Προέλευση · ${source.name}`, order: Number(source.phase_order ?? 0), kind: "standings_origin", matchups: [matchup] });
+  }
+
+  stages.sort((left, right) => left.order - right.order || left.phaseId.localeCompare(right.phaseId));
+  const stageIds = new Set(stages.map((stage) => stage.phaseId));
+  const canonicalEdges = edges.filter((edge) => stageIds.has(edge.from.phaseId) && stageIds.has(edge.to.phaseId));
+  return { meaningful: canonicalEdges.length > 0 && stages.some((stage) => stage.kind === "series"), stages, edges: canonicalEdges };
+}
+
 export async function getPublicCompetitionContext(input: {
   seasonSlug?: string | null;
   competitionSlug?: string | null;
@@ -330,7 +450,7 @@ export async function getPublicCompetitionContext(input: {
     }))
     : [];
   const selectedCompetition = competitions.find((competition) => competition.slug === input.competitionSlug) ?? competitions[0] ?? null;
-  if (!selectedCompetition) return { seasons, competitions, phases: [], games: [], standings: [], seriesHistory: [], selectedSeason, selectedCompetition: null, selectedPhase: null };
+  if (!selectedCompetition) return { seasons, competitions, phases: [], games: [], standings: [], seriesHistory: [], bracket: null, selectedSeason, selectedCompetition: null, selectedPhase: null };
 
   const phaseResult = await db.prepare(`
     SELECT p.id, p.slug, p.name, p.format, p.phase_type, p.lifecycle_status, p.previous_phase_id, p.settings_json,
@@ -350,7 +470,7 @@ export async function getPublicCompetitionContext(input: {
   const phases = phaseRows.map(normalizePhase);
   const selectedPhase = phases.find((phase) => phase.slug === input.phaseSlug) ?? phases[0] ?? null;
   const selectedPhaseRow = phaseRows.find((row) => row.id === selectedPhase?.id) ?? null;
-  if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], selectedSeason, selectedCompetition, selectedPhase: null };
+  if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], bracket: null, selectedSeason, selectedCompetition, selectedPhase: null };
 
   const [teamResult, gameResult] = await Promise.all([
     db.prepare(`SELECT t.id, t.name, COALESCE(st.logo_url, t.logo_url) AS logo_url
@@ -377,6 +497,7 @@ export async function getPublicCompetitionContext(input: {
   ]);
   const teams = teamResult.results ?? [];
   const canonicalGames = gameResult.results ?? [];
+  const bracket = buildCompetitionBracketProjection(phaseRows, phases, selectedCompetition.id, canonicalGames, teams);
   const games = canonicalGames.filter((game) => game.phase_id === selectedPhase.id)
     .map((row) => normalizePublicGame(row, selectedPhase.format))
     .filter((game): game is PublicGame => game !== null);
@@ -405,5 +526,5 @@ export async function getPublicCompetitionContext(input: {
       seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds: progression.maximumSeriesRounds, rounds });
     }
   }
-  return { seasons, competitions, phases, games, standings, seriesHistory, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };
+  return { seasons, competitions, phases, games, standings, seriesHistory, bracket, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };
 }
