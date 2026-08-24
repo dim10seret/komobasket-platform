@@ -85,6 +85,32 @@ export type PublicSeason = {
   name: string;
 };
 
+export type PublicTeamRosterPlayer = {
+  id: string;
+  displayName: string;
+  shirtNumber: number | null;
+  photoUrl: string | null;
+};
+
+export type PublicTeamGame = {
+  game: PublicGame;
+  phaseName: string;
+  phaseOrder: number;
+  status: "scheduled" | "completed" | "postponed" | "cancelled";
+};
+
+export type PublicTeamView = {
+  team: PublicGameTeam;
+  roster: PublicTeamRosterPlayer[];
+  games: PublicTeamGame[];
+};
+
+const PUBLIC_TEAM_GAME_STATUSES = ["scheduled", "completed", "postponed", "cancelled"] as const;
+
+function isPublicTeamGameStatus(status: string | null): status is PublicTeamGame["status"] {
+  return status !== null && (PUBLIC_TEAM_GAME_STATUSES as readonly string[]).includes(status);
+}
+
 export type PublicCompetitionContext = {
   seasons: PublicSeason[];
   competitions: PublicCompetition[];
@@ -93,6 +119,7 @@ export type PublicCompetitionContext = {
   standings: PublicStandingRow[];
   seriesHistory: PublicSeriesMatchupHistory[];
   bracket: CompetitionBracketProjection | null;
+  teamView: PublicTeamView | null;
   selectedSeason: PublicSeason | null;
   selectedCompetition: PublicCompetition | null;
   selectedPhase: PublicPhase | null;
@@ -425,6 +452,7 @@ export async function getPublicCompetitionContext(input: {
   seasonSlug?: string | null;
   competitionSlug?: string | null;
   phaseSlug?: string | null;
+  teamId?: string | null;
 } = {}): Promise<PublicCompetitionContext> {
   const db = await getDb();
   const visible = await db.prepare(`
@@ -462,7 +490,7 @@ export async function getPublicCompetitionContext(input: {
     }))
     : [];
   const selectedCompetition = competitions.find((competition) => competition.slug === input.competitionSlug) ?? competitions[0] ?? null;
-  if (!selectedCompetition) return { seasons, competitions, phases: [], games: [], standings: [], seriesHistory: [], bracket: null, selectedSeason, selectedCompetition: null, selectedPhase: null };
+  if (!selectedCompetition) return { seasons, competitions, phases: [], games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition: null, selectedPhase: null };
 
   const phaseResult = await db.prepare(`
     SELECT p.id, p.slug, p.name, p.format, p.phase_type, p.lifecycle_status, p.previous_phase_id, p.settings_json,
@@ -482,22 +510,26 @@ export async function getPublicCompetitionContext(input: {
   const phases = phaseRows.map(normalizePhase);
   const selectedPhase = phases.find((phase) => phase.slug === input.phaseSlug) ?? phases[0] ?? null;
   const selectedPhaseRow = phaseRows.find((row) => row.id === selectedPhase?.id) ?? null;
-  if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], bracket: null, selectedSeason, selectedCompetition, selectedPhase: null };
+  if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition, selectedPhase: null };
 
   const [teamResult, gameResult] = await Promise.all([
-    db.prepare(`SELECT t.id, t.name, COALESCE(st.logo_url, t.logo_url) AS logo_url
+    db.prepare(`SELECT t.id, COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) AS name, COALESCE(st.logo_url, t.logo_url) AS logo_url
       FROM league_competition_teams ct JOIN league_season_teams st ON st.id=ct.season_team_id JOIN league_teams t ON t.id=st.team_id
-      WHERE ct.competition_id=? AND ct.status='active' AND t.organization_id=? ORDER BY t.name COLLATE NOCASE, t.id`)
+      WHERE ct.competition_id=? AND ct.status='active' AND t.organization_id=? ORDER BY COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) COLLATE NOCASE, t.id`)
       .bind(selectedCompetition.id, PUBLIC_KOMOBASKET_ORGANIZATION_ID).all<PublicTeamRow>(),
     db.prepare(`
     SELECT g.id, g.competition_id, g.phase_id, g.schedule_id, g.cycle_number, g.round_number, g.series_round_number, g.game_order, g.round_label,
            g.scheduled_date, g.scheduled_time, g.venue AS game_venue, v.id AS venue_id, v.name AS venue_name, v.address AS venue_address, v.map_url AS venue_map_url,
            g.home_score, g.away_score, g.status, g.result_source, g.series_matchup_id, g.video_url,
-           home.id AS home_team_id, home.name AS home_team_name, home.logo_url AS home_team_logo_url,
-           away.id AS away_team_id, away.name AS away_team_name, away.logo_url AS away_team_logo_url
+           home.id AS home_team_id, COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, COALESCE(home_st.logo_url, home.logo_url) AS home_team_logo_url,
+           away.id AS away_team_id, COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, COALESCE(away_st.logo_url, away.logo_url) AS away_team_logo_url
       FROM league_games g
       LEFT JOIN league_competition_venues v ON v.competition_id=g.competition_id AND v.name=g.venue
+      JOIN league_competition_teams home_ct ON home_ct.competition_id=g.competition_id AND home_ct.status='active'
+      JOIN league_season_teams home_st ON home_st.id=home_ct.season_team_id AND home_st.team_id=g.home_team_id
       JOIN league_teams home ON home.id=g.home_team_id
+      JOIN league_competition_teams away_ct ON away_ct.competition_id=g.competition_id AND away_ct.status='active'
+      JOIN league_season_teams away_st ON away_st.id=away_ct.season_team_id AND away_st.team_id=g.away_team_id
       JOIN league_teams away ON away.id=g.away_team_id
      WHERE g.competition_id=? AND home.organization_id=? AND away.organization_id=?
      ORDER BY CASE WHEN ?='series' THEN COALESCE(g.series_round_number, g.round_number) ELSE g.round_number END,
@@ -516,6 +548,53 @@ export async function getPublicCompetitionContext(input: {
     .map((row) => normalizePublicGame(row, selectedPhase.format))
     .filter((game): game is PublicGame => game !== null);
 
+  const selectedTeam = input.teamId ? teams.find((team) => team.id === input.teamId) ?? null : null;
+  let teamView: PublicTeamView | null = null;
+  if (selectedTeam) {
+    const rosterResult = await db.prepare(`
+      SELECT p.id, p.display_name AS display_name, r.shirt_number AS shirt_number, p.photo_url AS photo_url
+        FROM league_roster_memberships r
+        JOIN league_players p ON p.id=r.player_id
+       WHERE r.season_id=? AND r.competition_id=? AND r.team_id=? AND r.status='active'
+         AND p.organization_id=?
+       ORDER BY CASE WHEN r.shirt_number IS NULL THEN 1 ELSE 0 END,
+                r.shirt_number ASC, p.display_name COLLATE NOCASE, p.id
+    `).bind(selectedSeason.id, selectedCompetition.id, selectedTeam.id, PUBLIC_KOMOBASKET_ORGANIZATION_ID).all<{
+      id: string;
+      display_name: string;
+      shirt_number: number | null;
+      photo_url: string | null;
+    }>();
+    const publicPhaseById = new Map(phases.map((phase) => [phase.id, phase]));
+    const phaseById = new Map<string, { name: string; format: PublicPhase["format"]; order: number }>();
+    for (const row of phaseRows) {
+      const phase = publicPhaseById.get(row.id);
+      if (phase && typeof row.phase_order === "number") {
+        phaseById.set(row.id, { name: phase.name, format: phase.format, order: row.phase_order });
+      }
+    }
+    const statusRank: Record<PublicTeamGame['status'], number> = { scheduled: 0, completed: 1, postponed: 2, cancelled: 3 };
+    const normalizedTeamGames = canonicalGames.flatMap((row): PublicTeamGame[] => {
+      if (row.home_team_id !== selectedTeam.id && row.away_team_id !== selectedTeam.id) return [];
+      const phase = phaseById.get(row.phase_id);
+      if (!phase || !isPublicTeamGameStatus(row.status)) return [];
+      const game = normalizePublicGame(row, phase.format);
+      if (!game) return [];
+      return [{ game, phaseName: phase.name, phaseOrder: phase.order, status: row.status }];
+    });
+    const date = (entry: PublicTeamGame) => entry.game.scheduledDate ?? '';
+    normalizedTeamGames.sort((left, right) => {
+      const statusDifference = statusRank[left.status] - statusRank[right.status];
+      if (statusDifference !== 0) return statusDifference;
+      const fallback = left.phaseOrder - right.phaseOrder || (left.game.roundNumber ?? Number.MAX_SAFE_INTEGER) - (right.game.roundNumber ?? Number.MAX_SAFE_INTEGER) || left.game.id.localeCompare(right.game.id);
+      return left.status === 'completed' ? date(right).localeCompare(date(left)) || -fallback : date(left).localeCompare(date(right)) || fallback;
+    });
+    teamView = {
+      team: { id: selectedTeam.id, name: selectedTeam.name, logoUrl: selectedTeam.logo_url?.trim() || null },
+      roster: (rosterResult.results ?? []).map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: player.shirt_number, photoUrl: player.photo_url?.trim() || null })),
+      games: normalizedTeamGames,
+    };
+  }
   let standings: PublicStandingRow[] = [];
   if (selectedPhase.format === "standings" && selectedPhase.participantCount !== null) {
     const settings = parseJsonRecord(selectedPhaseRow.rule_settings_json);
@@ -540,5 +619,5 @@ export async function getPublicCompetitionContext(input: {
       seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds: progression.maximumSeriesRounds, rounds });
     }
   }
-  return { seasons, competitions, phases, games, standings, seriesHistory, bracket, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };
+  return { seasons, competitions, phases, games, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };
 }
