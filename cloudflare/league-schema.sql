@@ -134,6 +134,27 @@ CREATE TABLE IF NOT EXISTS league_table_officials (
 CREATE INDEX IF NOT EXISTS idx_table_officials_organization_active_name
   ON league_table_officials(organization_id, active, last_name, first_name);
 
+CREATE TABLE IF NOT EXISTS league_komocontrol_game_packages (
+  id TEXT PRIMARY KEY,
+  game_id TEXT NOT NULL REFERENCES league_games(id) ON DELETE RESTRICT,
+  organization_id TEXT NOT NULL REFERENCES league_organizations(id) ON DELETE RESTRICT,
+  package_version INTEGER NOT NULL CHECK (package_version >= 1),
+  status TEXT NOT NULL CHECK (status IN ('published', 'superseded', 'revoked')),
+  snapshot_json TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  published_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  revoked_at TEXT,
+  superseded_at TEXT,
+  published_by_user_id TEXT REFERENCES league_app_users(id) ON DELETE SET NULL,
+  UNIQUE(game_id, package_version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_komocontrol_game_packages_current_published
+  ON league_komocontrol_game_packages(game_id)
+  WHERE status = 'published';
+CREATE INDEX IF NOT EXISTS idx_komocontrol_game_packages_organization_status_published_at
+  ON league_komocontrol_game_packages(organization_id, status, published_at);
+
 CREATE TABLE IF NOT EXISTS league_seasons (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, slug TEXT NOT NULL UNIQUE,
   starts_on TEXT, ends_on TEXT, status TEXT NOT NULL DEFAULT 'draft'
