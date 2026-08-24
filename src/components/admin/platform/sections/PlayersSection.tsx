@@ -182,6 +182,10 @@ export function Players({
     void loadRoster();
   }, [selectedSeasonId, selectedCompetitionId, selectedTeamId]);
 
+  useEffect(() => {
+    setManualRosterInitialized(false);
+  }, [selectedSeasonId, selectedCompetitionId, selectedTeamId]);
+
   const isSelectionComplete = Boolean(selectedSeasonId && selectedCompetitionId && selectedTeamId);
   const hasSelectedTargetRoster = manualRosterInitialized || Boolean(
     selectedTeamRoster?.previousRoster.targetAthleteRosterExists || selectedTeamRoster?.previousRoster.targetStaffRosterExists,
