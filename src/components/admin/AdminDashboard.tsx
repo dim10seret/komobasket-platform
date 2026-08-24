@@ -30,6 +30,7 @@ import { Teams } from "./platform/sections/TeamsSection";
 import { Movements } from "./platform/sections/MovementsSection";
 import { PlatformAccessManagement } from "./platform/PlatformAccessManagement";
 import { PlatformOrganizationManagement } from "./platform/PlatformOrganizationManagement";
+import { PlatformKomoControlManagement } from "./platform/PlatformKomoControlManagement";
 import SupportersManager from "@/components/admin/SupportersManager";
 
 type AccessibleOrganization = {
@@ -54,6 +55,7 @@ const tabs = [
   ["teams", "Ομάδες & Συμμετοχές", ShieldCheck],
   ["players", "Παίκτες & Ρόστερ", UsersRound],
   ["movements", "Μεταγραφές & Αποχωρήσεις", UserRoundCog],
+  ["komocontrol", "KomoControl", Trophy],
 ] as const;
 
 function AdminHeader({ view, onRefresh }: { view: AdminView; onRefresh?: () => void }) {
@@ -511,7 +513,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     </div>
     <div className="mx-auto grid max-w-[1500px] gap-6 px-4 py-6 lg:grid-cols-[270px_1fr] lg:px-7">
       <nav className="h-fit rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm lg:sticky lg:top-5">
-        {tabs.map(([id, label, Icon]) => (
+        {tabs.filter(([id]) => id !== "komocontrol").map(([id, label, Icon]) => (
           <button
             key={id}
             onClick={() => handleTabChange(id)}
@@ -521,6 +523,18 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
             {label}
           </button>
         ))}
+        <div className="mt-2 border-t border-zinc-200 pt-2">
+          {tabs.filter(([id]) => id === "komocontrol").map(([id, label, Icon]) => (
+            <button
+              key={id}
+              onClick={() => handleTabChange(id)}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold transition ${tab === id ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"}`}
+            >
+              <Icon size={19} className={tab === id ? "text-orange-500" : "text-zinc-500"} />
+              {label}
+            </button>
+          ))}
+        </div>
       </nav>
       <main className="min-w-0 space-y-5">
         {loading && <div className="rounded-2xl bg-white p-8 text-center text-zinc-500">Φόρτωση δεδομένων…</div>}
@@ -565,6 +579,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
               />
             )}
             {tab === "players" && <Players data={data} onRefreshSnapshot={load} />}
+            {tab === "komocontrol" && <PlatformKomoControlManagement organizationId={selectedOrganizationId} />}
             {tab === "movements" && <Movements data={data} depart={depart} transfer={transfer} busy={busy} />}
           </>
         )}
