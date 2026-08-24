@@ -27,6 +27,13 @@ export type PublicGameTeam = {
   logoUrl: string | null;
 };
 
+export type PublicVenue = {
+  id: string | null;
+  name: string;
+  address: string | null;
+  mapUrl: string | null;
+};
+
 export type PublicGame = {
   id: string;
   roundNumber: number;
@@ -34,7 +41,7 @@ export type PublicGame = {
   roundLabel: string | null;
   scheduledDate: string | null;
   scheduledTime: string | null;
-  venue: string | null;
+  venue: PublicVenue | null;
   homeScore: number | null;
   awayScore: number | null;
   videoUrl: string | null;
@@ -134,7 +141,11 @@ type PublicGameRow = {
   round_label: string | null;
   scheduled_date: string | null;
   scheduled_time: string | null;
-  venue: string | null;
+  game_venue: string | null;
+  venue_id: string | null;
+  venue_name: string | null;
+  venue_address: string | null;
+  venue_map_url: string | null;
   home_score: number | null;
   away_score: number | null;
   status: string | null;
@@ -247,6 +258,7 @@ function normalizePublicGame(row: PublicGameRow, format: PublicPhase["format"], 
     ? roundOverride ?? row.series_round_number ?? row.round_number
     : row.round_number;
   if (typeof roundNumber !== "number" || !Number.isInteger(roundNumber) || roundNumber < 1) return null;
+  const venueName = row.venue_name?.trim() || row.game_venue?.trim() || null;
   return {
     id: row.id,
     roundNumber,
@@ -254,7 +266,7 @@ function normalizePublicGame(row: PublicGameRow, format: PublicPhase["format"], 
     roundLabel: row.round_label?.trim() || null,
     scheduledDate: row.scheduled_date?.trim() || null,
     scheduledTime: row.scheduled_time?.trim() || null,
-    venue: row.venue?.trim() || null,
+    venue: venueName ? { id: row.venue_id, name: venueName, address: row.venue_address?.trim() || null, mapUrl: row.venue_map_url?.trim() || null } : null,
     homeScore: row.home_score === null ? null : Number(row.home_score),
     awayScore: row.away_score === null ? null : Number(row.away_score),
     videoUrl: row.video_url?.trim() || null,
@@ -331,12 +343,12 @@ function canonicalSeriesState(matchup: ReturnType<typeof resolveSeriesCarryOver>
   const transferred: SeriesProgressionTransferredGame[] = matchup.meetingResolutions.flatMap((meeting, index) => {
     const game = games.find((item) => item.id === meeting.gameId);
     return meeting.state === "resolved" && game && game.home_score !== null && game.away_score !== null
-      ? [{ sourceGameId: game.id, seriesRoundNumber: index + 1, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: Number(game.home_score), awayScore: Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.venue }]
+      ? [{ sourceGameId: game.id, seriesRoundNumber: index + 1, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: Number(game.home_score), awayScore: Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }]
       : [];
   });
   const materialized: SeriesProgressionMaterializedGame[] = games
     .filter((game) => game.phase_id === phase.id && game.series_matchup_id === matchup.matchupId && game.series_round_number !== null)
-    .map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.venue }));
+    .map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }));
   if (!matchup.teamAId || !matchup.teamBId) return { transferred, materialized, progression: null };
   return {
     transferred,
@@ -479,10 +491,12 @@ export async function getPublicCompetitionContext(input: {
       .bind(selectedCompetition.id, PUBLIC_KOMOBASKET_ORGANIZATION_ID).all<PublicTeamRow>(),
     db.prepare(`
     SELECT g.id, g.competition_id, g.phase_id, g.schedule_id, g.cycle_number, g.round_number, g.series_round_number, g.game_order, g.round_label,
-           g.scheduled_date, g.scheduled_time, g.venue, g.home_score, g.away_score, g.status, g.result_source, g.series_matchup_id, g.video_url,
+           g.scheduled_date, g.scheduled_time, g.venue AS game_venue, v.id AS venue_id, v.name AS venue_name, v.address AS venue_address, v.map_url AS venue_map_url,
+           g.home_score, g.away_score, g.status, g.result_source, g.series_matchup_id, g.video_url,
            home.id AS home_team_id, home.name AS home_team_name, home.logo_url AS home_team_logo_url,
            away.id AS away_team_id, away.name AS away_team_name, away.logo_url AS away_team_logo_url
       FROM league_games g
+      LEFT JOIN league_competition_venues v ON v.competition_id=g.competition_id AND v.name=g.venue
       JOIN league_teams home ON home.id=g.home_team_id
       JOIN league_teams away ON away.id=g.away_team_id
      WHERE g.competition_id=? AND home.organization_id=? AND away.organization_id=?
@@ -519,8 +533,8 @@ export async function getPublicCompetitionContext(input: {
     if (direct.length) directAdvancements = direct;
     for (const matchup of carry.matchups) {
       if (matchup.entryKind !== undefined || matchup.playable === false || matchup.state !== "resolved" || !matchup.teamAId || !matchup.teamBId) continue;
-      const transferred: SeriesProgressionTransferredGame[] = matchup.meetingResolutions.flatMap((meeting, index) => { const game = canonicalGames.find((item) => item.id === meeting.gameId); return meeting.state === "resolved" && game && game.home_score !== null && game.away_score !== null ? [{ sourceGameId: game.id, seriesRoundNumber: index + 1, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: Number(game.home_score), awayScore: Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.venue }] : []; });
-      const materialized: SeriesProgressionMaterializedGame[] = canonicalGames.filter((game) => game.phase_id === selectedPhase.id && game.series_matchup_id === matchup.matchupId && game.series_round_number !== null).map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.venue }));
+      const transferred: SeriesProgressionTransferredGame[] = matchup.meetingResolutions.flatMap((meeting, index) => { const game = canonicalGames.find((item) => item.id === meeting.gameId); return meeting.state === "resolved" && game && game.home_score !== null && game.away_score !== null ? [{ sourceGameId: game.id, seriesRoundNumber: index + 1, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: Number(game.home_score), awayScore: Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }] : []; });
+      const materialized: SeriesProgressionMaterializedGame[] = canonicalGames.filter((game) => game.phase_id === selectedPhase.id && game.series_matchup_id === matchup.matchupId && game.series_round_number !== null).map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }));
       const progression = calculateSeriesProgression({ matchupId: matchup.matchupId, teamA: { id: matchup.teamAId, name: matchup.teamAName ?? matchup.teamAId }, teamB: { id: matchup.teamBId, name: matchup.teamBName ?? matchup.teamBId }, winsRequired: Math.max(1, Number(selectedPhase.winsRequired ?? 2)), transferredGames: transferred, materializedGames: materialized, planningSlots: [] });
       const rounds = progression.rounds.flatMap<PublicSeriesRound>((round): PublicSeriesRound[] => { if (round.rowState === "transferred" && round.sourceGameId) { const game = canonicalGames.find((item) => item.id === round.sourceGameId); const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null; return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "transferred" as const, sourcePhaseName: matchup.sourcePhaseName, game: projected }] : []; } if (round.rowState === "real_game" && round.realGameId) { const game = canonicalGames.find((item) => item.id === round.realGameId); const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null; return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "game" as const, sourcePhaseName: null, game: projected }] : []; } return round.rowState === "qualified" ? [{ roundNumber: round.seriesRoundNumber, kind: "not_needed" as const, sourcePhaseName: null, game: null }] : []; });
       seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds: progression.maximumSeriesRounds, rounds });
