@@ -3,6 +3,7 @@ import type { AuthOperationResult, DesktopAuthState, LoginInput } from "./auth/a
 import type { GameDiscoveryOperationResult } from "./games/game-discovery-contracts.cjs";
 import type { GamePackageDownloadResult } from "./games/game-package-download.cjs";
 import type { LocalGamePackageStatus } from "./persistence/local-database.cjs";
+import type { MatchSetupOperationResult } from "./games/match-setup.cjs";
 
 interface AppInfo {
     version: string;
@@ -25,6 +26,7 @@ const bridge = Object.freeze({
     listAvailableGames: (): Promise<GameDiscoveryOperationResult> => ipcRenderer.invoke("games:list") as Promise<GameDiscoveryOperationResult>,
     getOfflineGameStatus: (gameId: string): Promise<LocalGamePackageStatus> => ipcRenderer.invoke("games:get-offline-status", gameId) as Promise<LocalGamePackageStatus>,
     downloadGamePackage: (gameId: string): Promise<GamePackageDownloadResult> => ipcRenderer.invoke("games:download-package", gameId) as Promise<GamePackageDownloadResult>,
+    getMatchSetup: (gameId: string): Promise<MatchSetupOperationResult> => ipcRenderer.invoke("games:get-match-setup", gameId) as Promise<MatchSetupOperationResult>,
 });
 
 contextBridge.exposeInMainWorld("komoControl", bridge);

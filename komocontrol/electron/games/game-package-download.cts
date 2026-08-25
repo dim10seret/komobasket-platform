@@ -2,10 +2,19 @@ import { createHash } from "node:crypto";
 import { AuthFlowError, type AuthErrorCode, type DesktopAuthState } from "../auth/auth-contracts.cjs";
 import type { LocalGamePackageStatus, LocalGamePackageStoreResult, VerifiedGamePackageInput } from "../persistence/local-database.cjs";
 
-export const GAME_PACKAGE_ERROR_CODES = ["PACKAGE_UNAVAILABLE", "PACKAGE_INVALID", "PACKAGE_HASH_MISMATCH", "PACKAGE_CONFLICT"] as const;
+export const GAME_PACKAGE_ERROR_CODES = ["PACKAGE_UNAVAILABLE", "PACKAGE_INVALID", "PACKAGE_HASH_MISMATCH", "PACKAGE_CONFLICT", "PACKAGE_UNSUPPORTED"] as const;
 export type GamePackageErrorCode = (typeof GAME_PACKAGE_ERROR_CODES)[number];
 export type GamePackageOperationErrorCode = AuthErrorCode | GamePackageErrorCode;
 export interface GamePackageEnvelope { packageId: string; gameId: string; packageVersion: number; packageSchemaVersion: 1; publishedAt: string; payloadJson: string; payloadHash: string; }
+export interface GamePackageV1Player { id: string; displayName: string; shirtNumber: number | null; photoUrl: string | null; }
+export interface GamePackageV1StaffMember { id: string; displayName: string; role: string; roleLabel: string | null; }
+export interface GamePackageV1Team { side: "HOME" | "AWAY"; id: string; name: string; logoUrl: string | null; players: GamePackageV1Player[]; staff: GamePackageV1StaffMember[]; }
+export interface GamePackageV1 {
+    schemaVersion: 1;
+    game: { id: string; organizationId: string; competitionId: string; competitionName: string; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string | null; scheduledTime: string | null; scheduledAt: string | null; venue: string | null; };
+    settings: { game_mode: "SIMPLE" | "FULL"; min_players: number; max_players: number; starting_players: number; regulation_periods: number; regulation_period_seconds: number; overtime_seconds: number; tie_allowed: boolean; winner_required: boolean; };
+    teams: GamePackageV1Team[];
+}
 export type GamePackageDownloadResult = { ok: true; status: LocalGamePackageStatus; outcome: "stored" | "unchanged"; state: DesktopAuthState } | { ok: false; errorCode: GamePackageOperationErrorCode; state: DesktopAuthState };
 
 interface PackageClient { downloadGamePackage(token: string, gameId: string): Promise<GamePackageEnvelope>; }
@@ -38,7 +47,7 @@ function validateTeam(value: unknown, expectedSide: "HOME" | "AWAY"): void {
     for (const value of item.players) { const player = record(value); if (!player || !text(player.id) || !text(player.displayName) || !(player.shirtNumber === null || nonNegativeInteger(player.shirtNumber)) || !nullableString(player.photoUrl)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
     for (const value of item.staff) { const staff = record(value); if (!staff || !text(staff.id) || !text(staff.displayName) || !text(staff.role) || !nullableString(staff.roleLabel)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
 }
-function validatePayload(payload: unknown, gameId: string): void {
+export function validateGamePackagePayload(payload: unknown, gameId: string): asserts payload is GamePackageV1 {
     const root = record(payload); const game = record(root?.game);
     if (!root || root.schemaVersion !== 1 || !game || game.id !== gameId || !text(game.organizationId) || !text(game.competitionId) || !text(game.competitionName) || !text(game.seasonName) || !nullableString(game.phaseName) || !nullableString(game.roundLabel) || !nullableString(game.scheduledDate) || !nullableString(game.scheduledTime) || !nullableString(game.scheduledAt) || !nullableString(game.venue)) throw new GamePackageFlowError("PACKAGE_INVALID");
     validateSettings(root.settings);
@@ -55,7 +64,7 @@ export function verifyDownloadedGamePackage(requestedGameId: string, value: unkn
     if (actualHash !== envelope.payloadHash) throw new GamePackageFlowError("PACKAGE_HASH_MISMATCH");
     let payload: unknown;
     try { payload = JSON.parse(envelope.payloadJson); } catch { throw new GamePackageFlowError("PACKAGE_INVALID"); }
-    validatePayload(payload, envelope.gameId);
+    validateGamePackagePayload(payload, envelope.gameId);
     return { packageId: envelope.packageId, gameId: envelope.gameId, packageVersion: envelope.packageVersion, packageSchemaVersion: 1, payloadJson: envelope.payloadJson, payloadHash: envelope.payloadHash, publishedAtUtc: envelope.publishedAt };
 }
 

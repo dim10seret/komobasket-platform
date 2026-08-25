@@ -50,6 +50,31 @@ input:focus { border-color: #e96624; box-shadow: 0 0 0 4px rgba(233, 102, 36, .1
 .game-main .game-download-error { color: #8c2f20; }
 .game-offline-action button { min-height: 38px; border: 1px solid #c9c5bc; border-radius: 10px; padding: 0 12px; color: #28312d; background: #fff8ef; font-weight: 750; }
 .offline-ready { display: inline-flex; align-items: center; min-height: 34px; padding: 0 10px; border-radius: 999px; color: #276240; background: #e8f5eb; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.offline-actions { display: grid; gap: 8px; justify-items: stretch; }
+.offline-actions .secondary-button { min-height: 38px; padding: 0 12px; font-size: 12px; }
+.setup-card { width: min(100%, 1120px); }
+.setup-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+.setup-toolbar .secondary-button { min-height: 40px; }
+.setup-context { padding: 24px; border-radius: 18px; color: #fff; background: linear-gradient(135deg, #1d3029, #304c42); }
+.setup-context .eyebrow { color: #ffb287; }
+.setup-context h1 { margin: 8px 0 12px; font-size: clamp(26px, 4vw, 38px); }
+.setup-context p { margin: 5px 0 0; color: #dce8e2; }
+.setup-teams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 20px; }
+.setup-team { min-width: 0; padding: 20px; border: 1px solid #ded9cf; border-radius: 16px; background: #fff; }
+.setup-team-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.setup-team-heading span { color: #a84b1c; font: 700 10px/1 "Bahnschrift", sans-serif; letter-spacing: .14em; }
+.setup-team-heading h2 { margin-top: 4px; overflow-wrap: anywhere; }
+.setup-team-mark { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 12px; color: #fff; background: #e96624; font: 700 15px/1 "Bahnschrift", sans-serif; }
+.setup-team h3 { margin: 18px 0 9px; color: #69716d; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.setup-roster { display: grid; gap: 6px; }
+.setup-person { min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 7px 10px; border-radius: 9px; background: #f6f3ed; }
+.setup-person > span:not(.setup-shirt) { overflow-wrap: anywhere; }
+.setup-person small { margin-left: auto; color: #69716d; }
+.setup-shirt { width: 30px; flex: 0 0 auto; color: #a84b1c; font-weight: 800; text-align: center; }
+.setup-rules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
+.setup-rules div { display: grid; gap: 5px; padding: 14px; border-radius: 12px; background: #f1ece3; }
+.setup-rules span { color: #69716d; font-size: 12px; }
+.setup-rules strong { overflow-wrap: anywhere; }
 .games-state { margin: 0; padding: 22px; border: 1px dashed #cfc9bd; border-radius: 14px; color: #666e6a; text-align: center; }
 .games-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border-radius: 12px; color: #8c2f20; background: #fff0eb; }
 .games-error p { margin: 0; }
@@ -67,5 +92,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
     .game-date { grid-template-columns: auto 1fr; gap: 8px; padding-right: 0; border-right: 0; }
     .games-error { align-items: stretch; flex-direction: column; }
     .game-offline-action button { width: 100%; }
+    .setup-toolbar { align-items: stretch; flex-direction: column; }
+    .setup-teams, .setup-rules { grid-template-columns: 1fr; }
     footer { flex-direction: column; }
 }

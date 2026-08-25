@@ -56,6 +56,17 @@ export interface LocalGamePackageStoreResult {
     status: LocalGamePackageStatus;
 }
 
+export interface StoredLocalGamePackage {
+    packageId: string;
+    gameId: string;
+    packageVersion: number;
+    packageSchemaVersion: number;
+    payloadJson: string;
+    payloadHash: string;
+    publishedAtUtc: string | null;
+    downloadedAtUtc: string;
+}
+
 export interface LocalIntegrityResult {
     quickCheck: "ok";
     foreignKeyExceptions: 0;
@@ -386,6 +397,27 @@ export class LocalDatabase {
         return row
             ? { gameId, availableOffline: true, currentVersion: row.package_version, downloadedAt: row.downloaded_at_utc }
             : { gameId, availableOffline: false, currentVersion: null, downloadedAt: null };
+    }
+
+    readCurrentGamePackage(gameId: string): StoredLocalGamePackage | null {
+        if (!gameId.trim()) throw new Error("Game identity is required.");
+        const value = this.requireDatabase().prepare(`SELECT package_id, game_id, package_version,
+            package_schema_version, payload_json, payload_hash, published_at_utc, downloaded_at_utc
+            FROM local_game_packages WHERE game_id = ? AND is_current = 1`).get(gameId);
+        if (value === undefined) return null;
+        const row = objectRow(value, "local_game_packages");
+        const publishedAtUtc = row.published_at_utc;
+        if (publishedAtUtc !== null && typeof publishedAtUtc !== "string") throw new Error("Invalid published_at_utc in local_game_packages.");
+        return {
+            packageId: stringField(row, "package_id", "local_game_packages"),
+            gameId: stringField(row, "game_id", "local_game_packages"),
+            packageVersion: numberField(row, "package_version", "local_game_packages"),
+            packageSchemaVersion: numberField(row, "package_schema_version", "local_game_packages"),
+            payloadJson: stringField(row, "payload_json", "local_game_packages"),
+            payloadHash: stringField(row, "payload_hash", "local_game_packages"),
+            publishedAtUtc,
+            downloadedAtUtc: stringField(row, "downloaded_at_utc", "local_game_packages"),
+        };
     }
 
     storeVerifiedGamePackage(value: VerifiedGamePackageInput): LocalGamePackageStoreResult {

@@ -7,6 +7,7 @@ import { PlatformAuthClient } from "./auth/platform-auth-client.cjs";
 import { SecureSessionStore } from "./auth/secure-session-store.cjs";
 import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
+import { MatchSetupManager } from "./games/match-setup.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
 const productionPlatformOrigin = "https://komobasket.gr";
@@ -141,6 +142,7 @@ ipcMain.handle("auth:logout", async (event) => { requireTrustedSender(event); re
 ipcMain.handle("games:list", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listGames(); });
 ipcMain.handle("games:get-offline-status", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getGamePackageStatus(gameIdInput(value)); });
 ipcMain.handle("games:download-package", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().downloadGamePackage(gameIdInput(value)); });
+ipcMain.handle("games:get-match-setup", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getMatchSetup(gameIdInput(value)); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -188,7 +190,7 @@ if (!hasSingleInstanceLock) {
             });
             const baseUrl = platformBaseUrl();
             const platformClient = baseUrl ? new PlatformAuthClient(baseUrl) : null;
-            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null);
+            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, new MatchSetupManager(localDatabase));
             void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);
