@@ -1,6 +1,1 @@
-export const TeamSide = {
-  HOME: "HOME",
-  AWAY: "AWAY",
-} as const;
-
-export type TeamSide = (typeof TeamSide)[keyof typeof TeamSide];
+export * from "../../shared/match-engine/types/team-side.js";

@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "shared/match-engine",
+    "outDir": "dist-electron/shared/match-engine",
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "sourceMap": true
+  },
+  "include": [
+    "shared/match-engine/**/*.ts",
+    "shared/match-engine/**/*.cts"
+  ]
+}

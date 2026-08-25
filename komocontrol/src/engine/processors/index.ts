@@ -1,16 +1,1 @@
-export { EventProcessor } from "../event-processor";
-export { TwoPointProcessor } from "./two-point-processor";
-export { ThreePointProcessor } from "./three-point-processor";
-export { TurnoverProcessor } from "./turnover-processor";
-export { PersonalFoulProcessor } from "./personal-foul-processor";
-export { ShootingFoulProcessor } from "./shooting-foul-processor";
-export { FreeThrowProcessor } from "./free-throw-processor";
-export { SubstitutionProcessor } from "./substitution-processor";
-export { TimeoutProcessor } from "./timeout-processor";
-export { TechnicalFoulProcessor } from "./technical-foul-processor";
-export { UnsportsmanlikeFoulProcessor } from "./unsportsmanlike-foul-processor";
-export { DisqualifyingFoulProcessor } from "./disqualifying-foul-processor";
-export { ReboundProcessor } from "./rebound-processor";
-export { DefensivePlayProcessor } from "./defensive-play-processor";
-export { LineupSetProcessor } from "./lineup-set-processor";
-export { MissedShotProcessor } from "./missed-shot-processor";
+export * from "../../../shared/match-engine/engine/processors/index.js";

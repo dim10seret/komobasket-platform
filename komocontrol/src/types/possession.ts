@@ -1,6 +1,1 @@
-import type { TeamSide } from "./team-side";
-
-export interface Possession {
-  team: TeamSide;
-  changedAt: number;
-}
+export * from "../../shared/match-engine/types/possession.js";

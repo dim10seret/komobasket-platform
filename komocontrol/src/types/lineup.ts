@@ -1,5 +1,1 @@
-export interface Lineup {
-
-  players: string[];
-
-}
+export * from "../../shared/match-engine/types/lineup.js";

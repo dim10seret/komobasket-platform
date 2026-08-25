@@ -14,8 +14,8 @@
     "test:discovery": "npm run desktop:compile && vitest run electron/games/game-discovery.test.mjs",
     "preview": "vite preview",
     "desktop:dev": "npm run desktop:compile && node scripts/electron-dev.cjs",
-    "desktop:typecheck": "tsc -p tsconfig.electron.json --noEmit",
-    "desktop:compile": "tsc -p tsconfig.electron.json",
+    "desktop:typecheck": "tsc -p tsconfig.shared-electron.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "desktop:compile": "tsc -p tsconfig.shared-electron.json && tsc -p tsconfig.electron.json",
     "desktop:build": "npm run build && npm run desktop:compile",
     "desktop:pack": "npm run desktop:build && electron-builder --dir --win --x64",
     "desktop:dist": "npm run desktop:build && electron-builder --win nsis --x64"
