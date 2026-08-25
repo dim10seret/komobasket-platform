@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { HashRouter, Routes, Route } from "react-router-dom";
 
 import Dashboard from "./pages/Dashboard/Dashboard";
 import LiveMatch from "./pages/LiveMatch/LiveMatch";
@@ -11,7 +11,7 @@ import NotFound from "./pages/NotFound/NotFound";
 
 function App() {
     return (
-        <BrowserRouter>
+        <HashRouter>
             <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/live" element={<LiveMatch />} />
@@ -22,7 +22,7 @@ function App() {
                 <Route path="/matches" element={<Matches />} />
                 <Route path="*" element={<NotFound />} />
             </Routes>
-        </BrowserRouter>
+        </HashRouter>
     );
 }
 
