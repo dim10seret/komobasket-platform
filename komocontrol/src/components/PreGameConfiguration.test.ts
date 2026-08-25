@@ -104,7 +104,7 @@ describe("KC-5B9B Gate 1C presentation helpers", () => {
         expect(order.map((side) => accents[side]["--team-accent"])).toEqual(["#15803D", "#DC2626"]); expect(authoritativeTeamIndex(order[0])).toBe(1); expect(authoritativeTeamIndex(order[1])).toBe(0);
     });
 
-    it("derives revision and saved state from the current configuration state", () => {
-        expect(configurationDisplayStatus(9, false)).toEqual({ revision: 9, phase: "DRAFT", savedLabel: "Αποθηκευμένο" }); expect(configurationDisplayStatus(10, true).savedLabel).toBe("Μη αποθηκευμένο");
+    it("derives scorer-facing Draft state without exposing the internal revision", () => {
+        expect(configurationDisplayStatus(false)).toEqual({ phase: "ΠΡΟΣΧΕΔΙΟ", savedLabel: "Αποθηκευμένο", saveConfirmation: "Το πρόχειρο αποθηκεύτηκε" }); expect(configurationDisplayStatus(true).savedLabel).toBe("Μη αποθηκευμένες αλλαγές"); expect(configurationDisplayStatus(false)).not.toHaveProperty("revision"); expect(configurationDisplayStatus(false).saveConfirmation).not.toMatch(/Revision|Αναθεώρηση|\d/);
     });
 });

@@ -85,8 +85,8 @@ export function teamAccentStyle(gameColor: string | null): TeamAccentStyle {
     return gameColor ? { "--team-accent": gameColor, borderColor: gameColor } : {};
 }
 
-export function configurationDisplayStatus(revision: number, dirty: boolean): { revision: number; phase: "DRAFT"; savedLabel: string } {
-    return { revision, phase: "DRAFT", savedLabel: dirty ? "Μη αποθηκευμένο" : "Αποθηκευμένο" };
+export function configurationDisplayStatus(dirty: boolean): { phase: "ΠΡΟΣΧΕΔΙΟ"; savedLabel: string; saveConfirmation: string } {
+    return { phase: "ΠΡΟΣΧΕΔΙΟ", savedLabel: dirty ? "Μη αποθηκευμένες αλλαγές" : "Αποθηκευμένο", saveConfirmation: "Το πρόχειρο αποθηκεύτηκε" };
 }
 
 export function authoritativeTeamIndex(side: KomoControlTeamSide): 0 | 1 { return side === "HOME" ? 0 : 1; }
@@ -255,7 +255,7 @@ export function PreGameConfiguration({ configuration, busy, error, savedRevision
     const rightSide = oppositeSide(draft.presentation.leftSide);
     const displayedSides = displayedTeamSides(draft.presentation.leftSide);
     const sameColor = draft.teams[0].gameColor !== null && draft.teams[0].gameColor === draft.teams[1].gameColor;
-    const displayStatus = configurationDisplayStatus(configuration.revision, dirty);
+    const displayStatus = configurationDisplayStatus(dirty);
 
     const updateDraft = (next: EditableDraft) => { onDraftEdited(); setDraft(next); };
     const updateTeam = (side: KomoControlTeamSide, team: KomoControlPreGameConfigurationTeamDraft) => updateDraft({ ...draft, teams: side === "HOME" ? [team, draft.teams[1]] : [draft.teams[0], team] });
@@ -266,7 +266,7 @@ export function PreGameConfiguration({ configuration, busy, error, savedRevision
                 <header className="pregame-topbar">
                     <div className="pregame-title-block"><button type="button" className="pregame-back-button" onClick={onBack} disabled={busy}>← <span>Προετοιμασία αγώνα</span></button><h1>Συμμετοχές και αριθμοί</h1><p>Package v{configuration.packageVersion} · Run {configuration.runId.slice(-8)}</p></div>
                     <div className="pregame-placement"><div><strong>LEFT</strong><span>{draft.presentation.leftSide}</span></div><button type="button" className="secondary-button" onClick={() => updateDraft({ ...draft, presentation: { leftSide: rightSide } })}>⇄ Αλλαγή πλευρών</button><div><strong>RIGHT</strong><span>{rightSide}</span></div></div>
-                    <div className="pregame-status-board"><div><span>Αναθεώρηση</span><strong>{displayStatus.revision}</strong></div><div><strong>{displayStatus.phase}</strong><span className={dirty ? "is-dirty" : "is-saved"}>{displayStatus.savedLabel}</span></div></div>
+                    <div className="pregame-status-board"><div><strong>{displayStatus.phase}</strong><span className={dirty ? "is-dirty" : "is-saved"}>{displayStatus.savedLabel}</span></div></div>
                 </header>
                 {sameColor ? <p className="pregame-color-warning">HOME και AWAY έχουν το ίδιο χρώμα. Επιτρέπεται, αλλά η οπτική διάκριση θα είναι μικρότερη.</p> : null}
                 <div className="pregame-teams">
@@ -276,7 +276,7 @@ export function PreGameConfiguration({ configuration, busy, error, savedRevision
                     })}
                 </div>
                 {error ? <p className="form-message error" role="alert">{error}</p> : null}
-                <div className="pregame-actions"><p className="pregame-action-guidance">Συμπληρώστε συμμετοχές, αριθμούς, αρχηγούς, βασικούς, Staff, χρώματα και θέση παρουσίασης. Οι αλλαγές ισχύουν μόνο για αυτό το Run.</p><div className="pregame-save-cluster">{showSavedConfirmation ? <p className="pregame-save-confirmation" role="status" aria-live="polite">Το πρόχειρο αποθηκεύτηκε · Revision {savedRevision}</p> : null}<button type="button" className="primary-button" disabled={busy || !dirty} onClick={() => void onSave({ gameId: configuration.gameId, expectedRevision: configuration.revision, teams: draft.teams, presentation: draft.presentation })}>{busy ? "Αποθήκευση…" : "Αποθήκευση Draft"}</button></div></div>
+                <div className="pregame-actions"><p className="pregame-action-guidance">Συμπληρώστε συμμετοχές, αριθμούς, αρχηγούς, βασικούς, Staff, χρώματα και θέση παρουσίασης. Οι αλλαγές ισχύουν μόνο για αυτό το Run.</p><div className="pregame-save-cluster">{showSavedConfirmation ? <p className="pregame-save-confirmation" role="status" aria-live="polite">{displayStatus.saveConfirmation}</p> : null}<button type="button" className="primary-button" disabled={busy || !dirty} onClick={() => void onSave({ gameId: configuration.gameId, expectedRevision: configuration.revision, teams: draft.teams, presentation: draft.presentation })}>{busy ? "Αποθήκευση…" : "Αποθήκευση Draft"}</button></div></div>
                 {footer}
             </section>
         </main>
