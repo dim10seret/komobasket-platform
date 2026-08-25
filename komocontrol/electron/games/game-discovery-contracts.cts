@@ -1,0 +1,3 @@
+import type { AuthErrorCode, DesktopAuthState } from "../auth/auth-contracts.cjs";
+export interface AvailableGame { gameId: string; packageId: string; packageVersion: number; homeTeam: { id: string; name: string }; awayTeam: { id: string; name: string }; competition: { id: string; name: string }; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string; scheduledTime: string; scheduledAt: string | null; venue: string | null; publishedAt: string; }
+export type GameDiscoveryOperationResult = { ok: true; games: AvailableGame[]; state: DesktopAuthState } | { ok: false; errorCode: AuthErrorCode; state: DesktopAuthState };

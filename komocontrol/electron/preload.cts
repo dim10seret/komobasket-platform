@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { AuthOperationResult, DesktopAuthState, LoginInput } from "./auth/auth-contracts.cjs";
+import type { GameDiscoveryOperationResult } from "./games/game-discovery-contracts.cjs";
 
 interface AppInfo {
     version: string;
@@ -19,6 +20,7 @@ const bridge = Object.freeze({
     login: (input: LoginInput): Promise<AuthOperationResult> => ipcRenderer.invoke("auth:login", input) as Promise<AuthOperationResult>,
     retrySession: (): Promise<AuthOperationResult> => ipcRenderer.invoke("auth:retry-session") as Promise<AuthOperationResult>,
     logout: (): Promise<AuthOperationResult> => ipcRenderer.invoke("auth:logout") as Promise<AuthOperationResult>,
+    listAvailableGames: (): Promise<GameDiscoveryOperationResult> => ipcRenderer.invoke("games:list") as Promise<GameDiscoveryOperationResult>,
 });
 
 contextBridge.exposeInMainWorld("komoControl", bridge);

@@ -1,6 +1,7 @@
 import { AuthFlowError, authErrorCode, type AuthErrorCode, type AuthOperationResult, type DesktopAuthState, type LoginInput, type SafeScorerContext } from "./auth-contracts.cjs";
 import type { ScorerAuthClient } from "./platform-auth-client.cjs";
 import { SecureSessionStore } from "./secure-session-store.cjs";
+import type { GameDiscoveryOperationResult } from "../games/game-discovery-contracts.cjs";
 export class AuthCoordinator {
     private readonly client: ScorerAuthClient | null; private readonly store: SecureSessionStore; private readonly deviceId: string; private readonly deviceIdSuffix: string;
     private currentToken: string | null = null; private state: DesktopAuthState; private initialization: Promise<DesktopAuthState> | null = null;
@@ -31,6 +32,16 @@ export class AuthCoordinator {
         if (token && this.client) { try { await this.client.logout(token); } catch { /* offline logout has no retry queue */ } }
         try { this.store.clearSession(); } catch (error) { return this.failure(error); }
         this.currentToken = null; this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; return { ok: true, state: this.state };
+    }
+    async listGames(): Promise<GameDiscoveryOperationResult> {
+        await this.initialize();
+        if (!this.client || !this.currentToken || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { return { ok: true, games: await this.client.listGames(this.currentToken), state: this.state }; }
+        catch (error) {
+            const errorCode = authErrorCode(error);
+            if (errorCode === "SESSION_INVALID" || errorCode === "SCORER_DISABLED") { try { this.store.clearSession(); } catch (storeError) { return { ok: false, errorCode: authErrorCode(storeError), state: this.state }; } this.currentToken = null; this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
+            return { ok: false, errorCode, state: this.state };
+        }
     }
     dispose(): void { this.currentToken = null; }
     private async restore(): Promise<DesktopAuthState> {

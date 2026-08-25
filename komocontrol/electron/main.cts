@@ -128,6 +128,7 @@ ipcMain.handle("auth:login", async (event, value: unknown) => {
 });
 ipcMain.handle("auth:retry-session", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().retrySession(); });
 ipcMain.handle("auth:logout", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().logout(); });
+ipcMain.handle("games:list", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listGames(); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 

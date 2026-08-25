@@ -11,6 +11,8 @@ type KomoControlAuthState =
     | { kind: "validation-unavailable"; errorCode: "NETWORK_UNAVAILABLE" | "MALFORMED_RESPONSE"; deviceIdSuffix: string }
     | { kind: "blocked"; errorCode: "SECURE_STORAGE_UNAVAILABLE" | "CONFIGURATION_ERROR"; deviceIdSuffix: string };
 type KomoControlAuthOperationResult = { ok: true; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlAuthErrorCode; state: KomoControlAuthState };
+interface KomoControlAvailableGame { gameId: string; packageId: string; packageVersion: number; homeTeam: { id: string; name: string }; awayTeam: { id: string; name: string }; competition: { id: string; name: string }; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string; scheduledTime: string; scheduledAt: string | null; venue: string | null; publishedAt: string; }
+type KomoControlGameDiscoveryResult = { ok: true; games: KomoControlAvailableGame[]; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlAuthErrorCode; state: KomoControlAuthState };
 
 interface KomoControlDesktopBridge {
     getAppInfo(): Promise<KomoControlAppInfo>;
@@ -23,6 +25,7 @@ interface KomoControlDesktopBridge {
     login(input: { username: string; password: string }): Promise<KomoControlAuthOperationResult>;
     retrySession(): Promise<KomoControlAuthOperationResult>;
     logout(): Promise<KomoControlAuthOperationResult>;
+    listAvailableGames(): Promise<KomoControlGameDiscoveryResult>;
 }
 
 interface Window {
