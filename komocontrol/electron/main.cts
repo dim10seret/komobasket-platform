@@ -1,12 +1,17 @@
-import { app, BrowserWindow, ipcMain, Menu, session } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, safeStorage, session } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { AuthCoordinator } from "./auth/auth-coordinator.cjs";
+import { authErrorCode, type LoginInput } from "./auth/auth-contracts.cjs";
+import { PlatformAuthClient } from "./auth/platform-auth-client.cjs";
+import { SecureSessionStore } from "./auth/secure-session-store.cjs";
 import { LocalDatabase } from "./persistence/local-database.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
 const isDevelopment = !app.isPackaged && Boolean(developmentUrl);
 let mainWindow: BrowserWindow | null = null;
 let localDatabase: LocalDatabase | null = null;
+let authCoordinator: AuthCoordinator | null = null;
 
 const profileName = app.isPackaged ? "KomoControl" : "KomoControl Dev";
 app.setName(profileName);
@@ -28,6 +33,28 @@ function isAllowedRendererUrl(rawUrl: string): boolean {
     } catch {
         return false;
     }
+}
+
+function requireTrustedSender(event: Electron.IpcMainInvokeEvent): void {
+    if (event.senderFrame === null || !isAllowedRendererUrl(event.senderFrame.url)) throw new Error("Untrusted renderer IPC request.");
+}
+
+function platformBaseUrl(): string | null {
+    const configured = process.env.KOMOCONTROL_PLATFORM_URL?.trim();
+    if (!configured) return isDevelopment ? "http://localhost:3000" : null;
+    try { const url = new URL(configured); if (!isDevelopment && url.protocol !== "https:") return null; if (url.protocol !== "http:" && url.protocol !== "https:") return null; return url.origin; }
+    catch { return null; }
+}
+
+function requireAuthCoordinator(): AuthCoordinator { if (!authCoordinator) throw new Error("Authentication is not ready."); return authCoordinator; }
+
+function loginInput(value: unknown): LoginInput {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Login input.");
+    const input = value as Record<string, unknown>;
+    if (typeof input.username !== "string" || typeof input.password !== "string") throw new Error("Invalid Login input.");
+    const username = input.username.trim();
+    if (!username || username.length > 100 || !input.password || input.password.length > 512) throw new Error("Invalid Login input.");
+    return { username, password: input.password };
 }
 
 function createMainWindow(): void {
@@ -75,9 +102,7 @@ function createMainWindow(): void {
 }
 
 ipcMain.handle("app:get-info", (event) => {
-    if (event.senderFrame === null || !isAllowedRendererUrl(event.senderFrame.url)) {
-        throw new Error("Untrusted renderer IPC request.");
-    }
+    requireTrustedSender(event);
 
     return {
         version: app.getVersion(),
@@ -86,9 +111,7 @@ ipcMain.handle("app:get-info", (event) => {
 });
 
 ipcMain.handle("app:get-local-status", (event) => {
-    if (event.senderFrame === null || !isAllowedRendererUrl(event.senderFrame.url)) {
-        throw new Error("Untrusted renderer IPC request.");
-    }
+    requireTrustedSender(event);
 
     if (localDatabase === null) {
         throw new Error("Local persistence is not ready.");
@@ -96,6 +119,15 @@ ipcMain.handle("app:get-local-status", (event) => {
 
     return localDatabase.getSafeStatus();
 });
+
+ipcMain.handle("auth:get-state", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().getState(); });
+ipcMain.handle("auth:login", async (event, value: unknown) => {
+    requireTrustedSender(event);
+    try { return await requireAuthCoordinator().login(loginInput(value)); }
+    catch (error) { const coordinator = requireAuthCoordinator(); return { ok: false, errorCode: authErrorCode(error), state: await coordinator.getState() } as const; }
+});
+ipcMain.handle("auth:retry-session", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().retrySession(); });
+ipcMain.handle("auth:logout", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().logout(); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -131,11 +163,19 @@ if (!hasSingleInstanceLock) {
         });
 
         try {
-            localDatabase.initialize();
+            const localStatus = localDatabase.initialize();
             console.info("KomoControl local persistence ready.", {
                 ...localDatabase.getSafeStatus(),
                 durability: localDatabase.getDurabilityStatus(),
             });
+            const secureSessionStore = new SecureSessionStore(path.join(userDataPath, "secure", "session.bin"), {
+                isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+                encryptString: (value) => safeStorage.encryptString(value),
+                decryptString: (value) => safeStorage.decryptString(value),
+            });
+            const baseUrl = platformBaseUrl();
+            authCoordinator = new AuthCoordinator(baseUrl ? new PlatformAuthClient(baseUrl) : null, secureSessionStore, localStatus.deviceIdentity.deviceId);
+            void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);
             localDatabase.close();
@@ -159,6 +199,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+    authCoordinator?.dispose();
+    authCoordinator = null;
     localDatabase?.close();
     localDatabase = null;
 });

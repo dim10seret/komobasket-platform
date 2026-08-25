@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "test": "vitest run src",
     "test:persistence": "npm run desktop:compile && vitest run electron/persistence/local-database.test.mjs",
+    "test:auth": "npm run desktop:compile && vitest run electron/auth/auth-foundation.test.mjs",
     "preview": "vite preview",
     "desktop:dev": "npm run desktop:compile && node scripts/electron-dev.cjs",
     "desktop:typecheck": "tsc -p tsconfig.electron.json --noEmit",

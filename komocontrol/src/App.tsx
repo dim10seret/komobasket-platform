@@ -1,28 +1,27 @@
-import { HashRouter, Routes, Route } from "react-router-dom";
+import { useEffect, useState, type FormEvent } from "react";
 
-import Dashboard from "./pages/Dashboard/Dashboard";
-import LiveMatch from "./pages/LiveMatch/LiveMatch";
-import Teams from "./pages/Teams/Teams";
-import Players from "./pages/Players/Players";
-import Settings from "./pages/Settings/Settings";
-import MatchReport from "./pages/MatchReport/MatchReport";
-import Matches from "./pages/Matches/Matches";
-import NotFound from "./pages/NotFound/NotFound";
+const errorMessages: Record<KomoControlAuthErrorCode, string> = {
+    AUTH_INVALID: "Λανθασμένο όνομα χρήστη ή κωδικός.", SCORER_DISABLED: "Ο λογαριασμός scorer δεν είναι ενεργός.", SESSION_INVALID: "Η σύνδεση έληξε. Συνδεθείτε ξανά.",
+    NETWORK_UNAVAILABLE: "Δεν είναι δυνατή η σύνδεση με τον διακομιστή.", MALFORMED_RESPONSE: "Ο διακομιστής επέστρεψε μη έγκυρη απάντηση.",
+    SECURE_STORAGE_UNAVAILABLE: "Η ασφαλής αποθήκευση των Windows δεν είναι διαθέσιμη.", LOCAL_SESSION_ERROR: "Η ασφαλής τοπική σύνδεση δεν μπόρεσε να ενημερωθεί.", CONFIGURATION_ERROR: "Η σύνδεση με το KomoPlatform δεν έχει ρυθμιστεί.",
+};
 
 function App() {
+    const bridge = window.komoControl;
+    const [authState, setAuthState] = useState<KomoControlAuthState | null>(null);
+    const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+    const [version, setVersion] = useState("0.1.0"); const [localReady, setLocalReady] = useState(false);
+    useEffect(() => { if (!bridge) return; void Promise.all([bridge.getAuthState(), bridge.getAppInfo(), bridge.getLocalStatus()]).then(([state, info, local]) => { setAuthState(state); setVersion(info.version); setLocalReady(local.ready); }).catch(() => setError(errorMessages.LOCAL_SESSION_ERROR)); }, [bridge]);
+    async function submitLogin(event: FormEvent<HTMLFormElement>) { event.preventDefault(); if (!bridge || busy) return; setBusy(true); setError(null); const submittedPassword = password; setPassword(""); try { const result = await bridge.login({ username, password: submittedPassword }); setAuthState(result.state); if (!result.ok) setError(errorMessages[result.errorCode]); } catch { setError(errorMessages.NETWORK_UNAVAILABLE); } finally { setBusy(false); } }
+    async function retrySession() { if (!bridge || busy) return; setBusy(true); setError(null); try { const result = await bridge.retrySession(); setAuthState(result.state); if (!result.ok) setError(errorMessages[result.errorCode]); } catch { setError(errorMessages.NETWORK_UNAVAILABLE); } finally { setBusy(false); } }
+    async function logout() { if (!bridge || busy) return; setBusy(true); setError(null); try { const result = await bridge.logout(); setAuthState(result.state); if (!result.ok) setError(errorMessages[result.errorCode]); } catch { setError(errorMessages.LOCAL_SESSION_ERROR); } finally { setBusy(false); } }
+    if (!bridge) return <main className="auth-shell"><section className="auth-card"><h1>KomoControl</h1><p>Η ασφαλής desktop σύνδεση δεν είναι διαθέσιμη.</p></section></main>;
+    if (!authState) return <main className="auth-shell"><section className="auth-card loading-card"><span className="basketball-mark">K</span><p>Έλεγχος ασφαλούς σύνδεσης…</p></section></main>;
+    const footer = <footer><span>v{version} · Creator: D. Seretidis</span><span>{localReady ? "Local DB έτοιμη" : "Local DB μη διαθέσιμη"}</span><span>Συσκευή · {authState.deviceIdSuffix}</span></footer>;
+    if (authState.kind === "authenticated") return <main className="home-shell"><section className="home-card"><header className="brand-row"><div className="basketball-mark">K</div><div><span className="eyebrow">KOMOBASKET OFFICIAL SCORER</span><h1>KomoControl</h1></div></header><div className="connection-pill"><span />Online · Επιβεβαιωμένη σύνδεση</div><div className="identity-panel"><span className="eyebrow">ΣΥΝΔΕΔΕΜΕΝΟΣ ΩΣ</span><strong>{authState.context.username}</strong><p>{authState.context.organizationName}</p></div><p className="home-note">Η συσκευή είναι έτοιμη. Οι αγώνες θα προστεθούν σε επόμενο στάδιο.</p>{error && <p className="form-error" role="alert">{error}</p>}<button className="secondary-button" type="button" disabled={busy} onClick={() => void logout()}>{busy ? "Αποσύνδεση…" : "Αποσύνδεση"}</button>{footer}</section></main>;
+    if (authState.kind === "validation-unavailable") return <main className="auth-shell"><section className="auth-card"><header className="brand-row"><div className="basketball-mark">K</div><div><span className="eyebrow">OFFLINE</span><h1>Απαιτείται επιβεβαίωση</h1></div></header><p className="intro">Η κρυπτογραφημένη σύνδεση διατηρήθηκε, αλλά το KomoPlatform δεν είναι διαθέσιμο. Δεν έχει δοθεί αγωνιστική εξουσιοδότηση.</p>{error && <p className="form-error" role="alert">{error}</p>}<div className="button-row"><button className="primary-button" type="button" disabled={busy} onClick={() => void retrySession()}>{busy ? "Έλεγχος…" : "Νέα προσπάθεια"}</button><button className="secondary-button" type="button" disabled={busy} onClick={() => void logout()}>Τοπική αποσύνδεση</button></div>{footer}</section></main>;
     return (
-        <HashRouter>
-            <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/live" element={<LiveMatch />} />
-                <Route path="/teams" element={<Teams />} />
-                <Route path="/players" element={<Players />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="/report" element={<MatchReport />} />
-                <Route path="/matches" element={<Matches />} />
-                <Route path="*" element={<NotFound />} />
-            </Routes>
-        </HashRouter>
+        <main className="auth-shell"><section className="auth-card"><header className="brand-row"><div className="basketball-mark">K</div><div><span className="eyebrow">KOMOBASKET OFFICIAL SCORER</span><h1>KomoControl</h1></div></header>{authState.kind === "blocked" ? <div className="blocked-panel"><h2>Η σύνδεση δεν είναι διαθέσιμη</h2><p>{errorMessages[authState.errorCode]}</p></div> : <><p className="intro">Συνδεθείτε με τον λογαριασμό scorer που έχει οριστεί στο KomoPlatform.</p><form onSubmit={(event) => void submitLogin(event)}><label>Όνομα χρήστη<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} disabled={busy} required /></label><label>Κωδικός<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" type="submit" disabled={busy || !username.trim() || !password}>{busy ? "Σύνδεση…" : "Σύνδεση"}</button></form></>}{footer}</section></main>
     );
 }
 
