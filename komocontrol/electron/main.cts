@@ -1,10 +1,16 @@
 import { app, BrowserWindow, ipcMain, Menu, session } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { LocalDatabase } from "./persistence/local-database.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
 const isDevelopment = !app.isPackaged && Boolean(developmentUrl);
 let mainWindow: BrowserWindow | null = null;
+let localDatabase: LocalDatabase | null = null;
+
+const profileName = app.isPackaged ? "KomoControl" : "KomoControl Dev";
+app.setName(profileName);
+app.setPath("userData", path.join(app.getPath("appData"), profileName));
 
 function rendererRootUrl(): string {
     return pathToFileURL(path.join(__dirname, "..", "dist") + path.sep).href;
@@ -79,6 +85,18 @@ ipcMain.handle("app:get-info", (event) => {
     } as const;
 });
 
+ipcMain.handle("app:get-local-status", (event) => {
+    if (event.senderFrame === null || !isAllowedRendererUrl(event.senderFrame.url)) {
+        throw new Error("Untrusted renderer IPC request.");
+    }
+
+    if (localDatabase === null) {
+        throw new Error("Local persistence is not ready.");
+    }
+
+    return localDatabase.getSafeStatus();
+});
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
@@ -95,11 +113,36 @@ if (!hasSingleInstanceLock) {
         mainWindow.focus();
     });
 
-    void app.whenReady().then(() => {
+    void app.whenReady().then(async () => {
         session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
             callback(false);
         });
         session.defaultSession.setPermissionCheckHandler(() => false);
+
+        const userDataPath = app.getPath("userData");
+        const migrationDirectory = app.isPackaged
+            ? path.join(process.resourcesPath, "local-migrations")
+            : path.join(app.getAppPath(), "electron", "migrations");
+
+        localDatabase = new LocalDatabase({
+            databasePath: path.join(userDataPath, "komocontrol.sqlite"),
+            migrationsDirectory: migrationDirectory,
+            backupDirectory: path.join(userDataPath, "backups"),
+        });
+
+        try {
+            localDatabase.initialize();
+            console.info("KomoControl local persistence ready.", {
+                ...localDatabase.getSafeStatus(),
+                durability: localDatabase.getDurabilityStatus(),
+            });
+        } catch (error) {
+            console.error("KomoControl local persistence initialization failed.", error);
+            localDatabase.close();
+            localDatabase = null;
+            app.quit();
+            return;
+        }
 
         createMainWindow();
 
@@ -113,4 +156,9 @@ if (!hasSingleInstanceLock) {
 
 app.on("window-all-closed", () => {
     app.quit();
+});
+
+app.on("before-quit", () => {
+    localDatabase?.close();
+    localDatabase = null;
 });
