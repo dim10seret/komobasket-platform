@@ -67,6 +67,40 @@ export interface StoredLocalGamePackage {
     downloadedAtUtc: string;
 }
 
+export interface CreateLocalGameRunInput {
+    runId: string;
+    runSchemaVersion: 1;
+    gameId: string;
+    packageId: string;
+    packageVersion: number;
+    packageSchemaVersion: 1;
+    packageHash: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    setupSnapshotJson: string;
+}
+
+export interface StoredLocalGameRun extends CreateLocalGameRunInput {
+    status: "active" | "finalized" | "abandoned";
+    lastAcceptedSequence: number;
+    startedAtUtc: string | null;
+    createdAtUtc: string;
+    updatedAtUtc: string;
+}
+
+export interface LocalGameRunStoreResult {
+    outcome: "created" | "existing";
+    run: StoredLocalGameRun;
+}
+
+export class LocalGameRunConflictError extends Error {
+    constructor(readonly kind: "ownership" | "state") {
+        super(kind === "ownership" ? "Local active Game Run ownership conflict." : "Local active Game Run state conflict.");
+        this.name = "LocalGameRunConflictError";
+    }
+}
+
 export interface LocalIntegrityResult {
     quickCheck: "ok";
     foreignKeyExceptions: 0;
@@ -282,11 +316,53 @@ function loadOrCreateDeviceIdentity(database: DatabaseSync): DeviceIdentity {
 }
 
 function verifyExpectedSchema(database: DatabaseSync): void {
-    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages"]) {
+    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs"]) {
         if (!tableExists(database, tableName)) {
             throw new Error(`Required local table is missing: ${tableName}.`);
         }
     }
+}
+
+function storedGamePackage(value: unknown): StoredLocalGamePackage {
+    const row = objectRow(value, "local_game_packages");
+    const publishedAtUtc = row.published_at_utc;
+    if (publishedAtUtc !== null && typeof publishedAtUtc !== "string") throw new Error("Invalid published_at_utc in local_game_packages.");
+    return {
+        packageId: stringField(row, "package_id", "local_game_packages"),
+        gameId: stringField(row, "game_id", "local_game_packages"),
+        packageVersion: numberField(row, "package_version", "local_game_packages"),
+        packageSchemaVersion: numberField(row, "package_schema_version", "local_game_packages"),
+        payloadJson: stringField(row, "payload_json", "local_game_packages"),
+        payloadHash: stringField(row, "payload_hash", "local_game_packages"),
+        publishedAtUtc,
+        downloadedAtUtc: stringField(row, "downloaded_at_utc", "local_game_packages"),
+    };
+}
+
+function storedGameRun(value: unknown): StoredLocalGameRun {
+    const row = objectRow(value, "local_game_runs");
+    const startedAtUtc = row.started_at_utc;
+    if (startedAtUtc !== null && typeof startedAtUtc !== "string") throw new Error("Invalid started_at_utc in local_game_runs.");
+    const status = stringField(row, "status", "local_game_runs");
+    if (status !== "active" && status !== "finalized" && status !== "abandoned") throw new Error("Invalid status in local_game_runs.");
+    return {
+        runId: stringField(row, "run_id", "local_game_runs"),
+        runSchemaVersion: numberField(row, "run_schema_version", "local_game_runs") as 1,
+        gameId: stringField(row, "game_id", "local_game_runs"),
+        packageId: stringField(row, "package_id", "local_game_runs"),
+        packageVersion: numberField(row, "package_version", "local_game_runs"),
+        packageSchemaVersion: numberField(row, "package_schema_version", "local_game_runs") as 1,
+        packageHash: stringField(row, "package_hash", "local_game_runs"),
+        organizationId: stringField(row, "organization_id", "local_game_runs"),
+        scorerId: stringField(row, "scorer_id", "local_game_runs"),
+        deviceId: stringField(row, "device_id", "local_game_runs"),
+        status,
+        setupSnapshotJson: stringField(row, "setup_snapshot_json", "local_game_runs"),
+        lastAcceptedSequence: numberField(row, "last_accepted_sequence", "local_game_runs"),
+        startedAtUtc,
+        createdAtUtc: stringField(row, "created_at_utc", "local_game_runs"),
+        updatedAtUtc: stringField(row, "updated_at_utc", "local_game_runs"),
+    };
 }
 
 function verifiedGamePackage(input: VerifiedGamePackageInput): VerifiedGamePackageInput {
@@ -405,19 +481,59 @@ export class LocalDatabase {
             package_schema_version, payload_json, payload_hash, published_at_utc, downloaded_at_utc
             FROM local_game_packages WHERE game_id = ? AND is_current = 1`).get(gameId);
         if (value === undefined) return null;
-        const row = objectRow(value, "local_game_packages");
-        const publishedAtUtc = row.published_at_utc;
-        if (publishedAtUtc !== null && typeof publishedAtUtc !== "string") throw new Error("Invalid published_at_utc in local_game_packages.");
-        return {
-            packageId: stringField(row, "package_id", "local_game_packages"),
-            gameId: stringField(row, "game_id", "local_game_packages"),
-            packageVersion: numberField(row, "package_version", "local_game_packages"),
-            packageSchemaVersion: numberField(row, "package_schema_version", "local_game_packages"),
-            payloadJson: stringField(row, "payload_json", "local_game_packages"),
-            payloadHash: stringField(row, "payload_hash", "local_game_packages"),
-            publishedAtUtc,
-            downloadedAtUtc: stringField(row, "downloaded_at_utc", "local_game_packages"),
-        };
+        return storedGamePackage(value);
+    }
+
+    readGamePackage(packageId: string): StoredLocalGamePackage | null {
+        if (!packageId.trim()) throw new Error("Package identity is required.");
+        const value = this.requireDatabase().prepare(`SELECT package_id, game_id, package_version,
+            package_schema_version, payload_json, payload_hash, published_at_utc, downloaded_at_utc
+            FROM local_game_packages WHERE package_id = ?`).get(packageId);
+        return value === undefined ? null : storedGamePackage(value);
+    }
+
+    getActiveLocalGameRun(gameId: string): StoredLocalGameRun | null {
+        if (!gameId.trim()) throw new Error("Game identity is required.");
+        const value = this.requireDatabase().prepare("SELECT * FROM local_game_runs WHERE game_id = ? AND status = 'active'").get(gameId);
+        return value === undefined ? null : storedGameRun(value);
+    }
+
+    createOrOpenLocalGameRun(input: CreateLocalGameRunInput): LocalGameRunStoreResult {
+        if (!input.runId.trim() || !input.gameId.trim() || !input.packageId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim()) throw new Error("Local Game Run identity is invalid.");
+        if (input.runSchemaVersion !== 1 || input.packageSchemaVersion !== 1 || !Number.isInteger(input.packageVersion) || input.packageVersion < 1) throw new Error("Local Game Run version is invalid.");
+        if (!/^[0-9a-f]{64}$/.test(input.packageHash) || !input.setupSnapshotJson.trim()) throw new Error("Local Game Run snapshot is invalid.");
+        try { JSON.parse(input.setupSnapshotJson); } catch { throw new Error("Local Game Run snapshot is malformed."); }
+        const database = this.requireDatabase();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const pinnedPackage = database.prepare(`SELECT package_id FROM local_game_packages
+                WHERE package_id=? AND game_id=? AND package_version=? AND package_schema_version=? AND payload_hash=? AND is_current=1`)
+                .get(input.packageId, input.gameId, input.packageVersion, input.packageSchemaVersion, input.packageHash);
+            if (pinnedPackage === undefined) throw new LocalGameRunConflictError("state");
+            const existingValue = database.prepare("SELECT * FROM local_game_runs WHERE game_id=? AND status='active'").get(input.gameId);
+            if (existingValue !== undefined) {
+                const existing = storedGameRun(existingValue);
+                const sameOwner = existing.organizationId === input.organizationId && existing.scorerId === input.scorerId && existing.deviceId === input.deviceId;
+                if (!sameOwner) throw new LocalGameRunConflictError("ownership");
+                const sameState = existing.runSchemaVersion === input.runSchemaVersion && existing.packageId === input.packageId && existing.packageVersion === input.packageVersion && existing.packageSchemaVersion === input.packageSchemaVersion && existing.packageHash === input.packageHash && existing.setupSnapshotJson === input.setupSnapshotJson;
+                if (!sameState) throw new LocalGameRunConflictError("state");
+                database.exec("COMMIT");
+                return { outcome: "existing", run: existing };
+            }
+            const timestamp = new Date().toISOString();
+            database.prepare(`INSERT INTO local_game_runs
+                (run_id, run_schema_version, game_id, package_id, package_version, package_schema_version, package_hash, organization_id, scorer_id, device_id, status, setup_snapshot_json, last_accepted_sequence, started_at_utc, created_at_utc, updated_at_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 0, NULL, ?, ?)`)
+                .run(input.runId, input.runSchemaVersion, input.gameId, input.packageId, input.packageVersion, input.packageSchemaVersion, input.packageHash, input.organizationId, input.scorerId, input.deviceId, input.setupSnapshotJson, timestamp, timestamp);
+            const createdValue = database.prepare("SELECT * FROM local_game_runs WHERE run_id=?").get(input.runId);
+            if (createdValue === undefined) throw new Error("Local Game Run was not created.");
+            const created = storedGameRun(createdValue);
+            database.exec("COMMIT");
+            return { outcome: "created", run: created };
+        } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+        }
     }
 
     storeVerifiedGamePackage(value: VerifiedGamePackageInput): LocalGamePackageStoreResult {

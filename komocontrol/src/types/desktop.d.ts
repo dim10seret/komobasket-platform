@@ -21,6 +21,9 @@ interface KomoControlMatchSetupStaffMember { staffId: string; displayName: strin
 interface KomoControlMatchSetupTeam { side: "HOME" | "AWAY"; teamId: string; teamName: string; logoUrl: string | null; players: KomoControlMatchSetupPlayer[]; staff: KomoControlMatchSetupStaffMember[]; }
 interface KomoControlMatchSetup { gameId: string; packageId: string; packageVersion: number; competitionName: string; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string | null; scheduledTime: string | null; venue: string | null; settings: { gameMode: "SIMPLE" | "FULL"; minPlayers: number; maxPlayers: number; startingPlayers: number; regulationPeriods: number; regulationPeriodSeconds: number; overtimeSeconds: number; tieAllowed: boolean; winnerRequired: boolean; }; home: KomoControlMatchSetupTeam; away: KomoControlMatchSetupTeam; }
 type KomoControlMatchSetupResult = { ok: true; setup: KomoControlMatchSetup; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlGamePackageErrorCode; state: KomoControlAuthState };
+type KomoControlMatchRunErrorCode = "RUN_UNAVAILABLE" | "RUN_INVALID" | "RUN_CONFLICT" | "RUN_OWNERSHIP_CONFLICT";
+interface KomoControlSafeMatchRun { runId: string; gameId: string; packageId: string; packageVersion: number; status: "active"; gameplayStarted: false; lastAcceptedSequence: 0; createdAtUtc: string; }
+type KomoControlMatchRunResult = { ok: true; outcome: "created" | "existing" | "recovered"; run: KomoControlSafeMatchRun | null; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 
 interface KomoControlDesktopBridge {
     getAppInfo(): Promise<KomoControlAppInfo>;
@@ -37,6 +40,8 @@ interface KomoControlDesktopBridge {
     getOfflineGameStatus(gameId: string): Promise<KomoControlOfflineGameStatus>;
     downloadGamePackage(gameId: string): Promise<KomoControlGamePackageDownloadResult>;
     getMatchSetup(gameId: string): Promise<KomoControlMatchSetupResult>;
+    createOrOpenGameRun(gameId: string): Promise<KomoControlMatchRunResult>;
+    getActiveGameRun(gameId: string): Promise<KomoControlMatchRunResult>;
 }
 
 interface Window {

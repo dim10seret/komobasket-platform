@@ -5,10 +5,11 @@ import type { GameDiscoveryOperationResult } from "../games/game-discovery-contr
 import { GamePackageDownloadManager, packageOperationFailure, type GamePackageDownloadResult } from "../games/game-package-download.cjs";
 import type { LocalGamePackageStatus } from "../persistence/local-database.cjs";
 import { MatchSetupManager, matchSetupErrorCode, type MatchSetupOperationResult } from "../games/match-setup.cjs";
+import { MatchRunManager, matchRunErrorCode, type MatchRunOperationResult } from "../runs/match-run.cjs";
 export class AuthCoordinator {
     private readonly client: ScorerAuthClient | null; private readonly store: SecureSessionStore; private readonly deviceId: string; private readonly deviceIdSuffix: string;
     private currentToken: string | null = null; private state: DesktopAuthState; private initialization: Promise<DesktopAuthState> | null = null;
-    constructor(client: ScorerAuthClient | null, store: SecureSessionStore, deviceId: string, private readonly packageManager: GamePackageDownloadManager | null = null, private readonly matchSetupManager: MatchSetupManager | null = null) { this.client = client; this.store = store; this.deviceId = deviceId; this.deviceIdSuffix = deviceId.slice(-8); this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
+    constructor(client: ScorerAuthClient | null, store: SecureSessionStore, deviceId: string, private readonly packageManager: GamePackageDownloadManager | null = null, private readonly matchSetupManager: MatchSetupManager | null = null, private readonly matchRunManager: MatchRunManager | null = null) { this.client = client; this.store = store; this.deviceId = deviceId; this.deviceIdSuffix = deviceId.slice(-8); this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
     initialize(): Promise<DesktopAuthState> { if (!this.initialization) this.initialization = this.restore(); return this.initialization; }
     async getState(): Promise<DesktopAuthState> { await this.initialize(); return this.state; }
     async login(input: LoginInput): Promise<AuthOperationResult> {
@@ -64,6 +65,18 @@ export class AuthCoordinator {
         if (!this.matchSetupManager || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try { return { ok: true, setup: this.matchSetupManager.getMatchSetup(gameId), state: this.state }; }
         catch (error) { return { ok: false, errorCode: matchSetupErrorCode(error), state: this.state }; }
+    }
+    async createOrOpenGameRun(gameId: string): Promise<MatchRunOperationResult> {
+        await this.initialize();
+        if (!this.matchRunManager || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { const result = this.matchRunManager.createOrOpen(gameId, { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId }); return { ok: true, ...result, state: this.state }; }
+        catch (error) { return { ok: false, errorCode: matchRunErrorCode(error), state: this.state }; }
+    }
+    async getActiveGameRun(gameId: string): Promise<MatchRunOperationResult> {
+        await this.initialize();
+        if (!this.matchRunManager || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { return { ok: true, outcome: "recovered", run: this.matchRunManager.recover(gameId, { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId }), state: this.state }; }
+        catch (error) { return { ok: false, errorCode: matchRunErrorCode(error), state: this.state }; }
     }
     dispose(): void { this.currentToken = null; }
     private async restore(): Promise<DesktopAuthState> {

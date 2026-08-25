@@ -8,6 +8,7 @@ import { SecureSessionStore } from "./auth/secure-session-store.cjs";
 import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
+import { MatchRunManager } from "./runs/match-run.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
 const productionPlatformOrigin = "https://komobasket.gr";
@@ -143,6 +144,8 @@ ipcMain.handle("games:list", async (event) => { requireTrustedSender(event); ret
 ipcMain.handle("games:get-offline-status", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getGamePackageStatus(gameIdInput(value)); });
 ipcMain.handle("games:download-package", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().downloadGamePackage(gameIdInput(value)); });
 ipcMain.handle("games:get-match-setup", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getMatchSetup(gameIdInput(value)); });
+ipcMain.handle("runs:create-or-open", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().createOrOpenGameRun(gameIdInput(value)); });
+ipcMain.handle("runs:get-active", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getActiveGameRun(gameIdInput(value)); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -190,7 +193,8 @@ if (!hasSingleInstanceLock) {
             });
             const baseUrl = platformBaseUrl();
             const platformClient = baseUrl ? new PlatformAuthClient(baseUrl) : null;
-            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, new MatchSetupManager(localDatabase));
+            const matchSetupManager = new MatchSetupManager(localDatabase);
+            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, matchSetupManager, new MatchRunManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId));
             void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);

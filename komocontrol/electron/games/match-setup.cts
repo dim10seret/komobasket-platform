@@ -12,7 +12,8 @@ export interface MatchSetup {
     home: MatchSetupTeam; away: MatchSetupTeam;
 }
 export type MatchSetupOperationResult = { ok: true; setup: MatchSetup; state: DesktopAuthState } | { ok: false; errorCode: GamePackageErrorCode | "SESSION_INVALID"; state: DesktopAuthState };
-export interface MatchSetupPackageStore { readCurrentGamePackage(gameId: string): StoredLocalGamePackage | null; }
+export interface MatchSetupPackageStore { readCurrentGamePackage(gameId: string): StoredLocalGamePackage | null; readGamePackage(packageId: string): StoredLocalGamePackage | null; }
+export interface VerifiedMatchSetupSource { setup: MatchSetup; packageHash: string; packageSchemaVersion: 1; }
 
 function comparePlayers(left: GamePackageV1Player, right: GamePackageV1Player): number {
     if (left.shirtNumber === null && right.shirtNumber !== null) return 1;
@@ -31,20 +32,36 @@ export class MatchSetupManager {
         if (!normalizedGameId) throw new GamePackageFlowError("PACKAGE_INVALID");
         const stored = this.packages.readCurrentGamePackage(normalizedGameId);
         if (!stored) throw new GamePackageFlowError("PACKAGE_UNAVAILABLE");
+        return this.verifyStoredPackage(stored, normalizedGameId).setup;
+    }
+    getVerifiedMatchSetupSource(gameId: string): VerifiedMatchSetupSource {
+        const normalizedGameId = gameId.trim();
+        if (!normalizedGameId) throw new GamePackageFlowError("PACKAGE_INVALID");
+        const stored = this.packages.readCurrentGamePackage(normalizedGameId);
+        if (!stored) throw new GamePackageFlowError("PACKAGE_UNAVAILABLE");
+        return this.verifyStoredPackage(stored, normalizedGameId);
+    }
+    getVerifiedPackageMatchSetup(packageId: string): VerifiedMatchSetupSource {
+        const stored = this.packages.readGamePackage(packageId);
+        if (!stored) throw new GamePackageFlowError("PACKAGE_UNAVAILABLE");
+        return this.verifyStoredPackage(stored, stored.gameId);
+    }
+    private verifyStoredPackage(stored: StoredLocalGamePackage, expectedGameId: string): VerifiedMatchSetupSource {
         if (stored.packageSchemaVersion !== 1) throw new GamePackageFlowError("PACKAGE_UNSUPPORTED");
         const calculatedHash = createHash("sha256").update(Buffer.from(stored.payloadJson, "utf8")).digest("hex");
         if (calculatedHash !== stored.payloadHash.toLowerCase()) throw new GamePackageFlowError("PACKAGE_HASH_MISMATCH");
         let payload: unknown;
         try { payload = JSON.parse(stored.payloadJson); } catch { throw new GamePackageFlowError("PACKAGE_INVALID"); }
-        validateGamePackagePayload(payload, normalizedGameId);
+        validateGamePackagePayload(payload, expectedGameId);
         const home = payload.teams.find((team) => team.side === "HOME");
         const away = payload.teams.find((team) => team.side === "AWAY");
         if (!home || !away) throw new GamePackageFlowError("PACKAGE_INVALID");
-        return {
+        const setup: MatchSetup = {
             gameId: payload.game.id, packageId: stored.packageId, packageVersion: stored.packageVersion, competitionName: payload.game.competitionName, seasonName: payload.game.seasonName, phaseName: payload.game.phaseName, roundLabel: payload.game.roundLabel, scheduledDate: payload.game.scheduledDate, scheduledTime: payload.game.scheduledTime, venue: payload.game.venue,
             settings: { gameMode: payload.settings.game_mode, minPlayers: payload.settings.min_players, maxPlayers: payload.settings.max_players, startingPlayers: payload.settings.starting_players, regulationPeriods: payload.settings.regulation_periods, regulationPeriodSeconds: payload.settings.regulation_period_seconds, overtimeSeconds: payload.settings.overtime_seconds, tieAllowed: payload.settings.tie_allowed, winnerRequired: payload.settings.winner_required },
             home: mapTeam(home), away: mapTeam(away),
         };
+        return { setup, packageHash: stored.payloadHash, packageSchemaVersion: 1 };
     }
 }
 export function matchSetupErrorCode(error: unknown): GamePackageErrorCode { return error instanceof GamePackageFlowError ? error.code : "PACKAGE_INVALID"; }

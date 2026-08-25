@@ -75,6 +75,11 @@ input:focus { border-color: #e96624; box-shadow: 0 0 0 4px rgba(233, 102, 36, .1
 .setup-rules div { display: grid; gap: 5px; padding: 14px; border-radius: 12px; background: #f1ece3; }
 .setup-rules span { color: #69716d; font-size: 12px; }
 .setup-rules strong { overflow-wrap: anywhere; }
+.run-foundation { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 20px 0; padding: 20px; border: 1px solid #d9c7b7; border-radius: 16px; background: #fff8ef; }
+.run-foundation.ready { border-color: #b8d8c2; background: #eef8f1; }
+.run-foundation h2 { margin: 6px 0; }
+.run-foundation p { margin: 0 0 8px; color: #69716d; }
+.run-foundation strong { color: #8c4b27; font-size: 13px; }
 .games-state { margin: 0; padding: 22px; border: 1px dashed #cfc9bd; border-radius: 14px; color: #666e6a; text-align: center; }
 .games-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border-radius: 12px; color: #8c2f20; background: #fff0eb; }
 .games-error p { margin: 0; }
@@ -94,5 +99,6 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
     .game-offline-action button { width: 100%; }
     .setup-toolbar { align-items: stretch; flex-direction: column; }
     .setup-teams, .setup-rules { grid-template-columns: 1fr; }
+    .run-foundation { align-items: stretch; flex-direction: column; }
     footer { flex-direction: column; }
 }
