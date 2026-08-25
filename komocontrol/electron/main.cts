@@ -9,7 +9,7 @@ import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
 import { MatchRunManager } from "./runs/match-run.cjs";
-import { PreGameConfigurationManager, type PreGameConfigurationPlayerDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
+import { EXTRA_BENCH_ROLES, PreGameConfigurationManager, type ExtraBenchEntryV1, type ExtraBenchRole, type PreGameConfigurationPlayerDraft, type PreGameConfigurationPresentationDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationStaffDraft, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
 const productionPlatformOrigin = "https://komobasket.gr";
@@ -77,11 +77,32 @@ function preGameConfigurationPlayerDraft(value: unknown): PreGameConfigurationPl
     return { playerId: player.playerId, participating: player.participating, gameShirtNumber: player.gameShirtNumber };
 }
 
+function preGameConfigurationStaffDraft(value: unknown): PreGameConfigurationStaffDraft {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game configuration staff member.");
+    const staff = value as Record<string, unknown>;
+    if (typeof staff.staffId !== "string" || !staff.staffId.trim() || staff.staffId.length > 200 || typeof staff.participating !== "boolean") throw new Error("Invalid pre-game configuration staff member.");
+    return { staffId: staff.staffId, participating: staff.participating };
+}
+
+function preGameConfigurationExtraBenchEntry(value: unknown): ExtraBenchEntryV1 {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Run-only Bench entry.");
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.entryId !== "string" || entry.entryId.length > 100 || typeof entry.name !== "string" || entry.name.length > 120 || typeof entry.role !== "string" || !EXTRA_BENCH_ROLES.includes(entry.role as ExtraBenchRole)) throw new Error("Invalid Run-only Bench entry.");
+    return { entryId: entry.entryId, name: entry.name, role: entry.role as ExtraBenchRole };
+}
+
 function preGameConfigurationTeamDraft(value: unknown): PreGameConfigurationTeamDraft {
     if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game configuration team.");
     const team = value as Record<string, unknown>;
-    if ((team.side !== "HOME" && team.side !== "AWAY") || !Array.isArray(team.players) || team.players.length > 100) throw new Error("Invalid pre-game configuration team.");
-    return { side: team.side, players: team.players.map(preGameConfigurationPlayerDraft) };
+    if ((team.side !== "HOME" && team.side !== "AWAY") || !Array.isArray(team.players) || team.players.length > 100 || !Array.isArray(team.staff) || team.staff.length > 100 || !(team.captainPlayerId === null || (typeof team.captainPlayerId === "string" && team.captainPlayerId.trim() && team.captainPlayerId.length <= 200)) || !Array.isArray(team.starterPlayerIds) || team.starterPlayerIds.length > 100 || !team.starterPlayerIds.every((id) => typeof id === "string" && id.trim() && id.length <= 200) || !(team.gameColor === null || (typeof team.gameColor === "string" && /^#[0-9a-fA-F]{6}$/.test(team.gameColor))) || !Array.isArray(team.extraBench) || team.extraBench.length > 10) throw new Error("Invalid pre-game configuration team.");
+    return { side: team.side, players: team.players.map(preGameConfigurationPlayerDraft), staff: team.staff.map(preGameConfigurationStaffDraft), captainPlayerId: team.captainPlayerId, starterPlayerIds: team.starterPlayerIds as string[], gameColor: team.gameColor, extraBench: team.extraBench.map(preGameConfigurationExtraBenchEntry) };
+}
+
+function preGameConfigurationPresentationDraft(value: unknown): PreGameConfigurationPresentationDraft {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game presentation.");
+    const presentation = value as Record<string, unknown>;
+    if (presentation.leftSide !== "HOME" && presentation.leftSide !== "AWAY") throw new Error("Invalid pre-game presentation.");
+    return { leftSide: presentation.leftSide };
 }
 
 function preGameConfigurationSaveInput(value: unknown): PreGameConfigurationSaveDraftInput {
@@ -89,7 +110,7 @@ function preGameConfigurationSaveInput(value: unknown): PreGameConfigurationSave
     const input = value as Record<string, unknown>;
     const gameId = gameIdInput(input.gameId);
     if (!Number.isInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 || !Array.isArray(input.teams) || input.teams.length !== 2) throw new Error("Invalid pre-game configuration request.");
-    return { gameId, expectedRevision: Number(input.expectedRevision), teams: [preGameConfigurationTeamDraft(input.teams[0]), preGameConfigurationTeamDraft(input.teams[1])] };
+    return { gameId, expectedRevision: Number(input.expectedRevision), teams: [preGameConfigurationTeamDraft(input.teams[0]), preGameConfigurationTeamDraft(input.teams[1])], presentation: preGameConfigurationPresentationDraft(input.presentation) };
 }
 
 function createMainWindow(): void {

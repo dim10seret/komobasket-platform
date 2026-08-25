@@ -28,11 +28,14 @@ type KomoControlPreGameConfigurationErrorCode = "CONFIGURATION_UNAVAILABLE" | "C
 type KomoControlTeamSide = "HOME" | "AWAY";
 interface KomoControlPreGameConfigurationPlayer { playerId: string; displayName: string; packageShirtNumber: number | null; gameShirtNumber: string | null; participating: boolean; }
 interface KomoControlPreGameConfigurationStaff { staffId: string; displayName: string; role: string; roleLabel: string | null; participating: boolean; }
-interface KomoControlPreGameConfigurationTeam { side: KomoControlTeamSide; teamId: string; teamName: string; players: KomoControlPreGameConfigurationPlayer[]; staff: KomoControlPreGameConfigurationStaff[]; captainPlayerId: string | null; starterPlayerIds: string[]; }
-interface KomoControlPreGameConfiguration { runId: string; gameId: string; packageId: string; packageVersion: number; configurationSchemaVersion: 1; revision: number; status: "draft" | "ready"; teams: [KomoControlPreGameConfigurationTeam, KomoControlPreGameConfigurationTeam]; createdAtUtc: string; updatedAtUtc: string; }
+type KomoControlExtraBenchRole = "coach" | "assistant_coach" | "team_manager" | "physiotherapist" | "doctor" | "other";
+interface KomoControlExtraBenchEntry { entryId: string; name: string; role: KomoControlExtraBenchRole; }
+interface KomoControlPreGameConfigurationTeam { side: KomoControlTeamSide; teamId: string; teamName: string; players: KomoControlPreGameConfigurationPlayer[]; staff: KomoControlPreGameConfigurationStaff[]; captainPlayerId: string | null; starterPlayerIds: string[]; gameColor: string | null; extraBench: KomoControlExtraBenchEntry[]; }
+interface KomoControlPreGameConfiguration { runId: string; gameId: string; packageId: string; packageVersion: number; configurationSchemaVersion: 1; revision: number; status: "draft" | "ready"; teams: [KomoControlPreGameConfigurationTeam, KomoControlPreGameConfigurationTeam]; presentation: { leftSide: KomoControlTeamSide }; settings: { minPlayers: number; maxPlayers: number; startingPlayers: number }; createdAtUtc: string; updatedAtUtc: string; }
 interface KomoControlPreGameConfigurationPlayerDraft { playerId: string; participating: boolean; gameShirtNumber: string | null; }
-interface KomoControlPreGameConfigurationTeamDraft { side: KomoControlTeamSide; players: KomoControlPreGameConfigurationPlayerDraft[]; }
-interface KomoControlPreGameConfigurationSaveDraftInput { gameId: string; expectedRevision: number; teams: [KomoControlPreGameConfigurationTeamDraft, KomoControlPreGameConfigurationTeamDraft]; }
+interface KomoControlPreGameConfigurationStaffDraft { staffId: string; participating: boolean; }
+interface KomoControlPreGameConfigurationTeamDraft { side: KomoControlTeamSide; players: KomoControlPreGameConfigurationPlayerDraft[]; staff: KomoControlPreGameConfigurationStaffDraft[]; captainPlayerId: string | null; starterPlayerIds: string[]; gameColor: string | null; extraBench: KomoControlExtraBenchEntry[]; }
+interface KomoControlPreGameConfigurationSaveDraftInput { gameId: string; expectedRevision: number; teams: [KomoControlPreGameConfigurationTeamDraft, KomoControlPreGameConfigurationTeamDraft]; presentation: { leftSide: KomoControlTeamSide }; }
 type KomoControlPreGameConfigurationResult = { ok: true; outcome: "created" | "existing" | "saved"; configuration: KomoControlPreGameConfiguration; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlPreGameConfigurationErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 
 interface KomoControlDesktopBridge {

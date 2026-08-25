@@ -18,6 +18,9 @@ export const PRE_GAME_CONFIGURATION_ERROR_CODES = [
 export type PreGameConfigurationErrorCode = (typeof PRE_GAME_CONFIGURATION_ERROR_CODES)[number];
 export type PreGameConfigurationStatus = "draft" | "ready";
 export type TeamSide = "HOME" | "AWAY";
+export const EXTRA_BENCH_ROLES = ["coach", "assistant_coach", "team_manager", "physiotherapist", "doctor", "other"] as const;
+export type ExtraBenchRole = (typeof EXTRA_BENCH_ROLES)[number];
+export interface ExtraBenchEntryV1 { entryId: string; name: string; role: ExtraBenchRole; }
 
 export interface PreGameConfigurationOwner { scorerId: string; organizationId: string; }
 export interface PreGameConfigurationPlayerV1 { playerId: string; participating: boolean; gameShirtNumber: string | null; }
@@ -29,12 +32,16 @@ export interface PreGameConfigurationTeamV1 {
     staff: PreGameConfigurationStaffV1[];
     captainPlayerId: string | null;
     starterPlayerIds: string[];
+    gameColor: string | null;
+    extraBench: ExtraBenchEntryV1[];
 }
+export interface PreGameConfigurationPresentationV1 { leftSide: TeamSide; }
 export interface PreGameConfigurationV1 {
     schemaVersion: 1;
     runId: string;
     gameId: string;
     teams: [PreGameConfigurationTeamV1, PreGameConfigurationTeamV1];
+    presentation: PreGameConfigurationPresentationV1;
 }
 
 export interface SafePreGameConfigurationPlayer {
@@ -59,6 +66,8 @@ export interface SafePreGameConfigurationTeam {
     staff: SafePreGameConfigurationStaff[];
     captainPlayerId: string | null;
     starterPlayerIds: string[];
+    gameColor: string | null;
+    extraBench: ExtraBenchEntryV1[];
 }
 export interface SafePreGameConfiguration {
     runId: string;
@@ -69,6 +78,8 @@ export interface SafePreGameConfiguration {
     revision: number;
     status: PreGameConfigurationStatus;
     teams: [SafePreGameConfigurationTeam, SafePreGameConfigurationTeam];
+    presentation: PreGameConfigurationPresentationV1;
+    settings: { minPlayers: number; maxPlayers: number; startingPlayers: number; };
     createdAtUtc: string;
     updatedAtUtc: string;
 }
@@ -77,11 +88,22 @@ export interface PreGameConfigurationPlayerDraft {
     participating: boolean;
     gameShirtNumber: string | null;
 }
-export interface PreGameConfigurationTeamDraft { side: TeamSide; players: PreGameConfigurationPlayerDraft[]; }
+export interface PreGameConfigurationStaffDraft { staffId: string; participating: boolean; }
+export interface PreGameConfigurationTeamDraft {
+    side: TeamSide;
+    players: PreGameConfigurationPlayerDraft[];
+    staff: PreGameConfigurationStaffDraft[];
+    captainPlayerId: string | null;
+    starterPlayerIds: string[];
+    gameColor: string | null;
+    extraBench: ExtraBenchEntryV1[];
+}
+export interface PreGameConfigurationPresentationDraft { leftSide: TeamSide; }
 export interface PreGameConfigurationSaveDraftInput {
     gameId: string;
     expectedRevision: number;
     teams: [PreGameConfigurationTeamDraft, PreGameConfigurationTeamDraft];
+    presentation: PreGameConfigurationPresentationDraft;
 }
 export type PreGameConfigurationOperationResult =
     | { ok: true; outcome: "created" | "existing" | "saved"; configuration: SafePreGameConfiguration; state: DesktopAuthState }
@@ -107,6 +129,25 @@ function shirtNumber(value: unknown): string | null {
     if (typeof value !== "string" || !/^(?:0|00|[1-9][0-9]?)$/.test(value)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     return value;
 }
+function gameColor(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "string" || !/^#[0-9a-fA-F]{6}$/.test(value)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    return value.toUpperCase();
+}
+function extraBenchEntryFromUnknown(value: unknown): ExtraBenchEntryV1 {
+    const item = record(value);
+    const entryId = typeof item?.entryId === "string" ? item.entryId : "";
+    const name = typeof item?.name === "string" ? item.name.trim() : "";
+    if (!item || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(entryId) || name.length < 2 || name.length > 100 || /[\u0000-\u001f\u007f]/.test(name) || !EXTRA_BENCH_ROLES.includes(item.role as ExtraBenchRole)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    return { entryId: entryId.toLowerCase(), name, role: item.role as ExtraBenchRole };
+}
+function extraBenchFromUnknown(value: unknown): ExtraBenchEntryV1[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 10) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    const entries = value.map(extraBenchEntryFromUnknown);
+    if (!uniqueById(entries, (entry) => entry.entryId)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    return entries;
+}
 function configurationHash(json: string): string { return createHash("sha256").update(Buffer.from(json, "utf8")).digest("hex"); }
 function sideOrder(side: TeamSide): number { return side === "HOME" ? 0 : 1; }
 function playerFromUnknown(value: unknown): PreGameConfigurationPlayerV1 {
@@ -122,7 +163,13 @@ function staffFromUnknown(value: unknown): PreGameConfigurationStaffV1 {
 function teamFromUnknown(value: unknown): PreGameConfigurationTeamV1 {
     const item = record(value); const teamId = text(item?.teamId);
     if (!item || (item.side !== "HOME" && item.side !== "AWAY") || !teamId || !Array.isArray(item.players) || !Array.isArray(item.staff) || !(item.captainPlayerId === null || typeof item.captainPlayerId === "string") || !Array.isArray(item.starterPlayerIds) || !item.starterPlayerIds.every((entry) => typeof entry === "string" && entry.trim())) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-    return { side: item.side, teamId, players: item.players.map(playerFromUnknown), staff: item.staff.map(staffFromUnknown), captainPlayerId: item.captainPlayerId, starterPlayerIds: [...item.starterPlayerIds] };
+    return { side: item.side, teamId, players: item.players.map(playerFromUnknown), staff: item.staff.map(staffFromUnknown), captainPlayerId: item.captainPlayerId, starterPlayerIds: [...item.starterPlayerIds], gameColor: gameColor(item.gameColor), extraBench: extraBenchFromUnknown(item.extraBench) };
+}
+function presentationFromUnknown(value: unknown): PreGameConfigurationPresentationV1 {
+    if (value === undefined) return { leftSide: "HOME" };
+    const item = record(value);
+    if (!item || (item.leftSide !== "HOME" && item.leftSide !== "AWAY")) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    return { leftSide: item.leftSide };
 }
 function parseConfiguration(json: string): PreGameConfigurationV1 {
     let value: unknown;
@@ -131,40 +178,51 @@ function parseConfiguration(json: string): PreGameConfigurationV1 {
     if (!item || item.schemaVersion !== 1 || !runId || !gameId || !Array.isArray(item.teams) || item.teams.length !== 2) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const teams = item.teams.map(teamFromUnknown).sort((left, right) => sideOrder(left.side) - sideOrder(right.side));
     if (teams[0]?.side !== "HOME" || teams[1]?.side !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-    return { schemaVersion: 1, runId, gameId, teams: [teams[0], teams[1]] };
+    return { schemaVersion: 1, runId, gameId, teams: [teams[0], teams[1]], presentation: presentationFromUnknown(item.presentation) };
 }
 function uniqueById<T>(values: T[], id: (value: T) => string): boolean { return new Set(values.map(id)).size === values.length; }
-function validateTeam(configuration: PreGameConfigurationTeamV1, source: MatchSetupTeam, status: PreGameConfigurationStatus, startingPlayers: number): void {
+function validateTeam(configuration: PreGameConfigurationTeamV1, source: MatchSetupTeam, status: PreGameConfigurationStatus, settings: MatchSetup["settings"]): void {
     if (configuration.teamId !== source.teamId || configuration.players.length !== source.players.length || configuration.staff.length !== source.staff.length || !uniqueById(configuration.players, (player) => player.playerId) || !uniqueById(configuration.staff, (staff) => staff.staffId)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const sourcePlayerIds = new Set(source.players.map((player) => player.playerId)); const sourceStaffIds = new Set(source.staff.map((staff) => staff.staffId));
     if (configuration.players.some((player) => !sourcePlayerIds.has(player.playerId)) || configuration.staff.some((staff) => !sourceStaffIds.has(staff.staffId))) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const participating = configuration.players.filter((player) => player.participating);
+    if (participating.length > settings.maxPlayers) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const assigned = participating.map((player) => player.gameShirtNumber).filter((number): number is string => number !== null);
     if (new Set(assigned).size !== assigned.length) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const participatingIds = new Set(participating.map((player) => player.playerId));
     if (configuration.captainPlayerId !== null && !participatingIds.has(configuration.captainPlayerId)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-    if (!uniqueById(configuration.starterPlayerIds, (id) => id) || configuration.starterPlayerIds.some((id) => !participatingIds.has(id))) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-    if (status === "ready" && (configuration.captainPlayerId === null || configuration.starterPlayerIds.length !== startingPlayers)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    if (!uniqueById(configuration.starterPlayerIds, (id) => id) || configuration.starterPlayerIds.some((id) => !participatingIds.has(id)) || configuration.starterPlayerIds.length > settings.startingPlayers) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    if (status === "ready" && (configuration.captainPlayerId === null || configuration.starterPlayerIds.length !== settings.startingPlayers)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
 }
 function validateConfiguration(configuration: PreGameConfigurationV1, run: StoredLocalGameRun, setup: MatchSetup, status: PreGameConfigurationStatus): void {
     if (configuration.runId !== run.runId || configuration.gameId !== run.gameId || configuration.teams[0].side !== "HOME" || configuration.teams[1].side !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-    validateTeam(configuration.teams[0], setup.home, status, setup.settings.startingPlayers);
-    validateTeam(configuration.teams[1], setup.away, status, setup.settings.startingPlayers);
+    validateTeam(configuration.teams[0], setup.home, status, setup.settings);
+    validateTeam(configuration.teams[1], setup.away, status, setup.settings);
+    if (!uniqueById(configuration.teams.flatMap((team) => team.extraBench), (entry) => entry.entryId)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
 }
 function defaultPlayers(players: MatchSetupPlayer[]): PreGameConfigurationPlayerV1[] { return players.map((player) => ({ playerId: player.playerId, participating: false, gameShirtNumber: player.shirtNumber === null ? null : String(player.shirtNumber) })); }
 function defaultStaff(staff: MatchSetupStaffMember[]): PreGameConfigurationStaffV1[] { return staff.map((member) => ({ staffId: member.staffId, participating: false })); }
-function defaultTeam(team: MatchSetupTeam): PreGameConfigurationTeamV1 { return { side: team.side, teamId: team.teamId, players: defaultPlayers(team.players), staff: defaultStaff(team.staff), captainPlayerId: null, starterPlayerIds: [] }; }
-function defaultConfiguration(run: StoredLocalGameRun, setup: MatchSetup): PreGameConfigurationV1 { return { schemaVersion: 1, runId: run.runId, gameId: run.gameId, teams: [defaultTeam(setup.home), defaultTeam(setup.away)] }; }
+function defaultTeam(team: MatchSetupTeam): PreGameConfigurationTeamV1 { return { side: team.side, teamId: team.teamId, players: defaultPlayers(team.players), staff: defaultStaff(team.staff), captainPlayerId: null, starterPlayerIds: [], gameColor: null, extraBench: [] }; }
+function defaultConfiguration(run: StoredLocalGameRun, setup: MatchSetup): PreGameConfigurationV1 { return { schemaVersion: 1, runId: run.runId, gameId: run.gameId, teams: [defaultTeam(setup.home), defaultTeam(setup.away)], presentation: { leftSide: "HOME" } }; }
 
 function canonicalTeamDraft(value: PreGameConfigurationTeamDraft, current: PreGameConfigurationTeamV1, source: MatchSetupTeam): PreGameConfigurationTeamV1 {
-    if (value.side !== source.side || value.players.length !== source.players.length || !uniqueById(value.players, (player) => player.playerId)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    if (value.side !== source.side || value.players.length !== source.players.length || value.staff.length !== source.staff.length || !uniqueById(value.players, (player) => player.playerId) || !uniqueById(value.staff, (staff) => staff.staffId) || !(value.captainPlayerId === null || (typeof value.captainPlayerId === "string" && value.captainPlayerId.trim())) || !Array.isArray(value.starterPlayerIds) || !value.starterPlayerIds.every((id) => typeof id === "string" && id.trim()) || !uniqueById(value.starterPlayerIds, (id) => id)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const drafts = new Map(value.players.map((player) => [player.playerId, player]));
     const players = source.players.map((sourcePlayer) => {
         const player = drafts.get(sourcePlayer.playerId);
         if (!player || typeof player.participating !== "boolean") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
         return { playerId: sourcePlayer.playerId, participating: player.participating, gameShirtNumber: shirtNumber(player.gameShirtNumber) };
     });
-    return { ...current, players };
+    const staffDrafts = new Map(value.staff.map((staff) => [staff.staffId, staff]));
+    const staff = source.staff.map((sourceStaff) => {
+        const member = staffDrafts.get(sourceStaff.staffId);
+        if (!member || typeof member.participating !== "boolean") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+        return { staffId: sourceStaff.staffId, participating: member.participating };
+    });
+    const starterIds = new Set(value.starterPlayerIds);
+    const starterPlayerIds = source.players.filter((player) => starterIds.has(player.playerId)).map((player) => player.playerId);
+    if (starterPlayerIds.length !== value.starterPlayerIds.length) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    return { ...current, players, staff, captainPlayerId: value.captainPlayerId, starterPlayerIds, gameColor: gameColor(value.gameColor), extraBench: extraBenchFromUnknown(value.extraBench) };
 }
 function safeTeam(configuration: PreGameConfigurationTeamV1, source: MatchSetupTeam): SafePreGameConfigurationTeam {
     const players = new Map(configuration.players.map((player) => [player.playerId, player])); const staff = new Map(configuration.staff.map((member) => [member.staffId, member]));
@@ -172,7 +230,7 @@ function safeTeam(configuration: PreGameConfigurationTeamV1, source: MatchSetupT
         side: source.side, teamId: source.teamId, teamName: source.teamName,
         players: source.players.map((sourcePlayer) => { const player = players.get(sourcePlayer.playerId); if (!player) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID"); return { playerId: sourcePlayer.playerId, displayName: sourcePlayer.displayName, packageShirtNumber: sourcePlayer.shirtNumber, gameShirtNumber: player.gameShirtNumber, participating: player.participating }; }),
         staff: source.staff.map((sourceStaff) => { const member = staff.get(sourceStaff.staffId); if (!member) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID"); return { staffId: sourceStaff.staffId, displayName: sourceStaff.displayName, role: sourceStaff.role, roleLabel: sourceStaff.roleLabel, participating: member.participating }; }),
-        captainPlayerId: configuration.captainPlayerId, starterPlayerIds: [...configuration.starterPlayerIds],
+        captainPlayerId: configuration.captainPlayerId, starterPlayerIds: [...configuration.starterPlayerIds], gameColor: configuration.gameColor, extraBench: configuration.extraBench.map((entry) => ({ ...entry })),
     };
 }
 function localConflictKind(error: unknown): "ownership" | "state" | "revision" | null {
@@ -200,7 +258,8 @@ export class PreGameConfigurationManager {
         const current = this.verifyStoredConfiguration(stored, run, setup);
         const drafts = [...input.teams].sort((left, right) => sideOrder(left.side) - sideOrder(right.side));
         if (drafts[0]?.side !== "HOME" || drafts[1]?.side !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-        const next: PreGameConfigurationV1 = { ...current, teams: [canonicalTeamDraft(drafts[0], current.teams[0], setup.home), canonicalTeamDraft(drafts[1], current.teams[1], setup.away)] };
+        if (input.presentation.leftSide !== "HOME" && input.presentation.leftSide !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+        const next: PreGameConfigurationV1 = { ...current, teams: [canonicalTeamDraft(drafts[0], current.teams[0], setup.home), canonicalTeamDraft(drafts[1], current.teams[1], setup.away)], presentation: { leftSide: input.presentation.leftSide } };
         validateConfiguration(next, run, setup, "draft"); const configurationJson = JSON.stringify(next);
         let saved: StoredLocalGameRunConfiguration;
         try { saved = this.store.saveLocalGameRunConfiguration({ runId: run.runId, organizationId: owner.organizationId, scorerId: owner.scorerId, deviceId: this.deviceId, expectedRevision: input.expectedRevision, configurationJson, configurationHash: configurationHash(configurationJson) }); }
@@ -223,7 +282,7 @@ export class PreGameConfigurationManager {
     }
     private verifyStored(stored: StoredLocalGameRunConfiguration, run: StoredLocalGameRun, setup: MatchSetup): SafePreGameConfiguration {
         const configuration = this.verifyStoredConfiguration(stored, run, setup);
-        return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, configurationSchemaVersion: 1, revision: stored.revision, status: stored.status, teams: [safeTeam(configuration.teams[0], setup.home), safeTeam(configuration.teams[1], setup.away)], createdAtUtc: stored.createdAtUtc, updatedAtUtc: stored.updatedAtUtc };
+        return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, configurationSchemaVersion: 1, revision: stored.revision, status: stored.status, teams: [safeTeam(configuration.teams[0], setup.home), safeTeam(configuration.teams[1], setup.away)], presentation: configuration.presentation, settings: { minPlayers: setup.settings.minPlayers, maxPlayers: setup.settings.maxPlayers, startingPlayers: setup.settings.startingPlayers }, createdAtUtc: stored.createdAtUtc, updatedAtUtc: stored.updatedAtUtc };
     }
     private mapStoreError(error: unknown): PreGameConfigurationFlowError {
         const kind = localConflictKind(error);
