@@ -104,35 +104,41 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
 }
 
 .run-actions { display: flex; align-items: flex-end; gap: .75rem; flex-direction: column; }
-.pregame-shell { align-items: flex-start; padding-block: 2.5rem; }
-.pregame-card { width: min(1280px, 100%); }
-.pregame-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; margin-bottom: 1.25rem; }
-.pregame-header h1 { margin: .35rem 0; }
-.pregame-header p { margin: 0; color: var(--muted); }
-.pregame-state { display: inline-flex; align-items: center; gap: .55rem; border: 1px solid var(--line); border-radius: 999px; padding: .55rem .8rem; color: var(--muted); font-size: .84rem; white-space: nowrap; }
-.pregame-state .status-dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); }
-.pregame-guidance { padding: .9rem 1rem; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--muted); margin-bottom: 1.4rem; }
+.pregame-shell { align-items: flex-start; padding-block: 1.25rem; }
+.pregame-card { width: min(1500px, 100%); padding: 1.1rem 1.15rem; }
+.pregame-topbar { display: grid; grid-template-columns: minmax(15rem, 1fr) auto minmax(13rem, 1fr); align-items: center; gap: 1.25rem; margin-bottom: .85rem; }
+.pregame-title-block h1 { margin: .2rem 0; font-size: 1.35rem; }
+.pregame-title-block p { margin: 0; color: var(--muted); font-size: .72rem; }
+.pregame-back-button { border: 0; background: transparent; color: var(--muted); padding: .15rem 0; font-size: .75rem; }
+.pregame-back-button:hover:not(:disabled), .pregame-back-button:focus-visible { color: var(--text); }
+.pregame-status-board { display: flex; justify-content: flex-end; align-items: stretch; gap: .8rem; }
+.pregame-status-board > div { display: grid; align-content: center; justify-items: center; min-width: 5.5rem; padding: .35rem .7rem; border-left: 1px solid var(--line); }
+.pregame-status-board span { color: var(--muted); font-size: .65rem; }
+.pregame-status-board strong { font-size: .92rem; }
+.pregame-status-board > div:first-child strong { font-size: 1.35rem; line-height: 1; }
+.pregame-status-board > div:last-child > strong { padding: .2rem .55rem; border-radius: 7px; background: #e5f3e8; color: #216137; letter-spacing: .08em; }
+.pregame-status-board .is-saved::after, .pregame-status-board .is-dirty::after { content: ""; display: inline-block; width: .42rem; height: .42rem; margin-left: .35rem; border-radius: 50%; background: #23834c; }
+.pregame-status-board .is-dirty::after { background: #d97706; }
 .pregame-teams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
-.pregame-placement { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-bottom: 1rem; }
+.pregame-placement { display: flex; align-items: center; justify-content: center; gap: .75rem; margin: 0; }
 .pregame-placement > div { display: grid; justify-items: center; gap: .15rem; min-width: 6rem; }
 .pregame-placement strong { color: var(--muted); font-size: .68rem; letter-spacing: .14em; }
 .pregame-placement span { font-weight: 900; }
 .pregame-color-warning { margin: 0 0 1rem; color: #a45d05; font-size: .82rem; text-align: center; }
-.pregame-team { border: 2px solid var(--line); border-top: 6px solid var(--accent); border-radius: 18px; overflow: hidden; background: color-mix(in srgb, var(--surface) 96%, var(--accent) 4%); box-shadow: 0 12px 30px rgb(27 38 34 / 8%); }
-.pregame-team-home { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
-.pregame-team-away { box-shadow: inset -3px 0 0 color-mix(in srgb, #d97706 45%, transparent); }
-.pregame-team > header { display: flex; justify-content: space-between; align-items: center; padding: .75rem .9rem; border-bottom: 1px solid var(--line); }
+.pregame-team { --team-accent: var(--accent); border: 2px solid var(--team-accent); border-top-width: 6px; border-radius: 14px; overflow: hidden; background: color-mix(in srgb, var(--team-accent) 3%, var(--surface)); box-shadow: 0 0 0 1px var(--line), 0 10px 24px rgb(27 38 34 / 7%); }
+.pregame-team-home, .pregame-team-away { box-shadow: 0 0 0 1px var(--line), 0 10px 24px rgb(27 38 34 / 7%); }
+.pregame-team > header { display: flex; justify-content: space-between; align-items: center; padding: .58rem .72rem; border-bottom: 1px solid color-mix(in srgb, var(--team-accent) 35%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, var(--team-accent) 8%, var(--surface)), var(--surface) 56%); }
 .pregame-team-identity { display: flex; gap: .65rem; align-items: center; }
-.pregame-color-swatch { width: 1rem; height: 2.4rem; border: 1px solid var(--line); border-radius: 999px; background: repeating-linear-gradient(135deg, var(--line), var(--line) 3px, transparent 3px, transparent 6px); }
+.pregame-color-swatch { width: .7rem; height: 2.15rem; border: 1px solid var(--line); border-radius: 999px; background: repeating-linear-gradient(135deg, var(--line), var(--line) 3px, transparent 3px, transparent 6px); }
 .pregame-team-counts { display: grid; justify-items: end; gap: .1rem; }
 .pregame-team-counts small { color: var(--muted); font-size: .72rem; }
-.pregame-team h2 { margin: .1rem 0 0; font-size: 1.25rem; }
+.pregame-team h2 { margin: .08rem 0 0; font-size: 1.08rem; }
 .side-kicker { color: var(--accent); font-size: .72rem; font-weight: 800; letter-spacing: .13em; }
 .pregame-team-badges { display: flex; align-items: center; gap: .35rem; }
 .pregame-authority-badge, .pregame-placement-badge { display: inline-flex; align-items: center; min-height: 1.25rem; padding: .15rem .42rem; border-radius: 999px; font-size: .62rem; font-weight: 900; letter-spacing: .1em; }
-.pregame-authority-badge { background: var(--text); color: var(--surface); }
+.pregame-authority-badge { border: 2px solid var(--team-accent); background: var(--surface); color: var(--text); }
 .pregame-placement-badge { border: 1px solid var(--line); color: var(--muted); }
-.pregame-color-control { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; padding: .55rem .8rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .75rem; }
+.pregame-color-control { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; padding: .42rem .65rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .7rem; }
 .pregame-color-presets { display: flex; gap: .28rem; }
 .pregame-color-presets button { width: 1.25rem; height: 1.25rem; padding: 0; border: 2px solid transparent; border-radius: 50%; box-shadow: 0 0 0 1px var(--line); }
 .pregame-color-presets button.is-active { border-color: var(--surface); box-shadow: 0 0 0 2px var(--text); }
@@ -144,28 +150,38 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
 .pregame-roster-filter input[type="search"] { min-width: 0; padding: .42rem .55rem; }
 .pregame-roster-filter label { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted); font-size: .72rem; white-space: nowrap; }
 .pregame-roster-filter small { grid-column: 1 / -1; color: #a45d05; font-size: .66rem; }
-.pregame-player { display: grid; grid-template-columns: minmax(9rem, 1fr) 5rem 4.9rem 4.5rem; gap: .35rem; align-items: center; min-height: 2.55rem; padding: .28rem .65rem; border-bottom: 1px solid var(--line); }
+.pregame-player-table-header, .pregame-player { display: grid; grid-template-columns: 2.75rem minmax(9rem, 1fr) 5.4rem 4.1rem 3.3rem 4rem; gap: .3rem; align-items: center; }
+.pregame-player-table-header { min-height: 1.8rem; padding: .25rem .55rem; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--team-accent) 6%, var(--surface)); color: var(--muted); font-size: .61rem; font-weight: 900; letter-spacing: .05em; }
+.pregame-player-table-header span:nth-last-child(-n+3) { text-align: center; }
+.pregame-player { min-height: 2.35rem; padding: .2rem .55rem; border-bottom: 1px solid var(--line); }
 .pregame-player:last-child { border-bottom: 0; }
-.pregame-player.is-selected { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.pregame-player-toggle { display: flex; gap: .5rem; align-items: center; cursor: pointer; }
-.pregame-player-toggle input { width: 1rem; height: 1rem; accent-color: var(--accent); }
-.pregame-player-toggle span { display: grid; gap: 0; line-height: 1.05; }
-.pregame-player-toggle small, .pregame-number-field small { color: var(--muted); font-size: .72rem; }
-.pregame-number-field { display: grid; grid-template-columns: auto 2.8rem; gap: .1rem .3rem; align-items: center; font-size: .72rem; color: var(--muted); }
+.pregame-player.is-selected { background: color-mix(in srgb, var(--team-accent) 7%, transparent); }
+.pregame-player-select { display: flex; align-items: center; justify-content: space-between; gap: .3rem; color: var(--muted); font-size: .68rem; cursor: pointer; }
+.pregame-player-select input { width: 1rem; height: 1rem; accent-color: var(--team-accent); }
+.pregame-player-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .76rem; }
+.pregame-player-status { color: #b22f2f; font-size: .7rem; }
+.pregame-player-status.is-participating { color: #23834c; }
+.pregame-number-field { display: grid; justify-items: center; gap: 0; font-size: .68rem; color: var(--muted); }
 .pregame-number-field input { width: 2.8rem; min-width: 0; padding: .35rem .25rem; text-align: center; font-weight: 800; }
-.pregame-number-field small { grid-column: 1 / -1; text-align: right; font-size: .62rem; }
-.pregame-role-toggle { display: inline-flex; align-items: center; gap: .25rem; font-size: .72rem; color: var(--muted); }
-.pregame-role-toggle input { accent-color: var(--accent); }
+.pregame-number-field small { max-width: 4rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .55rem; }
+.pregame-role-toggle { display: inline-flex; align-items: center; justify-content: center; min-height: 2rem; color: var(--muted); }
+.pregame-role-toggle input { width: 1rem; height: 1rem; accent-color: var(--team-accent); }
+.pregame-hidden-selected { margin: 0; padding: .32rem .6rem; border-bottom: 1px solid var(--line); background: #fff8e8; color: #99580a; font-size: .66rem; }
+.pregame-roster-toggle { display: flex; justify-content: center; min-height: 1.8rem; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--team-accent) 4%, var(--surface)); }
+.pregame-roster-toggle button { color: var(--text); font-size: .68rem; font-weight: 800; text-decoration: none; }
 .pregame-staff { padding: .5rem .7rem; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 88%, transparent); }
-.pregame-staff h3 { margin: 0 0 .45rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
-.pregame-staff > label { display: inline-flex; align-items: center; gap: .4rem; margin: 0 .8rem .35rem 0; font-size: .78rem; }
-.pregame-staff > label span { display: grid; }
+.pregame-staff h3 { margin: 0 0 .35rem; font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; }
+.pregame-staff-header, .pregame-staff-row { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(7rem, .8fr) 5rem; gap: .4rem; align-items: center; }
+.pregame-staff-header { color: var(--muted); font-size: .58rem; font-weight: 900; }
+.pregame-staff-row { min-height: 1.9rem; border-top: 1px solid var(--line); font-size: .7rem; }
+.pregame-staff-row input { justify-self: center; accent-color: var(--team-accent); }
 .pregame-staff small, .pregame-staff p { color: var(--muted); font-size: .68rem; margin: 0; }
-.pregame-extra-bench { padding: .55rem .7rem .65rem; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 3%, var(--surface)); }
+.pregame-extra-bench { padding: .45rem .7rem .55rem; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--team-accent) 3%, var(--surface)); }
 .pregame-extra-bench-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .6rem; margin-bottom: .45rem; }
+.pregame-extra-bench-heading > div { display: flex; align-items: baseline; gap: .5rem; }
 .pregame-extra-bench-heading h3 { margin: 0; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
 .pregame-extra-bench-heading small, .pregame-extra-bench-empty { margin: 0; color: var(--muted); font-size: .66rem; }
-.pregame-extra-bench-form { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(8rem, .8fr) auto; gap: .45rem; align-items: end; }
+.pregame-extra-bench-form { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(8rem, .8fr) auto auto; gap: .4rem; align-items: end; margin-bottom: .4rem; }
 .pregame-extra-bench-form label { display: grid; gap: .18rem; color: var(--muted); font-size: .65rem; }
 .pregame-extra-bench-form input, .pregame-extra-bench-form select { min-width: 0; padding: .42rem .5rem; }
 .pregame-extra-bench-form button { min-height: 2.25rem; padding: .45rem .65rem; }
@@ -174,17 +190,21 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
 .pregame-extra-bench-list li > span { display: flex; align-items: baseline; gap: .45rem; min-width: 0; }
 .pregame-extra-bench-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .76rem; }
 .pregame-extra-bench-list small { color: var(--muted); font-size: .64rem; }
-.pregame-actions { display: flex; justify-content: space-between; gap: .8rem; margin-top: 1.4rem; }
+.pregame-team-rules { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; padding: .48rem .7rem; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--team-accent) 5%, var(--surface)); color: var(--muted); font-size: .66rem; text-align: center; }
+.pregame-team-rules strong { color: var(--text); }
+.pregame-actions { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .85rem; padding: .65rem .75rem; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.pregame-action-guidance { max-width: 65rem; margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
 .pregame-save-cluster { display: flex; align-items: center; justify-content: flex-end; gap: .8rem; flex-wrap: wrap; }
 .pregame-save-confirmation { margin: 0; color: var(--success, #197149); font-size: .86rem; font-weight: 800; }
 
 @media (max-width: 820px) {
-    .pregame-header, .pregame-actions, .pregame-save-cluster { align-items: stretch; flex-direction: column; }
+    .pregame-topbar { grid-template-columns: 1fr; }
+    .pregame-status-board { justify-content: flex-start; }
+    .pregame-actions, .pregame-save-cluster { align-items: stretch; flex-direction: column; }
     .pregame-state { white-space: normal; }
     .pregame-teams { grid-template-columns: 1fr; }
     .pregame-placement { gap: .45rem; }
-    .pregame-player { grid-template-columns: minmax(8rem, 1fr) 4.8rem; }
-    .pregame-role-toggle { justify-content: flex-start; }
+    .pregame-player-table-header, .pregame-player { grid-template-columns: 2.7rem minmax(7rem, 1fr) 4.8rem 3.8rem 3rem 3.5rem; }
     .pregame-roster-filter, .pregame-extra-bench-form { grid-template-columns: 1fr; }
     .pregame-roster-filter small { grid-column: auto; }
 }

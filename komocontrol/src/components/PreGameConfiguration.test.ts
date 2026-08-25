@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displayedTeamSides, oppositeSide, rosterNeedsFilter, rosterView, savedDraftConfirmationVisible, withPlayerParticipation } from "./PreGameConfiguration";
+import { authoritativeTeamIndex, compactRosterView, configurationDisplayStatus, customColorLabel, displayedTeamSides, oppositeSide, playerTableColumns, rosterNeedsFilter, rosterView, savedDraftConfirmationVisible, teamAccentStyle, teamColorLabel, teamColorPresets, withPlayerParticipation } from "./PreGameConfiguration";
 
 describe("KC-5B9A Save Draft feedback", () => {
     it("shows confirmation only for the clean revision returned by a successful Save", () => {
@@ -68,5 +68,43 @@ describe("KC-5B9B Gate 1B roster presentation", () => {
     it("keeps HOME/AWAY filter identity when LEFT/RIGHT presentation swaps", () => {
         const filters = { HOME: { query: "home", participantsOnly: false }, AWAY: { query: "away", participantsOnly: true } };
         expect(displayedTeamSides("AWAY").map((side) => filters[side])).toEqual([filters.AWAY, filters.HOME]);
+    });
+});
+
+describe("KC-5B9B Gate 1C presentation helpers", () => {
+    const players = Array.from({ length: 13 }, (_, index) => ({ playerId: `compact-${index + 1}`, displayName: `Compact Player ${index + 1}`, packageShirtNumber: index + 1 }));
+    const draftPlayers = players.map((player, index) => ({ playerId: player.playerId, participating: index === 10, gameShirtNumber: String(index + 1) }));
+    const emptyFilter = { query: "", participantsOnly: false };
+
+    it("shows every roster row when the team has no more than eight players", () => {
+        const view = compactRosterView(players.slice(0, 8), draftPlayers.slice(0, 8), emptyFilter, false);
+        expect(view.players).toHaveLength(8); expect(view.collapsible).toBe(false);
+    });
+
+    it("collapses ordinary rosters to eight and reports selected players hidden by presentation", () => {
+        const view = compactRosterView(players, draftPlayers, emptyFilter, false);
+        expect(view.players).toEqual(players.slice(0, 8)); expect(view.hiddenSelected).toBe(1); expect(view.collapsible).toBe(true);
+    });
+
+    it("expands without changing participant, number, captain, or starter source state", () => {
+        const before = JSON.stringify(draftPlayers); const view = compactRosterView(players, draftPlayers, emptyFilter, true);
+        expect(view.players).toEqual(players); expect(view.hiddenSelected).toBe(0); expect(JSON.stringify(draftPlayers)).toBe(before);
+    });
+
+    it("keeps the compact player columns free of a redundant Player role", () => {
+        expect(playerTableColumns).toEqual(["#", "ΠΑΙΚΤΗΣ", "ΚΑΤΑΣΤΑΣΗ", "ΑΡ.", "C", "STARTER"]); expect(playerTableColumns).not.toContain("ΚΑΠ."); expect(playerTableColumns).not.toContain("ΡΟΛΟΣ");
+    });
+
+    it("uses the scorer-facing team-color terminology and a balanced 12-color palette while preserving Custom", () => {
+        expect(teamColorLabel).toBe("Χρώμα ομάδας"); expect(teamColorLabel).not.toBe("Χρώμα αγώνα"); expect(teamColorPresets).toHaveLength(12); expect(new Set(teamColorPresets).size).toBe(12); expect(teamColorPresets).toContain("#F8FAFC"); expect(customColorLabel).toBe("Custom");
+    });
+
+    it("moves each authoritative team's own accent when presentation sides swap", () => {
+        const accents = { HOME: teamAccentStyle("#DC2626"), AWAY: teamAccentStyle("#15803D") }; const order = displayedTeamSides("AWAY");
+        expect(order.map((side) => accents[side]["--team-accent"])).toEqual(["#15803D", "#DC2626"]); expect(authoritativeTeamIndex(order[0])).toBe(1); expect(authoritativeTeamIndex(order[1])).toBe(0);
+    });
+
+    it("derives revision and saved state from the current configuration state", () => {
+        expect(configurationDisplayStatus(9, false)).toEqual({ revision: 9, phase: "DRAFT", savedLabel: "Αποθηκευμένο" }); expect(configurationDisplayStatus(10, true).savedLabel).toBe("Μη αποθηκευμένο");
     });
 });
