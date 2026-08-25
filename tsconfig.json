@@ -43,5 +43,5 @@
     ".next/dev/types/**/*.ts"
   ],
 
-  "exclude": ["node_modules", "komocontrol", "coming-soon"]
+  "exclude": ["node_modules", "komocontrol", "coming-soon", "**/*.test.ts"]
 }

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { createScorerPasswordHash, normalizeScorerUsername } from "@/services/komocontrol-scorer-credentials";
 
 type GameMode = "SIMPLE" | "FULL";
 type ScorerStatus = "active" | "disabled";
@@ -57,23 +58,15 @@ function id(prefix: string) { return `${prefix}_${crypto.randomUUID()}`; }
 
 function normalizedUsername(value: unknown) {
   const username = requiredText(value, "Username");
-  const normalized = username.normalize("NFKC").trim().toLowerCase();
+  const normalized = normalizeScorerUsername(username);
   if (!normalized) throw new KomoControlAdminError("Το Username είναι υποχρεωτικό.");
   return { username, normalized };
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  return btoa(String.fromCharCode(...bytes));
 }
 
 export async function hashScorerPassword(value: unknown) {
   const password = requiredText(value, "Password");
   if (password.length < 8) throw new KomoControlAdminError("Ο κωδικός πρέπει να έχει τουλάχιστον 8 χαρακτήρες.");
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iterations = 600000;
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256);
-  return `pbkdf2-sha256$${iterations}$${bytesToBase64(salt)}$${bytesToBase64(new Uint8Array(bits))}`;
+  return createScorerPasswordHash(password);
 }
 
 function settingsInput(input: Record<string, unknown>) {
