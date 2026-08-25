@@ -2,10 +2,12 @@ import { AuthFlowError, authErrorCode, type AuthErrorCode, type AuthOperationRes
 import type { ScorerAuthClient } from "./platform-auth-client.cjs";
 import { SecureSessionStore } from "./secure-session-store.cjs";
 import type { GameDiscoveryOperationResult } from "../games/game-discovery-contracts.cjs";
+import { GamePackageDownloadManager, packageOperationFailure, type GamePackageDownloadResult } from "../games/game-package-download.cjs";
+import type { LocalGamePackageStatus } from "../persistence/local-database.cjs";
 export class AuthCoordinator {
     private readonly client: ScorerAuthClient | null; private readonly store: SecureSessionStore; private readonly deviceId: string; private readonly deviceIdSuffix: string;
     private currentToken: string | null = null; private state: DesktopAuthState; private initialization: Promise<DesktopAuthState> | null = null;
-    constructor(client: ScorerAuthClient | null, store: SecureSessionStore, deviceId: string) { this.client = client; this.store = store; this.deviceId = deviceId; this.deviceIdSuffix = deviceId.slice(-8); this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
+    constructor(client: ScorerAuthClient | null, store: SecureSessionStore, deviceId: string, private readonly packageManager: GamePackageDownloadManager | null = null) { this.client = client; this.store = store; this.deviceId = deviceId; this.deviceIdSuffix = deviceId.slice(-8); this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
     initialize(): Promise<DesktopAuthState> { if (!this.initialization) this.initialization = this.restore(); return this.initialization; }
     async getState(): Promise<DesktopAuthState> { await this.initialize(); return this.state; }
     async login(input: LoginInput): Promise<AuthOperationResult> {
@@ -41,6 +43,20 @@ export class AuthCoordinator {
             const errorCode = authErrorCode(error);
             if (errorCode === "SESSION_INVALID" || errorCode === "SCORER_DISABLED") { try { this.store.clearSession(); } catch (storeError) { return { ok: false, errorCode: authErrorCode(storeError), state: this.state }; } this.currentToken = null; this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
             return { ok: false, errorCode, state: this.state };
+        }
+    }
+    getGamePackageStatus(gameId: string): LocalGamePackageStatus {
+        if (!this.packageManager || this.state.kind !== "authenticated") throw new AuthFlowError("SESSION_INVALID");
+        return this.packageManager.getStatus(gameId);
+    }
+    async downloadGamePackage(gameId: string): Promise<GamePackageDownloadResult> {
+        await this.initialize();
+        if (!this.packageManager || !this.currentToken || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { const result = await this.packageManager.download(this.currentToken, gameId); return { ok: true, outcome: result.outcome, status: result.status, state: this.state }; }
+        catch (error) {
+            const errorCode = authErrorCode(error);
+            if (errorCode === "SESSION_INVALID" || errorCode === "SCORER_DISABLED") { try { this.store.clearSession(); } catch (storeError) { return packageOperationFailure(storeError, this.state); } this.currentToken = null; this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
+            return packageOperationFailure(error, this.state);
         }
     }
     dispose(): void { this.currentToken = null; }

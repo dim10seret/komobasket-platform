@@ -37,23 +37,24 @@ afterEach(() => {
 });
 
 describe("KomoControl local persistence", () => {
-    it("creates migration 0001, its checksum, device identity, durability settings and healthy schema", () => {
+    it("creates migrations 0001 and 0002, their checksums, device identity, durability settings and healthy schema", () => {
         const { migrationsDirectory, localDatabase } = fixture();
         const status = localDatabase.initialize();
         const db = new DatabaseSync(localDatabase.databasePath, { readOnly: true });
         try {
-            const migration = db.prepare("SELECT migration_id, checksum FROM local_schema_migrations").get();
+            const migrations = db.prepare("SELECT migration_id, checksum FROM local_schema_migrations ORDER BY migration_id").all();
             const tables = db.prepare(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
             ).all().map((row) => row.name);
-            const expectedChecksum = createHash("sha256")
-                .update(fs.readFileSync(path.join(migrationsDirectory, "0001_initial.sql")))
-                .digest("hex");
+            const expectedMigrations = ["0001_initial.sql", "0002_game_packages.sql"].map((migrationId) => ({
+                migration_id: migrationId,
+                checksum: createHash("sha256").update(fs.readFileSync(path.join(migrationsDirectory, migrationId))).digest("hex"),
+            }));
 
-            expect(status.schemaVersion).toBe("0001_initial.sql");
+            expect(status.schemaVersion).toBe("0002_game_packages.sql");
             expect(status.deviceIdentity.deviceId).toMatch(/^[0-9a-f-]{36}$/);
-            expect(migration).toEqual({ migration_id: "0001_initial.sql", checksum: expectedChecksum });
-            expect(tables).toEqual(["device_identity", "local_schema_migrations"]);
+            expect(migrations).toEqual(expectedMigrations);
+            expect(tables).toEqual(["device_identity", "local_game_packages", "local_schema_migrations"]);
             expect(db.prepare("PRAGMA foreign_keys").get().foreign_keys).toBe(1);
             expect(db.prepare("PRAGMA journal_mode").get().journal_mode).toBe("wal");
             expect(db.prepare("PRAGMA synchronous").get().synchronous).toBe(2);
@@ -85,7 +86,7 @@ describe("KomoControl local persistence", () => {
 
         expect(second.deviceIdentity).toEqual(first.deviceIdentity);
         expect(db.prepare("SELECT COUNT(*) AS count FROM device_identity").get().count).toBe(1);
-        expect(db.prepare("SELECT COUNT(*) AS count FROM local_schema_migrations").get().count).toBe(1);
+        expect(db.prepare("SELECT COUNT(*) AS count FROM local_schema_migrations").get().count).toBe(2);
         db.close();
     });
 
@@ -97,7 +98,7 @@ describe("KomoControl local persistence", () => {
 
         expect(result.quickCheck).toBe("ok");
         expect(result.foreignKeyExceptions).toBe(0);
-        expect(result.schemaVersion).toBe("0001_initial.sql");
+        expect(result.schemaVersion).toBe("0002_game_packages.sql");
         expect(result.deviceIdentity).toEqual(source.deviceIdentity);
         expect(backupDb.prepare("PRAGMA quick_check").get().quick_check).toBe("ok");
         expect(backupDb.prepare("PRAGMA foreign_key_check").all()).toEqual([]);

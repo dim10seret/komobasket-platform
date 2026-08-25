@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { AuthOperationResult, DesktopAuthState, LoginInput } from "./auth/auth-contracts.cjs";
 import type { GameDiscoveryOperationResult } from "./games/game-discovery-contracts.cjs";
+import type { GamePackageDownloadResult } from "./games/game-package-download.cjs";
+import type { LocalGamePackageStatus } from "./persistence/local-database.cjs";
 
 interface AppInfo {
     version: string;
@@ -21,6 +23,8 @@ const bridge = Object.freeze({
     retrySession: (): Promise<AuthOperationResult> => ipcRenderer.invoke("auth:retry-session") as Promise<AuthOperationResult>,
     logout: (): Promise<AuthOperationResult> => ipcRenderer.invoke("auth:logout") as Promise<AuthOperationResult>,
     listAvailableGames: (): Promise<GameDiscoveryOperationResult> => ipcRenderer.invoke("games:list") as Promise<GameDiscoveryOperationResult>,
+    getOfflineGameStatus: (gameId: string): Promise<LocalGamePackageStatus> => ipcRenderer.invoke("games:get-offline-status", gameId) as Promise<LocalGamePackageStatus>,
+    downloadGamePackage: (gameId: string): Promise<GamePackageDownloadResult> => ipcRenderer.invoke("games:download-package", gameId) as Promise<GamePackageDownloadResult>,
 });
 
 contextBridge.exposeInMainWorld("komoControl", bridge);

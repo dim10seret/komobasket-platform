@@ -34,6 +34,28 @@ export interface LocalDatabaseStatus {
     deviceIdentity: DeviceIdentity;
 }
 
+export interface VerifiedGamePackageInput {
+    packageId: string;
+    gameId: string;
+    packageVersion: number;
+    packageSchemaVersion: 1;
+    payloadJson: string;
+    payloadHash: string;
+    publishedAtUtc: string | null;
+}
+
+export interface LocalGamePackageStatus {
+    gameId: string;
+    availableOffline: boolean;
+    currentVersion: number | null;
+    downloadedAt: string | null;
+}
+
+export interface LocalGamePackageStoreResult {
+    outcome: "stored" | "unchanged";
+    status: LocalGamePackageStatus;
+}
+
 export interface LocalIntegrityResult {
     quickCheck: "ok";
     foreignKeyExceptions: 0;
@@ -249,11 +271,25 @@ function loadOrCreateDeviceIdentity(database: DatabaseSync): DeviceIdentity {
 }
 
 function verifyExpectedSchema(database: DatabaseSync): void {
-    for (const tableName of ["local_schema_migrations", "device_identity"]) {
+    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages"]) {
         if (!tableExists(database, tableName)) {
             throw new Error(`Required local table is missing: ${tableName}.`);
         }
     }
+}
+
+function verifiedGamePackage(input: VerifiedGamePackageInput): VerifiedGamePackageInput {
+    if (!input.packageId.trim() || !input.gameId.trim()) throw new Error("Verified GamePackage identity is invalid.");
+    if (!Number.isInteger(input.packageVersion) || input.packageVersion < 1 || input.packageSchemaVersion !== 1) throw new Error("Verified GamePackage version is unsupported.");
+    if (!input.payloadJson.trim() || !/^[0-9a-f]{64}$/.test(input.payloadHash)) throw new Error("Verified GamePackage payload metadata is invalid.");
+    if (input.publishedAtUtc !== null && !input.publishedAtUtc.trim()) throw new Error("Verified GamePackage publication time is invalid.");
+    let payload: unknown;
+    try { payload = JSON.parse(input.payloadJson); } catch { throw new Error("Verified GamePackage payload is malformed."); }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Verified GamePackage payload is malformed.");
+    const root = payload as Record<string, unknown>;
+    const game = root.game;
+    if (root.schemaVersion !== 1 || !game || typeof game !== "object" || Array.isArray(game) || (game as Record<string, unknown>).id !== input.gameId) throw new Error("Verified GamePackage payload identity is invalid.");
+    return input;
 }
 
 export class LocalDatabase {
@@ -340,6 +376,58 @@ export class LocalDatabase {
                 "busy_timeout",
             ),
         };
+    }
+
+    getCurrentGamePackageStatus(gameId: string): LocalGamePackageStatus {
+        if (!gameId.trim()) throw new Error("Game identity is required.");
+        const row = this.requireDatabase().prepare(
+            "SELECT package_version, downloaded_at_utc FROM local_game_packages WHERE game_id = ? AND is_current = 1",
+        ).get(gameId) as { package_version: number; downloaded_at_utc: string } | undefined;
+        return row
+            ? { gameId, availableOffline: true, currentVersion: row.package_version, downloadedAt: row.downloaded_at_utc }
+            : { gameId, availableOffline: false, currentVersion: null, downloadedAt: null };
+    }
+
+    storeVerifiedGamePackage(value: VerifiedGamePackageInput): LocalGamePackageStoreResult {
+        const input = verifiedGamePackage(value);
+        const database = this.requireDatabase();
+        const current = database.prepare(`SELECT package_id, game_id, package_version, package_schema_version,
+            payload_json, payload_hash, published_at_utc, downloaded_at_utc
+            FROM local_game_packages WHERE game_id = ? AND is_current = 1`).get(input.gameId) as Record<string, unknown> | undefined;
+        const packageCount = Number((database.prepare("SELECT COUNT(*) AS count FROM local_game_packages WHERE game_id = ?").get(input.gameId) as { count: number }).count);
+        if (!current && packageCount > 0) throw new Error("Local GamePackage current-version state is invalid.");
+        if (current) {
+            const currentVersion = Number(current.package_version);
+            if (input.packageVersion < currentVersion) throw new Error("Local GamePackage downgrade conflict.");
+            if (input.packageVersion === currentVersion) {
+                const unchanged = current.package_id === input.packageId
+                    && current.game_id === input.gameId
+                    && Number(current.package_schema_version) === input.packageSchemaVersion
+                    && current.payload_json === input.payloadJson
+                    && current.payload_hash === input.payloadHash
+                    && current.published_at_utc === input.publishedAtUtc;
+                if (!unchanged) throw new Error("Local GamePackage same-version integrity conflict.");
+                return { outcome: "unchanged", status: this.getCurrentGamePackageStatus(input.gameId) };
+            }
+        }
+
+        const downloadedAtUtc = new Date().toISOString();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            database.prepare(`INSERT INTO local_game_packages
+                (package_id, game_id, package_version, package_schema_version, payload_json, payload_hash, published_at_utc, downloaded_at_utc, is_current)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                .run(input.packageId, input.gameId, input.packageVersion, input.packageSchemaVersion, input.payloadJson, input.payloadHash, input.publishedAtUtc, downloadedAtUtc, current ? 0 : 1);
+            if (current) {
+                database.prepare("UPDATE local_game_packages SET is_current = 0 WHERE game_id = ? AND is_current = 1").run(input.gameId);
+                database.prepare("UPDATE local_game_packages SET is_current = 1 WHERE package_id = ?").run(input.packageId);
+            }
+            database.exec("COMMIT");
+        } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+        }
+        return { outcome: "stored", status: this.getCurrentGamePackageStatus(input.gameId) };
     }
 
     async createConsistentBackup(): Promise<LocalBackupResult> {

@@ -39,7 +39,7 @@ input:focus { border-color: #e96624; box-shadow: 0 0 0 4px rgba(233, 102, 36, .1
 .section-heading h2 { margin-top: 5px; }
 .refresh-button { min-height: 38px; border: 1px solid #c9c5bc; border-radius: 10px; padding: 0 14px; color: #28312d; background: #fff; font-weight: 750; }
 .games-list { display: grid; gap: 10px; }
-.game-card { display: grid; grid-template-columns: 94px minmax(0, 1fr); gap: 16px; align-items: center; padding: 15px 17px; border: 1px solid #ded9cf; border-radius: 14px; background: #fff; }
+.game-card { display: grid; grid-template-columns: 94px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 15px 17px; border: 1px solid #ded9cf; border-radius: 14px; background: #fff; }
 .game-date { display: grid; gap: 3px; padding-right: 16px; border-right: 1px solid #e5e0d7; color: #44504b; font-size: 13px; }
 .game-date strong { color: #a84b1c; font-size: 14px; }
 .game-main { min-width: 0; }
@@ -47,6 +47,9 @@ input:focus { border-color: #e96624; box-shadow: 0 0 0 4px rgba(233, 102, 36, .1
 .game-main h3 span { color: #e96624; }
 .game-main p { margin: 5px 0 0; color: #69716d; font-size: 13px; }
 .game-main .game-venue { color: #38423e; }
+.game-main .game-download-error { color: #8c2f20; }
+.game-offline-action button { min-height: 38px; border: 1px solid #c9c5bc; border-radius: 10px; padding: 0 12px; color: #28312d; background: #fff8ef; font-weight: 750; }
+.offline-ready { display: inline-flex; align-items: center; min-height: 34px; padding: 0 10px; border-radius: 999px; color: #276240; background: #e8f5eb; font-size: 12px; font-weight: 800; white-space: nowrap; }
 .games-state { margin: 0; padding: 22px; border: 1px dashed #cfc9bd; border-radius: 14px; color: #666e6a; text-align: center; }
 .games-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border-radius: 12px; color: #8c2f20; background: #fff0eb; }
 .games-error p { margin: 0; }
@@ -63,5 +66,6 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
     .game-card { grid-template-columns: 1fr; gap: 10px; }
     .game-date { grid-template-columns: auto 1fr; gap: 8px; padding-right: 0; border-right: 0; }
     .games-error { align-items: stretch; flex-direction: column; }
+    .game-offline-action button { width: 100%; }
     footer { flex-direction: column; }
 }

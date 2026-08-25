@@ -13,6 +13,9 @@ type KomoControlAuthState =
 type KomoControlAuthOperationResult = { ok: true; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlAuthErrorCode; state: KomoControlAuthState };
 interface KomoControlAvailableGame { gameId: string; packageId: string; packageVersion: number; homeTeam: { id: string; name: string }; awayTeam: { id: string; name: string }; competition: { id: string; name: string }; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string; scheduledTime: string; scheduledAt: string | null; venue: string | null; publishedAt: string; }
 type KomoControlGameDiscoveryResult = { ok: true; games: KomoControlAvailableGame[]; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlAuthErrorCode; state: KomoControlAuthState };
+type KomoControlGamePackageErrorCode = KomoControlAuthErrorCode | "PACKAGE_UNAVAILABLE" | "PACKAGE_INVALID" | "PACKAGE_HASH_MISMATCH" | "PACKAGE_CONFLICT";
+interface KomoControlOfflineGameStatus { gameId: string; availableOffline: boolean; currentVersion: number | null; downloadedAt: string | null; }
+type KomoControlGamePackageDownloadResult = { ok: true; status: KomoControlOfflineGameStatus; outcome: "stored" | "unchanged"; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlGamePackageErrorCode; state: KomoControlAuthState };
 
 interface KomoControlDesktopBridge {
     getAppInfo(): Promise<KomoControlAppInfo>;
@@ -26,6 +29,8 @@ interface KomoControlDesktopBridge {
     retrySession(): Promise<KomoControlAuthOperationResult>;
     logout(): Promise<KomoControlAuthOperationResult>;
     listAvailableGames(): Promise<KomoControlGameDiscoveryResult>;
+    getOfflineGameStatus(gameId: string): Promise<KomoControlOfflineGameStatus>;
+    downloadGamePackage(gameId: string): Promise<KomoControlGamePackageDownloadResult>;
 }
 
 interface Window {

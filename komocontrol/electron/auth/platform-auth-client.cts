@@ -1,5 +1,6 @@
 import { AuthFlowError, type SafeScorerContext } from "./auth-contracts.cjs";
 import type { AvailableGame } from "../games/game-discovery-contracts.cjs";
+import { GamePackageFlowError, parseGamePackageEnvelope, type GamePackageEnvelope } from "../games/game-package-download.cjs";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export interface LoginResponse extends SafeScorerContext { token: string; }
 export interface ScorerAuthClient {
@@ -7,6 +8,7 @@ export interface ScorerAuthClient {
     getSession(token: string): Promise<SafeScorerContext>;
     logout(token: string): Promise<void>;
     listGames(token: string): Promise<AvailableGame[]>;
+    downloadGamePackage(token: string, gameId: string): Promise<GamePackageEnvelope>;
 }
 type FetchImplementation = (input: string, init: RequestInit) => Promise<Response>;
 function record(value: unknown): Record<string, unknown> | null { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null; }
@@ -54,6 +56,11 @@ export class PlatformAuthClient implements ScorerAuthClient {
         const { response, payload } = await this.request("/api/komocontrol/v1/games", { method: "GET", headers: { authorization: `Bearer ${token}` } });
         if (!response.ok) { if (serverErrorCode(payload) === "SCORER_DISABLED") throw new AuthFlowError("SCORER_DISABLED"); if (response.status === 401) throw new AuthFlowError("SESSION_INVALID"); throw new AuthFlowError("NETWORK_UNAVAILABLE"); }
         return parseGames(responseData(payload));
+    }
+    async downloadGamePackage(token: string, gameId: string): Promise<GamePackageEnvelope> {
+        const { response, payload } = await this.request(`/api/komocontrol/v1/games/${encodeURIComponent(gameId)}/package`, { method: "GET", headers: { authorization: `Bearer ${token}` } });
+        if (!response.ok) { if (serverErrorCode(payload) === "SCORER_DISABLED") throw new AuthFlowError("SCORER_DISABLED"); if (response.status === 401) throw new AuthFlowError("SESSION_INVALID"); if (response.status === 404) throw new GamePackageFlowError("PACKAGE_UNAVAILABLE"); throw new AuthFlowError("NETWORK_UNAVAILABLE"); }
+        return parseGamePackageEnvelope(responseData(payload));
     }
     private async request(pathname: string, init: RequestInit): Promise<{ response: Response; payload: unknown }> {
         const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), this.timeoutMs);

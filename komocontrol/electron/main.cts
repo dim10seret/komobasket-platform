@@ -6,8 +6,10 @@ import { authErrorCode, type LoginInput } from "./auth/auth-contracts.cjs";
 import { PlatformAuthClient } from "./auth/platform-auth-client.cjs";
 import { SecureSessionStore } from "./auth/secure-session-store.cjs";
 import { LocalDatabase } from "./persistence/local-database.cjs";
+import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
+const productionPlatformOrigin = "https://komobasket.gr";
 const isDevelopment = !app.isPackaged && Boolean(developmentUrl);
 let mainWindow: BrowserWindow | null = null;
 let localDatabase: LocalDatabase | null = null;
@@ -40,9 +42,10 @@ function requireTrustedSender(event: Electron.IpcMainInvokeEvent): void {
 }
 
 function platformBaseUrl(): string | null {
+    if (app.isPackaged) return productionPlatformOrigin;
     const configured = process.env.KOMOCONTROL_PLATFORM_URL?.trim();
-    if (!configured) return isDevelopment ? "http://localhost:3000" : null;
-    try { const url = new URL(configured); if (!isDevelopment && url.protocol !== "https:") return null; if (url.protocol !== "http:" && url.protocol !== "https:") return null; return url.origin; }
+    if (!configured) return "http://localhost:3000";
+    try { const url = new URL(configured); if (url.protocol !== "http:" && url.protocol !== "https:") return null; return url.origin; }
     catch { return null; }
 }
 
@@ -55,6 +58,13 @@ function loginInput(value: unknown): LoginInput {
     const username = input.username.trim();
     if (!username || username.length > 100 || !input.password || input.password.length > 512) throw new Error("Invalid Login input.");
     return { username, password: input.password };
+}
+
+function gameIdInput(value: unknown): string {
+    if (typeof value !== "string") throw new Error("Invalid Game identity.");
+    const gameId = value.trim();
+    if (!gameId || gameId.length > 200) throw new Error("Invalid Game identity.");
+    return gameId;
 }
 
 function createMainWindow(): void {
@@ -129,6 +139,8 @@ ipcMain.handle("auth:login", async (event, value: unknown) => {
 ipcMain.handle("auth:retry-session", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().retrySession(); });
 ipcMain.handle("auth:logout", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().logout(); });
 ipcMain.handle("games:list", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listGames(); });
+ipcMain.handle("games:get-offline-status", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getGamePackageStatus(gameIdInput(value)); });
+ipcMain.handle("games:download-package", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().downloadGamePackage(gameIdInput(value)); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -175,7 +187,8 @@ if (!hasSingleInstanceLock) {
                 decryptString: (value) => safeStorage.decryptString(value),
             });
             const baseUrl = platformBaseUrl();
-            authCoordinator = new AuthCoordinator(baseUrl ? new PlatformAuthClient(baseUrl) : null, secureSessionStore, localStatus.deviceIdentity.deviceId);
+            const platformClient = baseUrl ? new PlatformAuthClient(baseUrl) : null;
+            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null);
             void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);
