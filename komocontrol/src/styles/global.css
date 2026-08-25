@@ -102,3 +102,39 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
     .run-foundation { align-items: stretch; flex-direction: column; }
     footer { flex-direction: column; }
 }
+
+.run-actions { display: flex; align-items: flex-end; gap: .75rem; flex-direction: column; }
+.pregame-shell { align-items: flex-start; padding-block: 2.5rem; }
+.pregame-card { width: min(1280px, 100%); }
+.pregame-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; margin-bottom: 1.25rem; }
+.pregame-header h1 { margin: .35rem 0; }
+.pregame-header p { margin: 0; color: var(--muted); }
+.pregame-state { display: inline-flex; align-items: center; gap: .55rem; border: 1px solid var(--line); border-radius: 999px; padding: .55rem .8rem; color: var(--muted); font-size: .84rem; white-space: nowrap; }
+.pregame-state .status-dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); }
+.pregame-guidance { padding: .9rem 1rem; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--muted); margin-bottom: 1.4rem; }
+.pregame-teams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.pregame-team { border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: color-mix(in srgb, var(--surface) 94%, var(--accent) 6%); }
+.pregame-team > header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.1rem; border-bottom: 1px solid var(--line); }
+.pregame-team h2 { margin: .1rem 0 0; font-size: 1.25rem; }
+.side-kicker { color: var(--accent); font-size: .72rem; font-weight: 800; letter-spacing: .13em; }
+.pregame-player-list { list-style: none; margin: 0; padding: 0; }
+.pregame-player { display: grid; grid-template-columns: minmax(0, 1fr) 9.5rem; gap: .8rem; align-items: center; padding: .8rem 1rem; border-bottom: 1px solid var(--line); }
+.pregame-player:last-child { border-bottom: 0; }
+.pregame-player.is-selected { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.pregame-player-toggle { display: flex; gap: .7rem; align-items: center; cursor: pointer; }
+.pregame-player-toggle input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
+.pregame-player-toggle span { display: grid; gap: .12rem; }
+.pregame-player-toggle small, .pregame-number-field small { color: var(--muted); font-size: .72rem; }
+.pregame-number-field { display: grid; grid-template-columns: 1fr 3.2rem; gap: .25rem .5rem; align-items: center; font-size: .75rem; color: var(--muted); }
+.pregame-number-field input { width: 3.2rem; min-width: 0; padding: .5rem .35rem; text-align: center; font-weight: 800; }
+.pregame-number-field small { grid-column: 1 / -1; text-align: right; }
+.pregame-actions { display: flex; justify-content: space-between; gap: .8rem; margin-top: 1.4rem; }
+.pregame-save-cluster { display: flex; align-items: center; justify-content: flex-end; gap: .8rem; flex-wrap: wrap; }
+.pregame-save-confirmation { margin: 0; color: var(--success, #197149); font-size: .86rem; font-weight: 800; }
+
+@media (max-width: 820px) {
+    .pregame-header, .pregame-actions, .pregame-save-cluster { align-items: stretch; flex-direction: column; }
+    .pregame-state { white-space: normal; }
+    .pregame-teams { grid-template-columns: 1fr; }
+    .pregame-player { grid-template-columns: minmax(0, 1fr) 8.5rem; }
+}

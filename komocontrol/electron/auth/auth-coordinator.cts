@@ -6,10 +6,11 @@ import { GamePackageDownloadManager, packageOperationFailure, type GamePackageDo
 import type { LocalGamePackageStatus } from "../persistence/local-database.cjs";
 import { MatchSetupManager, matchSetupErrorCode, type MatchSetupOperationResult } from "../games/match-setup.cjs";
 import { MatchRunManager, matchRunErrorCode, type MatchRunOperationResult } from "../runs/match-run.cjs";
+import { PreGameConfigurationManager, preGameConfigurationErrorCode, type PreGameConfigurationOperationResult, type PreGameConfigurationSaveDraftInput } from "../runs/pre-game-configuration.cjs";
 export class AuthCoordinator {
     private readonly client: ScorerAuthClient | null; private readonly store: SecureSessionStore; private readonly deviceId: string; private readonly deviceIdSuffix: string;
     private currentToken: string | null = null; private state: DesktopAuthState; private initialization: Promise<DesktopAuthState> | null = null;
-    constructor(client: ScorerAuthClient | null, store: SecureSessionStore, deviceId: string, private readonly packageManager: GamePackageDownloadManager | null = null, private readonly matchSetupManager: MatchSetupManager | null = null, private readonly matchRunManager: MatchRunManager | null = null) { this.client = client; this.store = store; this.deviceId = deviceId; this.deviceIdSuffix = deviceId.slice(-8); this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
+    constructor(client: ScorerAuthClient | null, store: SecureSessionStore, deviceId: string, private readonly packageManager: GamePackageDownloadManager | null = null, private readonly matchSetupManager: MatchSetupManager | null = null, private readonly matchRunManager: MatchRunManager | null = null, private readonly preGameConfigurationManager: PreGameConfigurationManager | null = null) { this.client = client; this.store = store; this.deviceId = deviceId; this.deviceIdSuffix = deviceId.slice(-8); this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; }
     initialize(): Promise<DesktopAuthState> { if (!this.initialization) this.initialization = this.restore(); return this.initialization; }
     async getState(): Promise<DesktopAuthState> { await this.initialize(); return this.state; }
     async login(input: LoginInput): Promise<AuthOperationResult> {
@@ -77,6 +78,18 @@ export class AuthCoordinator {
         if (!this.matchRunManager || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try { return { ok: true, outcome: "recovered", run: this.matchRunManager.recover(gameId, { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId }), state: this.state }; }
         catch (error) { return { ok: false, errorCode: matchRunErrorCode(error), state: this.state }; }
+    }
+    async getOrCreatePreGameConfiguration(gameId: string): Promise<PreGameConfigurationOperationResult> {
+        await this.initialize();
+        if (!this.preGameConfigurationManager || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { const result = this.preGameConfigurationManager.getOrCreate(gameId, { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId }); return { ok: true, ...result, state: this.state }; }
+        catch (error) { return { ok: false, errorCode: preGameConfigurationErrorCode(error), state: this.state }; }
+    }
+    async savePreGameConfigurationDraft(input: PreGameConfigurationSaveDraftInput): Promise<PreGameConfigurationOperationResult> {
+        await this.initialize();
+        if (!this.preGameConfigurationManager || this.state.kind !== "authenticated") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { const configuration = this.preGameConfigurationManager.saveDraft(input, { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId }); return { ok: true, outcome: "saved", configuration, state: this.state }; }
+        catch (error) { return { ok: false, errorCode: preGameConfigurationErrorCode(error), state: this.state }; }
     }
     dispose(): void { this.currentToken = null; }
     private async restore(): Promise<DesktopAuthState> {

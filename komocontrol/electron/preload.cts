@@ -5,6 +5,7 @@ import type { GamePackageDownloadResult } from "./games/game-package-download.cj
 import type { LocalGamePackageStatus } from "./persistence/local-database.cjs";
 import type { MatchSetupOperationResult } from "./games/match-setup.cjs";
 import type { MatchRunOperationResult } from "./runs/match-run.cjs";
+import type { PreGameConfigurationOperationResult, PreGameConfigurationSaveDraftInput } from "./runs/pre-game-configuration.cjs";
 
 interface AppInfo {
     version: string;
@@ -30,6 +31,8 @@ const bridge = Object.freeze({
     getMatchSetup: (gameId: string): Promise<MatchSetupOperationResult> => ipcRenderer.invoke("games:get-match-setup", gameId) as Promise<MatchSetupOperationResult>,
     createOrOpenGameRun: (gameId: string): Promise<MatchRunOperationResult> => ipcRenderer.invoke("runs:create-or-open", gameId) as Promise<MatchRunOperationResult>,
     getActiveGameRun: (gameId: string): Promise<MatchRunOperationResult> => ipcRenderer.invoke("runs:get-active", gameId) as Promise<MatchRunOperationResult>,
+    getOrCreatePreGameConfiguration: (gameId: string): Promise<PreGameConfigurationOperationResult> => ipcRenderer.invoke("pregame:get-or-create", gameId) as Promise<PreGameConfigurationOperationResult>,
+    savePreGameConfigurationDraft: (input: PreGameConfigurationSaveDraftInput): Promise<PreGameConfigurationOperationResult> => ipcRenderer.invoke("pregame:save-draft", input) as Promise<PreGameConfigurationOperationResult>,
 });
 
 contextBridge.exposeInMainWorld("komoControl", bridge);

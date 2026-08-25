@@ -101,6 +101,50 @@ export class LocalGameRunConflictError extends Error {
     }
 }
 
+export interface CreateLocalGameRunConfigurationInput {
+    runId: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    configurationSchemaVersion: 1;
+    configurationJson: string;
+    configurationHash: string;
+}
+
+export interface SaveLocalGameRunConfigurationInput {
+    runId: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    expectedRevision: number;
+    configurationJson: string;
+    configurationHash: string;
+}
+
+export interface StoredLocalGameRunConfiguration {
+    runId: string;
+    configurationSchemaVersion: 1;
+    revision: number;
+    status: "draft" | "ready";
+    configurationJson: string;
+    configurationHash: string;
+    readyAtUtc: string | null;
+    createdAtUtc: string;
+    updatedAtUtc: string;
+}
+
+export type LocalGameRunConfigurationStoreResult = {
+    outcome: "created" | "existing";
+    configuration: StoredLocalGameRunConfiguration;
+};
+
+export class LocalGameRunConfigurationConflictError extends Error {
+    constructor(readonly kind: "ownership" | "state" | "revision") {
+        super(`Local Game Run configuration conflict: ${kind}`);
+        this.name = "LocalGameRunConfigurationConflictError";
+    }
+}
+
 export interface LocalIntegrityResult {
     quickCheck: "ok";
     foreignKeyExceptions: 0;
@@ -316,7 +360,7 @@ function loadOrCreateDeviceIdentity(database: DatabaseSync): DeviceIdentity {
 }
 
 function verifyExpectedSchema(database: DatabaseSync): void {
-    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs"]) {
+    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs", "local_game_run_configurations"]) {
         if (!tableExists(database, tableName)) {
             throw new Error(`Required local table is missing: ${tableName}.`);
         }
@@ -362,6 +406,27 @@ function storedGameRun(value: unknown): StoredLocalGameRun {
         startedAtUtc,
         createdAtUtc: stringField(row, "created_at_utc", "local_game_runs"),
         updatedAtUtc: stringField(row, "updated_at_utc", "local_game_runs"),
+    };
+}
+
+function storedGameRunConfiguration(value: unknown): StoredLocalGameRunConfiguration {
+    const row = objectRow(value, "local_game_run_configurations");
+    const status = stringField(row, "status", "local_game_run_configurations");
+    const readyAtUtc = row.ready_at_utc;
+    if (status !== "draft" && status !== "ready") throw new Error("Invalid status in local_game_run_configurations.");
+    if (readyAtUtc !== null && typeof readyAtUtc !== "string") throw new Error("Invalid ready_at_utc in local_game_run_configurations.");
+    const configurationSchemaVersion = numberField(row, "configuration_schema_version", "local_game_run_configurations");
+    if (configurationSchemaVersion !== 1) throw new Error("Unsupported local Game Run configuration schema.");
+    return {
+        runId: stringField(row, "run_id", "local_game_run_configurations"),
+        configurationSchemaVersion: 1,
+        revision: numberField(row, "revision", "local_game_run_configurations"),
+        status,
+        configurationJson: stringField(row, "configuration_json", "local_game_run_configurations"),
+        configurationHash: stringField(row, "configuration_hash", "local_game_run_configurations"),
+        readyAtUtc,
+        createdAtUtc: stringField(row, "created_at_utc", "local_game_run_configurations"),
+        updatedAtUtc: stringField(row, "updated_at_utc", "local_game_run_configurations"),
     };
 }
 
@@ -530,6 +595,77 @@ export class LocalDatabase {
             const created = storedGameRun(createdValue);
             database.exec("COMMIT");
             return { outcome: "created", run: created };
+        } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+        }
+    }
+
+    readLocalGameRunConfiguration(runId: string): StoredLocalGameRunConfiguration | null {
+        if (!runId.trim()) throw new Error("Run identity is required.");
+        const value = this.requireDatabase().prepare("SELECT * FROM local_game_run_configurations WHERE run_id = ?").get(runId);
+        return value === undefined ? null : storedGameRunConfiguration(value);
+    }
+
+    createOrOpenLocalGameRunConfiguration(input: CreateLocalGameRunConfigurationInput): LocalGameRunConfigurationStoreResult {
+        if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim()) throw new Error("Local Game Run configuration identity is invalid.");
+        if (input.configurationSchemaVersion !== 1 || !input.configurationJson.trim() || !/^[0-9a-f]{64}$/.test(input.configurationHash)) throw new Error("Local Game Run configuration payload is invalid.");
+        try { JSON.parse(input.configurationJson); } catch { throw new Error("Local Game Run configuration payload is malformed."); }
+        const database = this.requireDatabase();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const runValue = database.prepare("SELECT * FROM local_game_runs WHERE run_id = ?").get(input.runId);
+            if (runValue === undefined) throw new LocalGameRunConfigurationConflictError("state");
+            const run = storedGameRun(runValue);
+            if (run.organizationId !== input.organizationId || run.scorerId !== input.scorerId || run.deviceId !== input.deviceId) throw new LocalGameRunConfigurationConflictError("ownership");
+            if (run.status !== "active" || run.startedAtUtc !== null || run.lastAcceptedSequence !== 0) throw new LocalGameRunConfigurationConflictError("state");
+            const currentValue = database.prepare("SELECT * FROM local_game_run_configurations WHERE run_id = ?").get(input.runId);
+            if (currentValue !== undefined) {
+                const current = storedGameRunConfiguration(currentValue);
+                database.exec("COMMIT");
+                return { outcome: "existing", configuration: current };
+            }
+            const timestamp = new Date().toISOString();
+            database.prepare(`INSERT INTO local_game_run_configurations
+                (run_id, configuration_schema_version, revision, status, configuration_json, configuration_hash, ready_at_utc, created_at_utc, updated_at_utc)
+                VALUES (?, ?, 1, 'draft', ?, ?, NULL, ?, ?)`).run(input.runId, input.configurationSchemaVersion, input.configurationJson, input.configurationHash, timestamp, timestamp);
+            const createdValue = database.prepare("SELECT * FROM local_game_run_configurations WHERE run_id = ?").get(input.runId);
+            if (createdValue === undefined) throw new Error("Local Game Run configuration was not created.");
+            const created = storedGameRunConfiguration(createdValue);
+            database.exec("COMMIT");
+            return { outcome: "created", configuration: created };
+        } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+        }
+    }
+
+    saveLocalGameRunConfiguration(input: SaveLocalGameRunConfigurationInput): StoredLocalGameRunConfiguration {
+        if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim()) throw new Error("Local Game Run configuration identity is invalid.");
+        if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1 || !input.configurationJson.trim() || !/^[0-9a-f]{64}$/.test(input.configurationHash)) throw new Error("Local Game Run configuration save is invalid.");
+        try { JSON.parse(input.configurationJson); } catch { throw new Error("Local Game Run configuration payload is malformed."); }
+        const database = this.requireDatabase();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const runValue = database.prepare("SELECT * FROM local_game_runs WHERE run_id = ?").get(input.runId);
+            if (runValue === undefined) throw new LocalGameRunConfigurationConflictError("state");
+            const run = storedGameRun(runValue);
+            if (run.organizationId !== input.organizationId || run.scorerId !== input.scorerId || run.deviceId !== input.deviceId) throw new LocalGameRunConfigurationConflictError("ownership");
+            if (run.status !== "active" || run.startedAtUtc !== null || run.lastAcceptedSequence !== 0) throw new LocalGameRunConfigurationConflictError("state");
+            const currentValue = database.prepare("SELECT * FROM local_game_run_configurations WHERE run_id = ?").get(input.runId);
+            if (currentValue === undefined) throw new LocalGameRunConfigurationConflictError("state");
+            const current = storedGameRunConfiguration(currentValue);
+            if (current.revision !== input.expectedRevision) throw new LocalGameRunConfigurationConflictError("revision");
+            const timestamp = new Date().toISOString();
+            database.prepare(`UPDATE local_game_run_configurations
+                SET revision = revision + 1, status = 'draft', configuration_json = ?, configuration_hash = ?, ready_at_utc = NULL, updated_at_utc = ?
+                WHERE run_id = ? AND revision = ?`).run(input.configurationJson, input.configurationHash, timestamp, input.runId, input.expectedRevision);
+            const savedValue = database.prepare("SELECT * FROM local_game_run_configurations WHERE run_id = ?").get(input.runId);
+            if (savedValue === undefined) throw new Error("Local Game Run configuration was not saved.");
+            const saved = storedGameRunConfiguration(savedValue);
+            if (saved.revision !== input.expectedRevision + 1) throw new LocalGameRunConfigurationConflictError("revision");
+            database.exec("COMMIT");
+            return saved;
         } catch (error) {
             database.exec("ROLLBACK");
             throw error;

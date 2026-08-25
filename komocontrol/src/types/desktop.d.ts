@@ -24,6 +24,16 @@ type KomoControlMatchSetupResult = { ok: true; setup: KomoControlMatchSetup; sta
 type KomoControlMatchRunErrorCode = "RUN_UNAVAILABLE" | "RUN_INVALID" | "RUN_CONFLICT" | "RUN_OWNERSHIP_CONFLICT";
 interface KomoControlSafeMatchRun { runId: string; gameId: string; packageId: string; packageVersion: number; status: "active"; gameplayStarted: false; lastAcceptedSequence: 0; createdAtUtc: string; }
 type KomoControlMatchRunResult = { ok: true; outcome: "created" | "existing" | "recovered"; run: KomoControlSafeMatchRun | null; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
+type KomoControlPreGameConfigurationErrorCode = "CONFIGURATION_UNAVAILABLE" | "CONFIGURATION_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_OWNERSHIP_CONFLICT";
+type KomoControlTeamSide = "HOME" | "AWAY";
+interface KomoControlPreGameConfigurationPlayer { playerId: string; displayName: string; packageShirtNumber: number | null; gameShirtNumber: string | null; participating: boolean; }
+interface KomoControlPreGameConfigurationStaff { staffId: string; displayName: string; role: string; roleLabel: string | null; participating: boolean; }
+interface KomoControlPreGameConfigurationTeam { side: KomoControlTeamSide; teamId: string; teamName: string; players: KomoControlPreGameConfigurationPlayer[]; staff: KomoControlPreGameConfigurationStaff[]; captainPlayerId: string | null; starterPlayerIds: string[]; }
+interface KomoControlPreGameConfiguration { runId: string; gameId: string; packageId: string; packageVersion: number; configurationSchemaVersion: 1; revision: number; status: "draft" | "ready"; teams: [KomoControlPreGameConfigurationTeam, KomoControlPreGameConfigurationTeam]; createdAtUtc: string; updatedAtUtc: string; }
+interface KomoControlPreGameConfigurationPlayerDraft { playerId: string; participating: boolean; gameShirtNumber: string | null; }
+interface KomoControlPreGameConfigurationTeamDraft { side: KomoControlTeamSide; players: KomoControlPreGameConfigurationPlayerDraft[]; }
+interface KomoControlPreGameConfigurationSaveDraftInput { gameId: string; expectedRevision: number; teams: [KomoControlPreGameConfigurationTeamDraft, KomoControlPreGameConfigurationTeamDraft]; }
+type KomoControlPreGameConfigurationResult = { ok: true; outcome: "created" | "existing" | "saved"; configuration: KomoControlPreGameConfiguration; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlPreGameConfigurationErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 
 interface KomoControlDesktopBridge {
     getAppInfo(): Promise<KomoControlAppInfo>;
@@ -42,6 +52,8 @@ interface KomoControlDesktopBridge {
     getMatchSetup(gameId: string): Promise<KomoControlMatchSetupResult>;
     createOrOpenGameRun(gameId: string): Promise<KomoControlMatchRunResult>;
     getActiveGameRun(gameId: string): Promise<KomoControlMatchRunResult>;
+    getOrCreatePreGameConfiguration(gameId: string): Promise<KomoControlPreGameConfigurationResult>;
+    savePreGameConfigurationDraft(input: KomoControlPreGameConfigurationSaveDraftInput): Promise<KomoControlPreGameConfigurationResult>;
 }
 
 interface Window {

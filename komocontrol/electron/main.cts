@@ -9,6 +9,7 @@ import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
 import { MatchRunManager } from "./runs/match-run.cjs";
+import { PreGameConfigurationManager, type PreGameConfigurationPlayerDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
 const productionPlatformOrigin = "https://komobasket.gr";
@@ -67,6 +68,28 @@ function gameIdInput(value: unknown): string {
     const gameId = value.trim();
     if (!gameId || gameId.length > 200) throw new Error("Invalid Game identity.");
     return gameId;
+}
+
+function preGameConfigurationPlayerDraft(value: unknown): PreGameConfigurationPlayerDraft {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game configuration player.");
+    const player = value as Record<string, unknown>;
+    if (typeof player.playerId !== "string" || !player.playerId.trim() || player.playerId.length > 200 || typeof player.participating !== "boolean" || !(player.gameShirtNumber === null || (typeof player.gameShirtNumber === "string" && player.gameShirtNumber.length <= 2))) throw new Error("Invalid pre-game configuration player.");
+    return { playerId: player.playerId, participating: player.participating, gameShirtNumber: player.gameShirtNumber };
+}
+
+function preGameConfigurationTeamDraft(value: unknown): PreGameConfigurationTeamDraft {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game configuration team.");
+    const team = value as Record<string, unknown>;
+    if ((team.side !== "HOME" && team.side !== "AWAY") || !Array.isArray(team.players) || team.players.length > 100) throw new Error("Invalid pre-game configuration team.");
+    return { side: team.side, players: team.players.map(preGameConfigurationPlayerDraft) };
+}
+
+function preGameConfigurationSaveInput(value: unknown): PreGameConfigurationSaveDraftInput {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game configuration request.");
+    const input = value as Record<string, unknown>;
+    const gameId = gameIdInput(input.gameId);
+    if (!Number.isInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 || !Array.isArray(input.teams) || input.teams.length !== 2) throw new Error("Invalid pre-game configuration request.");
+    return { gameId, expectedRevision: Number(input.expectedRevision), teams: [preGameConfigurationTeamDraft(input.teams[0]), preGameConfigurationTeamDraft(input.teams[1])] };
 }
 
 function createMainWindow(): void {
@@ -146,6 +169,8 @@ ipcMain.handle("games:download-package", async (event, value: unknown) => { requ
 ipcMain.handle("games:get-match-setup", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getMatchSetup(gameIdInput(value)); });
 ipcMain.handle("runs:create-or-open", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().createOrOpenGameRun(gameIdInput(value)); });
 ipcMain.handle("runs:get-active", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getActiveGameRun(gameIdInput(value)); });
+ipcMain.handle("pregame:get-or-create", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getOrCreatePreGameConfiguration(gameIdInput(value)); });
+ipcMain.handle("pregame:save-draft", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().savePreGameConfigurationDraft(preGameConfigurationSaveInput(value)); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -194,7 +219,9 @@ if (!hasSingleInstanceLock) {
             const baseUrl = platformBaseUrl();
             const platformClient = baseUrl ? new PlatformAuthClient(baseUrl) : null;
             const matchSetupManager = new MatchSetupManager(localDatabase);
-            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, matchSetupManager, new MatchRunManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId));
+            const matchRunManager = new MatchRunManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
+            const preGameConfigurationManager = new PreGameConfigurationManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
+            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, matchSetupManager, matchRunManager, preGameConfigurationManager);
             void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);
