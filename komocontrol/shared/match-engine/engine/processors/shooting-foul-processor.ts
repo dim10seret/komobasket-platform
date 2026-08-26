@@ -12,7 +12,7 @@ export class ShootingFoulProcessor {
 
   process(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.SHOOTING_FOUL }>): void {
     const foulingTeam = event.team === "HOME" ? state.home : state.away;
-    const player = foulingTeam.players.find((candidate) => candidate.id === event.playerId);
+    const player = foulingTeam.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a shooting foul event.");
 
     this.statistics.recordShootingFoul(foulingTeam, player);

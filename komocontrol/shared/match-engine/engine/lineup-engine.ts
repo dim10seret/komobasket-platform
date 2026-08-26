@@ -7,8 +7,8 @@ export class LineupEngine {
   }
 
   substitute(players: Player[], playerOutId: string, playerInId: string): void {
-    const playerOut = players.find((player) => player.id === playerOutId);
-    const playerIn = players.find((player) => player.id === playerInId);
+    const playerOut = players.find((player) => player.playerId === playerOutId);
+    const playerIn = players.find((player) => player.playerId === playerInId);
     if (!playerOut || !playerIn) throw new Error("Validated player was not found while processing a substitution.");
 
     playerOut.onCourt = false;
@@ -17,6 +17,6 @@ export class LineupEngine {
 
   set(players: Player[], playerIds: string[]): void {
     const selected = new Set(playerIds);
-    for (const player of players) player.onCourt = selected.has(player.id);
+    for (const player of players) player.onCourt = selected.has(player.playerId);
   }
 }

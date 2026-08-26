@@ -12,7 +12,7 @@ export class DisqualifyingFoulProcessor {
 
   process(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.DISQUALIFYING_FOUL }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = team.players.find((candidate) => candidate.id === event.playerId);
+    const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a disqualifying foul event.");
     this.statistics.recordDisqualifyingFoul(team, player);
     state.freeThrowSeries = {

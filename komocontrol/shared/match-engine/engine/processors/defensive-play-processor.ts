@@ -15,7 +15,7 @@ export class DefensivePlayProcessor {
 
   processSteal(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.STEAL }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = team.players.find((candidate) => candidate.id === event.playerId);
+    const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a steal event.");
     this.statistics.recordSteal(team, player);
     this.possession.set(state, event.team);
@@ -23,7 +23,7 @@ export class DefensivePlayProcessor {
 
   processBlock(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.BLOCK }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = team.players.find((candidate) => candidate.id === event.playerId);
+    const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a block event.");
     this.statistics.recordBlock(team, player);
   }

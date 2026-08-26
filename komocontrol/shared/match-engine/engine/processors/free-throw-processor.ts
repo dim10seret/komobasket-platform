@@ -15,7 +15,7 @@ export class FreeThrowProcessor {
 
   process(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.FREE_THROW }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = team.players.find((candidate) => candidate.id === event.playerId);
+    const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a free throw event.");
 
     this.statistics.recordFreeThrow(team, player, event.made);

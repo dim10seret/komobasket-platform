@@ -15,12 +15,12 @@ export class TwoPointProcessor {
 
   process(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.TWO_POINT }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = team.players.find((candidate) => candidate.id === event.playerId);
+    const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a two-point event.");
 
     this.statistics.recordTwoPoint(team, player);
     if (event.assistPlayerId) {
-      const assister = team.players.find((candidate) => candidate.id === event.assistPlayerId);
+      const assister = team.players.find((candidate) => candidate.playerId === event.assistPlayerId);
       if (!assister) throw new Error("Validated assisting player was not found while processing a two-point event.");
       this.statistics.recordAssist(team, assister);
     }

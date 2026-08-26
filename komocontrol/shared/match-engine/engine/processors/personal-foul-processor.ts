@@ -12,11 +12,11 @@ export class PersonalFoulProcessor {
 
   process(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.PERSONAL_FOUL }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = team.players.find((candidate) => candidate.id === event.playerId);
+    const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a personal foul event.");
 
     this.statistics.recordPersonalFoul(team, player);
-    if (team.teamFouls > 4 && event.fouledPlayerId) {
+    if (team.teamFouls >= state.rules.teamFoulPenaltyThreshold && event.fouledPlayerId) {
       state.freeThrowSeries = {
         shootingTeam: event.team === "HOME" ? "AWAY" : "HOME",
         shooterId: event.fouledPlayerId,

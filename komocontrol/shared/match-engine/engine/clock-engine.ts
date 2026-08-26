@@ -1,5 +1,6 @@
 import type { MatchState } from "../types/match-state.js";
-import { Quarter } from "../types/quarter.js";
+import { PeriodKind, type MatchPeriod } from "../types/period.js";
+import type { MatchRulesV1 } from "../types/rules.js";
 
 export class ClockEngine {
   start(state: MatchState): void {
@@ -15,7 +16,7 @@ export class ClockEngine {
     if (remainingSeconds === 0) state.clockRunning = false;
   }
 
-  maximumFor(quarter: Quarter): number {
-    return quarter <= Quarter.Q4 ? 600 : 300;
+  maximumFor(period: MatchPeriod, rules: MatchRulesV1): number {
+    return period.kind === PeriodKind.REGULATION ? rules.regulationPeriodSeconds : rules.overtimeSeconds;
   }
 }

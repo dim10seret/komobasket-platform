@@ -1,5 +1,5 @@
 import { EventType } from "./event-type.js";
-import type { Quarter } from "./quarter.js";
+import type { MatchPeriod } from "./period.js";
 import type { TeamSide } from "./team-side.js";
 
 export interface EventMetadata {
@@ -12,9 +12,8 @@ export type MatchEvent =
   | (EventMetadata & { type: typeof EventType.MATCH_START })
   | (EventMetadata & { type: typeof EventType.MATCH_END })
   | (EventMetadata & { type: typeof EventType.LINEUP_SET; team: TeamSide; playerIds: string[] })
-  | (EventMetadata & { type: typeof EventType.QUARTER_START; quarter: Quarter })
-  | (EventMetadata & { type: typeof EventType.QUARTER_END; quarter: Quarter })
-  | (EventMetadata & { type: typeof EventType.OVERTIME_START; quarter: Quarter })
+  | (EventMetadata & { type: typeof EventType.PERIOD_START; period: MatchPeriod })
+  | (EventMetadata & { type: typeof EventType.PERIOD_END; period: MatchPeriod })
   | (EventMetadata & { type: typeof EventType.JUMP_BALL; possession: TeamSide })
   | (EventMetadata & { type: typeof EventType.ALTERNATING_POSSESSION })
   | (EventMetadata & { type: typeof EventType.REBOUND; team: TeamSide; playerId: string; offensive: boolean })

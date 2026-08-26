@@ -22,5 +22,13 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    // Historical Supabase prototype paths are reference material, not current KomoControl runtime authority.
+    "src/pages/Matches/**",
+    "src/pages/LiveMatch/**",
+    "src/pages/MatchReport/**",
+    "src/services/match-export.service.ts",
+    "src/services/match-persistence.service.ts"
+  ]
 }

@@ -1,4 +1,4 @@
-import { createMatch, type CreateMatchOptions } from "../models/match.js";
+import { cloneMatchState, createMatch, type CreateMatchOptions } from "../models/match.js";
 import type { MatchEvent } from "../types/event.js";
 import type { EventRejectionReason, EventResult } from "../types/event-result.js";
 import type { Match } from "../types/match.js";
@@ -20,15 +20,15 @@ export class MatchEngine {
   private readonly processor = new EventProcessor();
   private readonly transactions = new TransactionManager();
 
-  constructor(options: CreateMatchOptions = {}, initialState?: MatchState) {
+  constructor(options?: CreateMatchOptions, initialState?: MatchState) {
     this.match = initialState
-      ? { state: structuredClone(initialState), events: [] }
-      : createMatch(options);
-    this.initialState = structuredClone(this.match.state);
+      ? { state: cloneMatchState(initialState), events: [] }
+      : createMatch(requireOptions(options));
+    this.initialState = cloneMatchState(this.match.state);
   }
 
   static fromInitialState(initialState: MatchState): MatchEngine {
-    return new MatchEngine({}, initialState);
+    return new MatchEngine(undefined, initialState);
   }
 
   getState(): Readonly<MatchState> {
@@ -75,7 +75,7 @@ export class MatchEngine {
   }
 
   private replay(events: MatchEvent[]): ReplayResult {
-    let state = structuredClone(this.initialState);
+    let state = cloneMatchState(this.initialState);
 
     for (const event of events) {
       const rejection = this.validator.validate(state, event);
@@ -86,9 +86,14 @@ export class MatchEngine {
         this.processor.process(draft, event);
         draft.lastProcessedSequence = event.sequence;
       });
-      state = transaction.state;
+      state = cloneMatchState(transaction.state);
     }
 
     return { accepted: true, match: { state, events: structuredClone(events) } };
   }
+}
+
+function requireOptions(options: CreateMatchOptions | undefined): CreateMatchOptions {
+  if (!options) throw new Error("MatchEngine requires an explicit immutable match snapshot.");
+  return options;
 }

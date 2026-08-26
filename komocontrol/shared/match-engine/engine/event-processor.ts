@@ -2,7 +2,7 @@ import { EventType } from "../types/event-type.js";
 import type { MatchEvent } from "../types/event.js";
 import type { MatchState } from "../types/match-state.js";
 import { PossessionEngine } from "./possession-engine.js";
-import { QuarterEngine } from "./quarter-engine.js";
+import { PeriodEngine } from "./period-engine.js";
 import { TwoPointProcessor } from "./processors/two-point-processor.js";
 import { ThreePointProcessor } from "./processors/three-point-processor.js";
 import { TurnoverProcessor } from "./processors/turnover-processor.js";
@@ -21,7 +21,7 @@ import { LineupSetProcessor } from "./processors/lineup-set-processor.js";
 import { MissedShotProcessor } from "./processors/missed-shot-processor.js";
 
 export class EventProcessor {
-  private readonly quarterEngine: QuarterEngine;
+  private readonly periodEngine: PeriodEngine;
   private readonly possessionEngine: PossessionEngine;
   private readonly twoPointProcessor: TwoPointProcessor;
   private readonly threePointProcessor: ThreePointProcessor;
@@ -41,7 +41,7 @@ export class EventProcessor {
   private readonly missedShotProcessor: MissedShotProcessor;
 
   constructor(
-    quarterEngine = new QuarterEngine(),
+    periodEngine = new PeriodEngine(),
     possessionEngine = new PossessionEngine(),
     twoPointProcessor = new TwoPointProcessor(),
     threePointProcessor = new ThreePointProcessor(),
@@ -60,7 +60,7 @@ export class EventProcessor {
     lineupSetProcessor = new LineupSetProcessor(),
     missedShotProcessor = new MissedShotProcessor(),
   ) {
-    this.quarterEngine = quarterEngine;
+    this.periodEngine = periodEngine;
     this.possessionEngine = possessionEngine;
     this.twoPointProcessor = twoPointProcessor;
     this.threePointProcessor = threePointProcessor;
@@ -84,7 +84,7 @@ export class EventProcessor {
     switch (event.type) {
       case EventType.MATCH_START:
         state.started = true;
-        state.clock = 600;
+        state.clock = this.periodEngine.durationFor(state.period, state.rules);
         state.clockRunning = false;
         return;
       case EventType.LINEUP_SET:
@@ -95,12 +95,11 @@ export class EventProcessor {
         state.clock = 0;
         state.clockRunning = false;
         return;
-      case EventType.QUARTER_START:
-      case EventType.OVERTIME_START:
-        this.quarterEngine.start(state, event.quarter);
+      case EventType.PERIOD_START:
+        this.periodEngine.start(state, event.period);
         return;
-      case EventType.QUARTER_END:
-        this.quarterEngine.end(state, event.quarter);
+      case EventType.PERIOD_END:
+        this.periodEngine.end(state, event.period);
         return;
       case EventType.JUMP_BALL:
         this.possessionEngine.setOpeningJumpBall(state, event.possession);

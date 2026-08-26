@@ -12,7 +12,7 @@ export class TechnicalFoulProcessor {
 
   process(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.TECHNICAL_FOUL }>): void {
     const team = event.team === "HOME" ? state.home : state.away;
-    const player = event.playerId ? team.players.find((candidate) => candidate.id === event.playerId) : undefined;
+    const player = event.playerId ? team.players.find((candidate) => candidate.playerId === event.playerId) : undefined;
     if (event.playerId && !player) throw new Error("Validated player was not found while processing a technical foul event.");
 
     this.statistics.recordTechnicalFoul(team, player);
