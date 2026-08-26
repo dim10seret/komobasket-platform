@@ -1,3 +1,4 @@
+import { PlayerFoulStatus } from "../types/foul.js";
 import type { Player, ShirtNumber } from "../types/player.js";
 import type { TeamSide } from "../types/team-side.js";
 
@@ -24,11 +25,34 @@ export function createPlayer(options: CreatePlayerOptions): Player {
     shirtNumber: options.shirtNumber,
     team: options.team,
     onCourt: options.onCourt ?? false,
-    fouls: 0,
-    disqualified: false,
+    foulState: {
+      total: 0,
+      category1TechnicalCount: 0,
+      category2TechnicalCount: 0,
+      disruptiveCount: 0,
+      flagrantCount: 0,
+      directDisqualification: false,
+      status: PlayerFoulStatus.ELIGIBLE,
+    },
     statistics: {
-      points: 0, twoPointAttempts: 0, twoPointMade: 0, threePointAttempts: 0,
-      threePointMade: 0, freeThrowAttempts: 0, freeThrowMade: 0, turnovers: 0, shootingFouls: 0, technicalFouls: 0, unsportsmanlikeFouls: 0, disqualifyingFouls: 0, offensiveRebounds: 0, defensiveRebounds: 0, assists: 0, steals: 0, blocks: 0,
+      points: 0,
+      twoPointAttempts: 0,
+      twoPointMade: 0,
+      threePointAttempts: 0,
+      threePointMade: 0,
+      freeThrowAttempts: 0,
+      freeThrowMade: 0,
+      turnovers: 0,
+      personalFouls: 0,
+      technicalFouls: 0,
+      disruptiveFouls: 0,
+      flagrantFouls: 0,
+      disqualifyingFouls: 0,
+      offensiveRebounds: 0,
+      defensiveRebounds: 0,
+      assists: 0,
+      steals: 0,
+      blocks: 0,
     },
   };
 }

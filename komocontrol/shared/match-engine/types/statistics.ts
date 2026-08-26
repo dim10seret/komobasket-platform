@@ -7,9 +7,9 @@ export interface TeamStatistics {
   freeThrowMade: number;
   turnovers: number;
   personalFouls: number;
-  shootingFouls: number;
   technicalFouls: number;
-  unsportsmanlikeFouls: number;
+  disruptiveFouls: number;
+  flagrantFouls: number;
   disqualifyingFouls: number;
   offensiveRebounds: number;
   defensiveRebounds: number;
@@ -27,9 +27,10 @@ export interface PlayerStatistics {
   freeThrowAttempts: number;
   freeThrowMade: number;
   turnovers: number;
-  shootingFouls: number;
+  personalFouls: number;
   technicalFouls: number;
-  unsportsmanlikeFouls: number;
+  disruptiveFouls: number;
+  flagrantFouls: number;
   disqualifyingFouls: number;
   offensiveRebounds: number;
   defensiveRebounds: number;

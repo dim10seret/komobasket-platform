@@ -1,6 +1,8 @@
+import { EventType } from "../types/event-type.js";
+import type { FoulEvent } from "../types/event.js";
 import type { Player } from "../types/player.js";
-import type { Team } from "../types/team.js";
 import type { TeamStatistics } from "../types/statistics.js";
+import type { Team } from "../types/team.js";
 
 export class StatisticsEngine {
   recordTwoPoint(team: Team, player: Player): void {
@@ -36,19 +38,29 @@ export class StatisticsEngine {
     player.statistics.turnovers += 1;
   }
 
-  recordPersonalFoul(team: Team, player: Player): void {
-    team.teamFouls += 1;
-    team.statistics.personalFouls += 1;
-    player.fouls += 1;
-    this.disqualifyWhenRequired(player, player.fouls >= 5);
-  }
-
-  recordShootingFoul(team: Team, player: Player): void {
-    team.teamFouls += 1;
-    team.statistics.shootingFouls += 1;
-    player.fouls += 1;
-    player.statistics.shootingFouls += 1;
-    this.disqualifyWhenRequired(player, player.fouls >= 5);
+  recordFoul(team: Team, player: Player | undefined, type: FoulEvent["type"]): void {
+    switch (type) {
+      case EventType.PERSONAL_FOUL:
+        team.statistics.personalFouls += 1;
+        if (player) player.statistics.personalFouls += 1;
+        return;
+      case EventType.TECHNICAL_FOUL:
+        team.statistics.technicalFouls += 1;
+        if (player) player.statistics.technicalFouls += 1;
+        return;
+      case EventType.DISRUPTIVE_FOUL:
+        team.statistics.disruptiveFouls += 1;
+        if (player) player.statistics.disruptiveFouls += 1;
+        return;
+      case EventType.FLAGRANT_FOUL:
+        team.statistics.flagrantFouls += 1;
+        if (player) player.statistics.flagrantFouls += 1;
+        return;
+      case EventType.DISQUALIFYING_FOUL:
+        team.statistics.disqualifyingFouls += 1;
+        if (player) player.statistics.disqualifyingFouls += 1;
+        return;
+    }
   }
 
   recordFreeThrow(team: Team, player: Player, made: boolean): void {
@@ -60,31 +72,6 @@ export class StatisticsEngine {
     team.statistics.freeThrowMade += 1;
     player.statistics.points += 1;
     player.statistics.freeThrowMade += 1;
-  }
-
-  recordTechnicalFoul(team: Team, player?: Player): void {
-    team.statistics.technicalFouls += 1;
-    if (!player) return;
-
-    player.statistics.technicalFouls += 1;
-    this.disqualifyWhenRequired(player, player.statistics.technicalFouls + player.statistics.unsportsmanlikeFouls >= 2);
-  }
-
-  recordUnsportsmanlikeFoul(team: Team, player: Player): void {
-    team.teamFouls += 1;
-    team.statistics.unsportsmanlikeFouls += 1;
-    player.fouls += 1;
-    player.statistics.unsportsmanlikeFouls += 1;
-    this.disqualifyWhenRequired(player, player.statistics.technicalFouls + player.statistics.unsportsmanlikeFouls >= 2 || player.fouls >= 5);
-  }
-
-  recordDisqualifyingFoul(team: Team, player: Player): void {
-    team.teamFouls += 1;
-    team.statistics.disqualifyingFouls += 1;
-    player.fouls += 1;
-    player.statistics.disqualifyingFouls += 1;
-    player.disqualified = true;
-    player.onCourt = false;
   }
 
   recordRebound(team: Team, player: Player, offensive: boolean): void {
@@ -114,11 +101,5 @@ export class StatisticsEngine {
 
   snapshot(team: Team): TeamStatistics {
     return { ...team.statistics };
-  }
-
-  private disqualifyWhenRequired(player: Player, shouldDisqualify: boolean): void {
-    if (!shouldDisqualify) return;
-    player.disqualified = true;
-    player.onCourt = false;
   }
 }

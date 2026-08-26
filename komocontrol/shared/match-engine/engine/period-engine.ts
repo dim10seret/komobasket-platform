@@ -42,6 +42,10 @@ export class PeriodEngine {
   }
 
   start(state: MatchState, period: MatchPeriod): void {
+    if (this.shouldResetTeamFouls(state.period, period, state.rules)) {
+      state.home.teamFouls = 0;
+      state.away.teamFouls = 0;
+    }
     state.period = { ...period };
     state.clock = this.durationFor(period, state.rules);
     state.clockRunning = false;

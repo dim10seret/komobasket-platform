@@ -17,6 +17,9 @@ export class PossessionEngine {
   }
 
   switch(state: MatchState): void {
+    if (state.possession === null) {
+      throw new Error("Cannot switch unresolved live-ball possession.");
+    }
     state.possession = state.possession === "HOME" ? "AWAY" : "HOME";
   }
 }

@@ -76,17 +76,19 @@ export class MatchEngine {
 
   private replay(events: MatchEvent[]): ReplayResult {
     let state = cloneMatchState(this.initialState);
+    const acceptedEvents: MatchEvent[] = [];
 
     for (const event of events) {
-      const rejection = this.validator.validate(state, event);
+      const rejection = this.validator.validate(state, event, acceptedEvents);
       if (rejection) return { accepted: false, reason: rejection };
       if (!this.rules.supports(event.type)) return { accepted: false, reason: "UNSUPPORTED_EVENT" };
 
       const transaction = this.transactions.run(state, (draft) => {
-        this.processor.process(draft, event);
+        this.processor.process(draft, event, acceptedEvents);
         draft.lastProcessedSequence = event.sequence;
       });
       state = cloneMatchState(transaction.state);
+      acceptedEvents.push(event);
     }
 
     return { accepted: true, match: { state, events: structuredClone(events) } };

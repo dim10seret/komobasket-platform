@@ -1,8 +1,8 @@
 import type { MatchPeriod } from "./period.js";
+import type { PenaltyEntitlement } from "./penalty.js";
 import type { MatchRulesV1 } from "./rules.js";
 import type { Team } from "./team.js";
 import type { TeamSide } from "./team-side.js";
-import type { FreeThrowSeries } from "./free-throw-series.js";
 
 export interface MatchState {
   id: string;
@@ -13,9 +13,9 @@ export interface MatchState {
   started: boolean;
   home: Team;
   away: Team;
-  possession: TeamSide;
+  possession: TeamSide | null;
   alternatingPossession: TeamSide;
-  freeThrowSeries?: FreeThrowSeries;
+  penaltyEntitlement?: PenaltyEntitlement;
   finished: boolean;
   lastProcessedSequence: number;
 }

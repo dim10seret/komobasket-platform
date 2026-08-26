@@ -1,5 +1,6 @@
-import { TeamSide } from "./team-side.js";
+import type { PlayerFoulState } from "./foul.js";
 import type { PlayerStatistics } from "./statistics.js";
+import type { TeamSide } from "./team-side.js";
 
 type NonZeroDigit = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
 type Digit = "0" | NonZeroDigit;
@@ -12,7 +13,6 @@ export interface Player {
   shirtNumber: ShirtNumber;
   team: TeamSide;
   onCourt: boolean;
-  fouls: number;
-  disqualified: boolean;
+  foulState: PlayerFoulState;
   statistics: PlayerStatistics;
 }

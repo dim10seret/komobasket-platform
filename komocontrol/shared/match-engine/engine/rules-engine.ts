@@ -14,9 +14,10 @@ const SUPPORTED_EVENTS: ReadonlySet<EventTypeValue> = new Set([
   EventType.ALTERNATING_POSSESSION, EventType.REBOUND, EventType.STEAL,
   EventType.BLOCK, EventType.TWO_POINT, EventType.THREE_POINT,
   EventType.TWO_POINT_MISSED, EventType.THREE_POINT_MISSED, EventType.TURNOVER,
-  EventType.PERSONAL_FOUL, EventType.SHOOTING_FOUL, EventType.FREE_THROW,
+  EventType.PERSONAL_FOUL, EventType.DISRUPTIVE_FOUL, EventType.FLAGRANT_FOUL,
+  EventType.FREE_THROW,
   EventType.SUBSTITUTION, EventType.TIMEOUT, EventType.TECHNICAL_FOUL,
-  EventType.UNSPORTSMANLIKE_FOUL, EventType.DISQUALIFYING_FOUL,
+  EventType.DISQUALIFYING_FOUL,
 ]);
 
 export class RulesEngine {

@@ -1,24 +1,20 @@
 import { EventType } from "../types/event-type.js";
-import type { MatchEvent } from "../types/event.js";
+import type { FoulEvent, MatchEvent } from "../types/event.js";
 import type { MatchState } from "../types/match-state.js";
-import { PossessionEngine } from "./possession-engine.js";
-import { PeriodEngine } from "./period-engine.js";
-import { TwoPointProcessor } from "./processors/two-point-processor.js";
-import { ThreePointProcessor } from "./processors/three-point-processor.js";
-import { TurnoverProcessor } from "./processors/turnover-processor.js";
-import { PersonalFoulProcessor } from "./processors/personal-foul-processor.js";
-import { ShootingFoulProcessor } from "./processors/shooting-foul-processor.js";
-import { FreeThrowProcessor } from "./processors/free-throw-processor.js";
-import { SubstitutionProcessor } from "./processors/substitution-processor.js";
-import { TimeoutProcessor } from "./processors/timeout-processor.js";
-import { TechnicalFoulProcessor } from "./processors/technical-foul-processor.js";
-import { UnsportsmanlikeFoulProcessor } from "./processors/unsportsmanlike-foul-processor.js";
-import { DisqualifyingFoulProcessor } from "./processors/disqualifying-foul-processor.js";
 import { ClockEngine } from "./clock-engine.js";
-import { ReboundProcessor } from "./processors/rebound-processor.js";
+import { PeriodEngine } from "./period-engine.js";
+import { PossessionEngine } from "./possession-engine.js";
 import { DefensivePlayProcessor } from "./processors/defensive-play-processor.js";
+import { FoulProcessor } from "./processors/foul-processor.js";
+import { FreeThrowProcessor } from "./processors/free-throw-processor.js";
 import { LineupSetProcessor } from "./processors/lineup-set-processor.js";
 import { MissedShotProcessor } from "./processors/missed-shot-processor.js";
+import { ReboundProcessor } from "./processors/rebound-processor.js";
+import { SubstitutionProcessor } from "./processors/substitution-processor.js";
+import { ThreePointProcessor } from "./processors/three-point-processor.js";
+import { TimeoutProcessor } from "./processors/timeout-processor.js";
+import { TurnoverProcessor } from "./processors/turnover-processor.js";
+import { TwoPointProcessor } from "./processors/two-point-processor.js";
 
 export class EventProcessor {
   private readonly periodEngine: PeriodEngine;
@@ -26,14 +22,10 @@ export class EventProcessor {
   private readonly twoPointProcessor: TwoPointProcessor;
   private readonly threePointProcessor: ThreePointProcessor;
   private readonly turnoverProcessor: TurnoverProcessor;
-  private readonly personalFoulProcessor: PersonalFoulProcessor;
-  private readonly shootingFoulProcessor: ShootingFoulProcessor;
+  private readonly foulProcessor: FoulProcessor;
   private readonly freeThrowProcessor: FreeThrowProcessor;
   private readonly substitutionProcessor: SubstitutionProcessor;
   private readonly timeoutProcessor: TimeoutProcessor;
-  private readonly technicalFoulProcessor: TechnicalFoulProcessor;
-  private readonly unsportsmanlikeFoulProcessor: UnsportsmanlikeFoulProcessor;
-  private readonly disqualifyingFoulProcessor: DisqualifyingFoulProcessor;
   private readonly clockEngine: ClockEngine;
   private readonly reboundProcessor: ReboundProcessor;
   private readonly defensivePlayProcessor: DefensivePlayProcessor;
@@ -46,14 +38,10 @@ export class EventProcessor {
     twoPointProcessor = new TwoPointProcessor(),
     threePointProcessor = new ThreePointProcessor(),
     turnoverProcessor = new TurnoverProcessor(),
-    personalFoulProcessor = new PersonalFoulProcessor(),
-    shootingFoulProcessor = new ShootingFoulProcessor(),
+    foulProcessor = new FoulProcessor(),
     freeThrowProcessor = new FreeThrowProcessor(),
     substitutionProcessor = new SubstitutionProcessor(),
     timeoutProcessor = new TimeoutProcessor(),
-    technicalFoulProcessor = new TechnicalFoulProcessor(),
-    unsportsmanlikeFoulProcessor = new UnsportsmanlikeFoulProcessor(),
-    disqualifyingFoulProcessor = new DisqualifyingFoulProcessor(),
     clockEngine = new ClockEngine(),
     reboundProcessor = new ReboundProcessor(),
     defensivePlayProcessor = new DefensivePlayProcessor(),
@@ -65,14 +53,10 @@ export class EventProcessor {
     this.twoPointProcessor = twoPointProcessor;
     this.threePointProcessor = threePointProcessor;
     this.turnoverProcessor = turnoverProcessor;
-    this.personalFoulProcessor = personalFoulProcessor;
-    this.shootingFoulProcessor = shootingFoulProcessor;
+    this.foulProcessor = foulProcessor;
     this.freeThrowProcessor = freeThrowProcessor;
     this.substitutionProcessor = substitutionProcessor;
     this.timeoutProcessor = timeoutProcessor;
-    this.technicalFoulProcessor = technicalFoulProcessor;
-    this.unsportsmanlikeFoulProcessor = unsportsmanlikeFoulProcessor;
-    this.disqualifyingFoulProcessor = disqualifyingFoulProcessor;
     this.clockEngine = clockEngine;
     this.reboundProcessor = reboundProcessor;
     this.defensivePlayProcessor = defensivePlayProcessor;
@@ -80,7 +64,11 @@ export class EventProcessor {
     this.missedShotProcessor = missedShotProcessor;
   }
 
-  process(state: MatchState, event: MatchEvent): void {
+  process(
+    state: MatchState,
+    event: MatchEvent,
+    priorEvents: readonly MatchEvent[] = [],
+  ): void {
     switch (event.type) {
       case EventType.MATCH_START:
         state.started = true;
@@ -141,10 +129,11 @@ export class EventProcessor {
         this.turnoverProcessor.process(state, event);
         return;
       case EventType.PERSONAL_FOUL:
-        this.personalFoulProcessor.process(state, event);
-        return;
-      case EventType.SHOOTING_FOUL:
-        this.shootingFoulProcessor.process(state, event);
+      case EventType.TECHNICAL_FOUL:
+      case EventType.DISRUPTIVE_FOUL:
+      case EventType.FLAGRANT_FOUL:
+      case EventType.DISQUALIFYING_FOUL:
+        this.foulProcessor.process(state, event as FoulEvent, priorEvents);
         return;
       case EventType.FREE_THROW:
         this.freeThrowProcessor.process(state, event);
@@ -154,17 +143,6 @@ export class EventProcessor {
         return;
       case EventType.TIMEOUT:
         this.timeoutProcessor.process(state, event);
-        return;
-      case EventType.TECHNICAL_FOUL:
-        this.technicalFoulProcessor.process(state, event);
-        return;
-      case EventType.UNSPORTSMANLIKE_FOUL:
-        this.unsportsmanlikeFoulProcessor.process(state, event);
-        return;
-      case EventType.DISQUALIFYING_FOUL:
-        this.disqualifyingFoulProcessor.process(state, event);
-        return;
-      default:
         return;
     }
   }
