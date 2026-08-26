@@ -4,6 +4,7 @@ import { FoulContextKind, FoulOffenderKind } from "../types/foul.js";
 import type { MatchState } from "../types/match-state.js";
 import {
   PenaltyRestartKind,
+  PenaltyEntitlementKind,
   ShooterPolicy,
   penaltyIdFor,
   type FoulResolution,
@@ -18,6 +19,7 @@ export class FoulPolicyEngine {
     state: MatchState,
     event: FoulEvent,
     priorEvents: readonly MatchEvent[],
+    interruptedPossession: TeamSide | null = state.possession,
   ): FoulResolution {
     if (state.rules.rulesEdition !== RulesEdition.FIBA_2026) {
       throw new Error("Foul policy is not defined for the pinned rules edition.");
@@ -33,7 +35,7 @@ export class FoulPolicyEngine {
         countsAsTeamFoul,
         penalty: this.penalty(event, opponent, 1, ShooterPolicy.ANY_OPPONENT, {
           kind: PenaltyRestartKind.RESUME_INTERRUPTED,
-          possession: state.possession,
+          possession: interruptedPossession,
         }),
       };
     }
@@ -66,7 +68,7 @@ export class FoulPolicyEngine {
         event.context.kind === FoulContextKind.NON_SHOOTING
         && (event.context.teamControlFoul || projectedTeamFouls < state.rules.teamFoulPenaltyThreshold)
       ) {
-        return { countsAsTeamFoul, immediateRestart: restart };
+        return { countsAsTeamFoul, penalty: this.restartOnlyPenalty(event, opponent, restart) };
       }
       return {
         countsAsTeamFoul,
@@ -108,14 +110,30 @@ export class FoulPolicyEngine {
     designatedPlayerId?: string,
   ): PenaltyEntitlement {
     return {
+      kind: PenaltyEntitlementKind.FREE_THROWS,
       penaltyId: penaltyIdFor(event.id),
       sourceFoulEventId: event.id,
+      beneficiaryTeam: shootingTeam,
       shootingTeam,
       attempts,
       shooterPolicy,
       ...(designatedPlayerId ? { designatedPlayerId } : {}),
       restart,
       completedAttempts: 0,
+    };
+  }
+
+  private restartOnlyPenalty(
+    event: FoulEvent,
+    beneficiaryTeam: TeamSide,
+    restart: PenaltyRestart,
+  ): PenaltyEntitlement {
+    return {
+      kind: PenaltyEntitlementKind.RESTART_ONLY,
+      penaltyId: penaltyIdFor(event.id),
+      sourceFoulEventId: event.id,
+      beneficiaryTeam,
+      restart,
     };
   }
 

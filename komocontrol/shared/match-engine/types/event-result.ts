@@ -32,6 +32,8 @@ export type EventRejectionReason =
   | "INVALID_FREE_THROW_SHOOTER"
   | "INVALID_FREE_THROW_ORDER"
   | "PENALTY_IN_PROGRESS"
+  | "STOPPAGE_RESOLUTION_LOCKED"
+  | "DEPENDENT_EVENTS_EXIST"
   | "INVALID_FOUL_CONTEXT"
   | "INVALID_FOUL_OFFENDER"
   | "INVALID_CAUSAL_REFERENCE"
@@ -41,4 +43,10 @@ export interface EventResult {
   accepted: boolean;
   state: MatchState;
   reason?: EventRejectionReason;
+  dependentEventIds?: string[];
+  blockingEventId?: string;
+}
+
+export interface EventMutationOptions {
+  cascadeDependencies?: boolean;
 }

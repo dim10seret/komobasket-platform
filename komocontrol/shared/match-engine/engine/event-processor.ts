@@ -69,6 +69,12 @@ export class EventProcessor {
     event: MatchEvent,
     priorEvents: readonly MatchEvent[] = [],
   ): void {
+    if (
+      !isFoulEvent(event)
+      && event.type !== EventType.FREE_THROW
+      && event.type !== EventType.SUBSTITUTION
+    ) state.penaltyResolution = undefined;
+
     switch (event.type) {
       case EventType.MATCH_START:
         state.started = true;
@@ -146,4 +152,12 @@ export class EventProcessor {
         return;
     }
   }
+}
+
+function isFoulEvent(event: MatchEvent): event is FoulEvent {
+  return event.type === EventType.PERSONAL_FOUL
+    || event.type === EventType.TECHNICAL_FOUL
+    || event.type === EventType.DISRUPTIVE_FOUL
+    || event.type === EventType.FLAGRANT_FOUL
+    || event.type === EventType.DISQUALIFYING_FOUL;
 }

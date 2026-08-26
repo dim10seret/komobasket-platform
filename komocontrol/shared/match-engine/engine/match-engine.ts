@@ -1,16 +1,21 @@
 import { cloneMatchState, createMatch, type CreateMatchOptions } from "../models/match.js";
 import type { MatchEvent } from "../types/event.js";
-import type { EventRejectionReason, EventResult } from "../types/event-result.js";
+import type {
+  EventMutationOptions,
+  EventRejectionReason,
+  EventResult,
+} from "../types/event-result.js";
 import type { Match } from "../types/match.js";
 import type { MatchState } from "../types/match-state.js";
 import { EventProcessor } from "./event-processor.js";
+import { dependentEventIds } from "./event-dependencies.js";
 import { RulesEngine } from "./rules-engine.js";
 import { TransactionManager } from "./transaction-manager.js";
 import { ValidationEngine } from "./validation-engine.js";
 
 type ReplayResult =
   | { accepted: true; match: Match }
-  | { accepted: false; reason: EventRejectionReason };
+  | { accepted: false; reason: EventRejectionReason; eventId: string };
 
 export class MatchEngine {
   private match: Match;
@@ -48,27 +53,59 @@ export class MatchEngine {
     return this.commit(this.match.events.slice(0, -1));
   }
 
-  removeEvent(eventId: string): EventResult {
+  removeEvent(eventId: string, options: EventMutationOptions = {}): EventResult {
     if (!this.match.events.some((event) => event.id === eventId)) {
       return { accepted: false, state: this.getState(), reason: "EVENT_NOT_FOUND" };
     }
-    return this.commit(this.match.events.filter((event) => event.id !== eventId));
+    const dependentIds = dependentEventIds(this.match.events, eventId);
+    if (dependentIds.length > 0 && !options.cascadeDependencies) {
+      return {
+        accepted: false,
+        state: this.getState(),
+        reason: "DEPENDENT_EVENTS_EXIST",
+        dependentEventIds: dependentIds,
+      };
+    }
+    const removedIds = new Set([eventId, ...(options.cascadeDependencies ? dependentIds : [])]);
+    return this.commit(this.match.events.filter((event) => !removedIds.has(event.id)));
   }
 
-  correctEvent(eventId: string, replacement: MatchEvent): EventResult {
+  correctEvent(
+    eventId: string,
+    replacement: MatchEvent,
+    options: EventMutationOptions = {},
+  ): EventResult {
     const index = this.match.events.findIndex((event) => event.id === eventId);
     if (index === -1) return { accepted: false, state: this.getState(), reason: "EVENT_NOT_FOUND" };
 
+    const dependentIds = dependentEventIds(this.match.events, eventId);
+    if (dependentIds.length > 0 && !options.cascadeDependencies) {
+      return {
+        accepted: false,
+        state: this.getState(),
+        reason: "DEPENDENT_EVENTS_EXIST",
+        dependentEventIds: dependentIds,
+      };
+    }
     const original = this.match.events[index];
     const corrected = { ...replacement, id: original.id, sequence: original.sequence } as MatchEvent;
-    const events = [...this.match.events];
-    events[index] = corrected;
+    const removedIds = new Set(options.cascadeDependencies ? dependentIds : []);
+    const events = this.match.events
+      .filter((event) => !removedIds.has(event.id))
+      .map((event) => event.id === eventId ? corrected : event);
     return this.commit(events);
   }
 
   private commit(events: MatchEvent[]): EventResult {
     const replayed = this.replay(events);
-    if (!replayed.accepted) return { accepted: false, state: this.getState(), reason: replayed.reason };
+    if (!replayed.accepted) {
+      return {
+        accepted: false,
+        state: this.getState(),
+        reason: replayed.reason,
+        blockingEventId: replayed.eventId,
+      };
+    }
 
     this.match = replayed.match;
     return { accepted: true, state: this.getState() };
@@ -80,8 +117,10 @@ export class MatchEngine {
 
     for (const event of events) {
       const rejection = this.validator.validate(state, event, acceptedEvents);
-      if (rejection) return { accepted: false, reason: rejection };
-      if (!this.rules.supports(event.type)) return { accepted: false, reason: "UNSUPPORTED_EVENT" };
+      if (rejection) return { accepted: false, reason: rejection, eventId: event.id };
+      if (!this.rules.supports(event.type)) {
+        return { accepted: false, reason: "UNSUPPORTED_EVENT", eventId: event.id };
+      }
 
       const transaction = this.transactions.run(state, (draft) => {
         this.processor.process(draft, event, acceptedEvents);

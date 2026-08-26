@@ -59,8 +59,25 @@ export class ValidationEngine {
     }
 
     if (!state.started) return "MATCH_NOT_STARTED";
-    if (
-      state.penaltyEntitlement
+    const penaltyResolution = state.penaltyResolution;
+    if (isFoulEvent(event)) {
+      const priorSameStoppageFoul = priorEvents.some(
+        (candidate) => isFoulEvent(candidate) && candidate.stoppageId === event.stoppageId,
+      );
+      if (
+        priorSameStoppageFoul
+        && penaltyResolution?.stoppageId !== event.stoppageId
+      ) return "STOPPAGE_RESOLUTION_LOCKED";
+      if (
+        penaltyResolution?.stoppageId === event.stoppageId
+        && penaltyResolution.administrationStarted
+      ) return "STOPPAGE_RESOLUTION_LOCKED";
+      if (
+        penaltyResolution?.freeThrowQueue.length
+        && penaltyResolution.stoppageId !== event.stoppageId
+      ) return "PENALTY_IN_PROGRESS";
+    } else if (
+      penaltyResolution?.freeThrowQueue.length
       && event.type !== EventType.FREE_THROW
       && event.type !== EventType.SUBSTITUTION
     ) return "PENALTY_IN_PROGRESS";
@@ -240,11 +257,11 @@ export class ValidationEngine {
     state: MatchState,
     event: Extract<MatchEvent, { type: typeof EventType.FREE_THROW }>,
   ): EventRejectionReason | undefined {
-    const penalty = state.penaltyEntitlement;
+    const penalty = state.penaltyResolution?.freeThrowQueue[0];
     if (!penalty) return "NO_ACTIVE_PENALTY";
     if (event.penaltyId !== penalty.penaltyId) return "INVALID_PENALTY_ID";
     if (event.attemptIndex !== penalty.completedAttempts + 1) return "INVALID_FREE_THROW_ORDER";
-    if (event.team !== penalty.shootingTeam) return "INVALID_FREE_THROW_SHOOTER";
+    if (event.team !== penalty.beneficiaryTeam) return "INVALID_FREE_THROW_SHOOTER";
 
     const player = teamFor(state, event.team).players.find(
       (candidate) => candidate.playerId === event.playerId,

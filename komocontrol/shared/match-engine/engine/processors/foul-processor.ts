@@ -8,22 +8,25 @@ import {
   TechnicalFoulCategory,
 } from "../../types/foul.js";
 import type { MatchState } from "../../types/match-state.js";
-import { PenaltyRestartKind, type PenaltyRestart } from "../../types/penalty.js";
 import type { Player } from "../../types/player.js";
 import type { Team } from "../../types/team.js";
 import { FoulPolicyEngine } from "../foul-policy-engine.js";
+import { StoppagePenaltyResolver, applyResolvedRestart } from "../stoppage-penalty-resolver.js";
 import { StatisticsEngine } from "../statistics-engine.js";
 
 export class FoulProcessor {
   private readonly policy: FoulPolicyEngine;
   private readonly statistics: StatisticsEngine;
+  private readonly stoppages: StoppagePenaltyResolver;
 
   constructor(
     policy = new FoulPolicyEngine(),
     statistics = new StatisticsEngine(),
+    stoppages = new StoppagePenaltyResolver(),
   ) {
     this.policy = policy;
     this.statistics = statistics;
+    this.stoppages = stoppages;
   }
 
   process(
@@ -31,7 +34,23 @@ export class FoulProcessor {
     event: FoulEvent,
     priorEvents: readonly MatchEvent[],
   ): void {
-    const resolution = this.policy.resolve(state, event, priorEvents);
+    const existing = state.penaltyResolution?.stoppageId === event.stoppageId
+      && !state.penaltyResolution.administrationStarted
+      ? state.penaltyResolution
+      : undefined;
+    if (existing) {
+      state.possession = existing.interruptedPossession;
+      state.alternatingPossession = existing.interruptedAlternatingPossession;
+    }
+    const interruptedPossession = existing?.interruptedPossession ?? state.possession;
+    const interruptedAlternatingPossession =
+      existing?.interruptedAlternatingPossession ?? state.alternatingPossession;
+    const resolution = this.policy.resolve(
+      state,
+      event,
+      priorEvents,
+      interruptedPossession,
+    );
     const team = event.team === "HOME" ? state.home : state.away;
     const playerId = event.offender.kind === FoulOffenderKind.PLAYER
       ? event.offender.playerId
@@ -49,8 +68,17 @@ export class FoulProcessor {
     if (player) this.recordPlayerFoul(player, event);
     else this.recordBenchFoul(team, event);
 
-    state.penaltyEntitlement = resolution.penalty;
-    if (resolution.immediateRestart) this.applyImmediateRestart(state, resolution.immediateRestart);
+    const stoppageResolution = this.stoppages.resolve({
+      stoppageId: event.stoppageId,
+      interruptedPossession,
+      interruptedAlternatingPossession,
+      entitlements: [...(existing?.entitlements ?? []), resolution.penalty],
+      events: [...priorEvents, event],
+    });
+    state.penaltyResolution = stoppageResolution;
+    if (stoppageResolution.freeThrowQueue.length === 0) {
+      stoppageResolution.finalRestart = applyResolvedRestart(state, stoppageResolution.finalRestart);
+    }
   }
 
   private recordPlayerFoul(player: Player, event: FoulEvent): void {
@@ -119,14 +147,4 @@ export class FoulProcessor {
     player.onCourt = false;
   }
 
-  private applyImmediateRestart(state: MatchState, restart: PenaltyRestart): void {
-    if (
-      restart.kind === PenaltyRestartKind.NEAREST_THROW_IN
-      || restart.kind === PenaltyRestartKind.FRONTCOURT_THROW_IN
-    ) {
-      state.possession = restart.team;
-    } else if (restart.kind === PenaltyRestartKind.RESUME_INTERRUPTED) {
-      state.possession = restart.possession;
-    }
-  }
 }

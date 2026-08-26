@@ -1,5 +1,5 @@
 import type { MatchPeriod } from "./period.js";
-import type { PenaltyEntitlement } from "./penalty.js";
+import type { StoppagePenaltyResolution } from "./penalty.js";
 import type { MatchRulesV1 } from "./rules.js";
 import type { Team } from "./team.js";
 import type { TeamSide } from "./team-side.js";
@@ -15,7 +15,7 @@ export interface MatchState {
   away: Team;
   possession: TeamSide | null;
   alternatingPossession: TeamSide;
-  penaltyEntitlement?: PenaltyEntitlement;
+  penaltyResolution?: StoppagePenaltyResolution;
   finished: boolean;
   lastProcessedSequence: number;
 }
