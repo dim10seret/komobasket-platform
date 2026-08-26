@@ -2,6 +2,7 @@ import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import { createScorerPasswordHash, normalizeScorerUsername } from "@/services/komocontrol-scorer-credentials";
+import { isCoherentKomoControlResultPolicy } from "@/services/komocontrol-result-policy";
 
 type GameMode = "SIMPLE" | "FULL";
 type ScorerStatus = "active" | "disabled";
@@ -84,7 +85,7 @@ function settingsInput(input: Record<string, unknown>) {
     winner_required: flag(input.winner_required, "Απαιτείται νικητής"),
   };
   if (result.min_players > result.starting_players || result.starting_players > result.max_players) throw new KomoControlAdminError("Ισχύει: ελάχιστοι παίκτες ≤ παίκτες στο γήπεδο ≤ μέγιστοι παίκτες.");
-  if (result.tie_allowed && result.winner_required) throw new KomoControlAdminError("Δεν μπορεί να επιτρέπεται ισοπαλία όταν απαιτείται νικητής.");
+  if (!isCoherentKomoControlResultPolicy(Boolean(result.tie_allowed), Boolean(result.winner_required))) throw new KomoControlAdminError("Επιλέξτε ακριβώς μία πολιτική αποτελέσματος: επιτρέπεται ισοπαλία ή απαιτείται νικητής.");
   return result;
 }
 

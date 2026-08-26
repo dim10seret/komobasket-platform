@@ -37,8 +37,9 @@ describe("KC-5B8 durable local Game Run", () => {
         db.close();
         fs.copyFileSync(path.resolve("electron/migrations/0004_game_run_configuration.sql"), path.join(migrationsDirectory, "0004_game_run_configuration.sql"));
         fs.copyFileSync(path.resolve("electron/migrations/0005_match_gameplay.sql"), path.join(migrationsDirectory, "0005_match_gameplay.sql"));
+        fs.copyFileSync(path.resolve("electron/migrations/0006_gameplay_sync.sql"), path.join(migrationsDirectory, "0006_gameplay_sync.sql"));
         const reopened = new LocalDatabase({ databasePath, migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(reopened);
-        expect(reopened.initialize()).toMatchObject({ schemaVersion: "0005_match_gameplay.sql", deviceIdentity: { deviceId } });
+        expect(reopened.initialize()).toMatchObject({ schemaVersion: "0006_gameplay_sync.sql", deviceIdentity: { deviceId } });
         expect(reopened.getCurrentGamePackageStatus(gameId)).toMatchObject({ availableOffline: true, currentVersion: 2 });
         expect(reopened.getActiveLocalGameRun(gameId)).toMatchObject({ runId: preservedRunId, packageId: input.packageId, scorerId: owner.scorerId, deviceId, status: "active", startedAtUtc: null, lastAcceptedSequence: 0 });
         expect(reopened.runIntegrityCheck()).toEqual({ quickCheck: "ok", foreignKeyExceptions: 0 });

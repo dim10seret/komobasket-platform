@@ -4,6 +4,64 @@ import { GamePackageFlowError, parseGamePackageEnvelope, type GamePackageEnvelop
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export interface ValidatedSessionContext extends SafeScorerContext { sessionId: string; deviceId: string; }
 export interface LoginResponse extends ValidatedSessionContext { token: string; }
+export interface GameplaySyncRequest {
+    schemaVersion: 1;
+    runId: string;
+    gameId: string;
+    packageId: string;
+    packageVersion: number;
+    packageHash: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    startedAtUtc: string;
+    configurationRevision: number;
+    configurationHash: string;
+    currentConfigurationRevision: number;
+    currentConfigurationHash: string;
+    currentConfigurationJson: string;
+    snapshotSchemaVersion: 1;
+    matchEventSchemaVersion: 2;
+    initialStateJson: string;
+    initialStateHash: string;
+    eventHistoryRevision: number;
+    lastAcceptedSequence: number;
+    historyHash: string;
+    events: Array<{ eventId: string; sequence: number; eventSchemaVersion: 2; eventJson: string; eventHash: string }>;
+    finalization: null | {
+        schemaVersion: 1;
+        finalizedHistoryRevision: number;
+        finalizedHistoryHash: string;
+        finalStateJson: string;
+        finalStateHash: string;
+        finalizationJson: string;
+        finalizationHash: string;
+        finalizedAtUtc: string;
+    };
+}
+export interface GameplaySyncResponse {
+    runId: string;
+    acknowledgedHistoryRevision: number;
+    acknowledgedHistoryHash: string;
+    acknowledgedConfigurationRevision: number;
+    acknowledgedConfigurationHash: string;
+    acknowledgedFinalizationHash: string | null;
+    officialResultApplied: boolean;
+    status: "accepted" | "idempotent";
+}
+export type PlatformGameplaySyncErrorCode =
+    | "SYNC_INVALID"
+    | "SYNC_AUTH"
+    | "SYNC_STALE"
+    | "SYNC_INTEGRITY_CONFLICT"
+    | "SYNC_RUN_CONFLICT"
+    | "SYNC_UNAVAILABLE";
+export class PlatformGameplaySyncError extends Error {
+    constructor(readonly code: PlatformGameplaySyncErrorCode) {
+        super(code);
+        this.name = "PlatformGameplaySyncError";
+    }
+}
 export interface ScorerAuthClient {
     login(username: string, password: string, deviceId: string): Promise<LoginResponse>;
     getSession(token: string): Promise<ValidatedSessionContext>;
@@ -36,6 +94,23 @@ function parseGame(value: unknown): AvailableGame {
     return { gameId, packageId, packageVersion: Number(packageVersion), homeTeam: parseTeam(item?.homeTeam), awayTeam: parseTeam(item?.awayTeam), competition: { id: competitionId, name: competitionName }, seasonName, phaseName: optionalString(item?.phaseName), roundLabel: optionalString(item?.roundLabel), scheduledDate, scheduledTime, scheduledAt: optionalString(item?.scheduledAt), venue: optionalString(item?.venue), publishedAt };
 }
 function parseGames(value: unknown): AvailableGame[] { if (!Array.isArray(value)) throw new AuthFlowError("MALFORMED_RESPONSE"); return value.map(parseGame); }
+function parseGameplaySyncResponse(value: unknown): GameplaySyncResponse {
+    const data = record(value);
+    const runId = requiredString(data?.runId);
+    const acknowledgedHistoryRevision = Number(data?.acknowledgedHistoryRevision);
+    const acknowledgedHistoryHash = requiredString(data?.acknowledgedHistoryHash);
+    const acknowledgedConfigurationRevision = Number(data?.acknowledgedConfigurationRevision);
+    const acknowledgedConfigurationHash = requiredString(data?.acknowledgedConfigurationHash);
+    const acknowledgedFinalizationHash = data?.acknowledgedFinalizationHash === null ? null : requiredString(data?.acknowledgedFinalizationHash);
+    if (!runId || !Number.isInteger(acknowledgedHistoryRevision) || acknowledgedHistoryRevision < 1
+        || !acknowledgedHistoryHash || !/^[0-9a-f]{64}$/.test(acknowledgedHistoryHash)
+        || !Number.isInteger(acknowledgedConfigurationRevision) || acknowledgedConfigurationRevision < 1
+        || !acknowledgedConfigurationHash || !/^[0-9a-f]{64}$/.test(acknowledgedConfigurationHash)
+        || !(acknowledgedFinalizationHash === null || /^[0-9a-f]{64}$/.test(acknowledgedFinalizationHash))
+        || typeof data?.officialResultApplied !== "boolean"
+        || (data.status !== "accepted" && data.status !== "idempotent")) throw new AuthFlowError("MALFORMED_RESPONSE");
+    return { runId, acknowledgedHistoryRevision, acknowledgedHistoryHash, acknowledgedConfigurationRevision, acknowledgedConfigurationHash, acknowledgedFinalizationHash, officialResultApplied: data.officialResultApplied, status: data.status };
+}
 export class PlatformAuthClient implements ScorerAuthClient {
     private readonly baseUrl: string; private readonly timeoutMs: number; private readonly fetchImplementation: FetchImplementation;
     constructor(baseUrl: string, timeoutMs = 10_000, fetchImplementation: FetchImplementation = fetch) { this.baseUrl = baseUrl.replace(/\/+$/, ""); this.timeoutMs = timeoutMs; this.fetchImplementation = fetchImplementation; }
@@ -64,6 +139,24 @@ export class PlatformAuthClient implements ScorerAuthClient {
         const { response, payload } = await this.request(`/api/komocontrol/v1/games/${encodeURIComponent(gameId)}/package`, { method: "GET", headers: { authorization: `Bearer ${token}` } });
         if (!response.ok) { if (serverErrorCode(payload) === "SCORER_DISABLED") throw new AuthFlowError("SCORER_DISABLED"); if (response.status === 401) throw new AuthFlowError("SESSION_INVALID"); if (response.status === 404) throw new GamePackageFlowError("PACKAGE_UNAVAILABLE"); throw new AuthFlowError("NETWORK_UNAVAILABLE"); }
         return parseGamePackageEnvelope(responseData(payload));
+    }
+    async syncGameplay(token: string, input: GameplaySyncRequest): Promise<GameplaySyncResponse> {
+        const { response, payload } = await this.request(`/api/komocontrol/v1/runs/${encodeURIComponent(input.runId)}/sync`, {
+            method: "PUT",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify(input),
+        });
+        if (!response.ok) {
+            const code = serverErrorCode(payload);
+            if (response.status === 401 || code === "SCORER_DISABLED") throw new PlatformGameplaySyncError("SYNC_AUTH");
+            if (code === "SYNC_STALE") throw new PlatformGameplaySyncError("SYNC_STALE");
+            if (code === "SYNC_INTEGRITY_CONFLICT") throw new PlatformGameplaySyncError("SYNC_INTEGRITY_CONFLICT");
+            if (code === "SYNC_RUN_CONFLICT") throw new PlatformGameplaySyncError("SYNC_RUN_CONFLICT");
+            if (response.status === 408 || response.status === 425 || response.status === 429) throw new PlatformGameplaySyncError("SYNC_UNAVAILABLE");
+            if (response.status >= 400 && response.status < 500) throw new PlatformGameplaySyncError("SYNC_INVALID");
+            throw new PlatformGameplaySyncError("SYNC_UNAVAILABLE");
+        }
+        return parseGameplaySyncResponse(responseData(payload));
     }
     private async request(pathname: string, init: RequestInit): Promise<{ response: Response; payload: unknown }> {
         const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), this.timeoutMs);

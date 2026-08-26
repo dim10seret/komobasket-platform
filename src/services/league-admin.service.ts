@@ -1826,12 +1826,13 @@ function appendExactSeriesGameMaterializationStatements(
 
 type OfficialGameResultSource = "manual" | "match_report" | "award";
 
-type OfficialGameResultInput = {
+export type OfficialGameResultInput = {
   gameId: string;
   competitionId: string;
   homeScore: unknown;
   awayScore: unknown;
   resultSource: OfficialGameResultSource;
+  allowTie?: boolean;
 };
 
 export async function saveOfficialGameResultAndProgressSeries(
@@ -1843,7 +1844,7 @@ export async function saveOfficialGameResultAndProgressSeries(
   return saveOfficialGameResultAndProgressSeriesWithDb(db, input, actor);
 }
 
-async function saveOfficialGameResultAndProgressSeriesWithDb(
+export async function saveOfficialGameResultAndProgressSeriesWithDb(
   db: D1DatabaseBinding,
   input: OfficialGameResultInput,
   actor: string,
@@ -1867,7 +1868,7 @@ async function saveOfficialGameResultAndProgressSeriesWithDb(
   }
   const homeScore = parseNonNegativeInteger(input.homeScore, "Σκορ γηπεδούχου");
   const awayScore = parseNonNegativeInteger(input.awayScore, "Σκορ φιλοξενούμενου");
-  if (homeScore === awayScore) throw new Error("Το τελικό αποτέλεσμα δεν μπορεί να είναι ισόπαλο.");
+  if (homeScore === awayScore && !input.allowTie) throw new Error("Το τελικό αποτέλεσμα δεν μπορεί να είναι ισόπαλο.");
 
   const phaseId = String(current.phase_id ?? "").trim();
   const scheduleId = String(current.schedule_id ?? "").trim();

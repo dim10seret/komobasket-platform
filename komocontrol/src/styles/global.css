@@ -125,6 +125,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
 .pregame-placement strong { color: var(--muted); font-size: .68rem; letter-spacing: .14em; }
 .pregame-placement span { font-weight: 900; }
 .pregame-color-warning { margin: 0 0 1rem; color: #a45d05; font-size: .82rem; text-align: center; }
+.pregame-live-correction-note { display: flex; align-items: center; gap: .75rem; margin: 0 0 .75rem; padding: .58rem .75rem; border: 1px solid #bfdbfe; border-radius: 10px; background: #eff6ff; color: #1e3a5f; font-size: .78rem; line-height: 1.4; }
+.pregame-live-correction-note strong { flex: 0 0 auto; color: #0f4c81; }
 .pregame-team { --team-accent: var(--accent); border: 2px solid var(--team-accent); border-top-width: 6px; border-radius: 14px; overflow: hidden; background: color-mix(in srgb, var(--team-accent) 3%, var(--surface)); box-shadow: 0 0 0 1px var(--line), 0 10px 24px rgb(27 38 34 / 7%); }
 .pregame-team-home, .pregame-team-away { box-shadow: 0 0 0 1px var(--line), 0 10px 24px rgb(27 38 34 / 7%); }
 .pregame-team > header { display: flex; justify-content: space-between; align-items: center; padding: .58rem .72rem; border-bottom: 1px solid color-mix(in srgb, var(--team-accent) 35%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, var(--team-accent) 8%, var(--surface)), var(--surface) 56%); }
@@ -208,3 +210,53 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
     .pregame-roster-filter, .pregame-extra-bench-form { grid-template-columns: 1fr; }
     .pregame-roster-filter small { grid-column: auto; }
 }
+.start-match-button {
+  border: 1px solid #0b6847;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0f7a54, #095c42);
+  color: #fff;
+  min-height: 42px;
+  padding: 0 1.15rem;
+  font-weight: 800;
+}
+
+.start-match-button:disabled { opacity: .45; cursor: not-allowed; }
+
+.gameplay-runtime-card { max-width: 980px; }
+
+.gameplay-score {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  margin: 2rem 0;
+  font-size: clamp(2.5rem, 8vw, 5.5rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.gameplay-score span { color: #8a8f98; font-size: .55em; }
+
+.gameplay-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .75rem;
+}
+
+.gameplay-runtime-grid > div {
+  display: grid;
+  gap: .3rem;
+  border: 1px solid #d9ddd9;
+  border-radius: 12px;
+  background: #f7f8f5;
+  padding: .85rem;
+}
+
+.gameplay-runtime-grid span { color: #68706b; font-size: .76rem; text-transform: uppercase; letter-spacing: .06em; }
+.gameplay-local-note { margin: 1rem 0; color: #445049; }
+
+@media (max-width: 900px) {
+  .gameplay-runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.pregame-team.has-start-readiness-error { box-shadow: 0 0 0 2px rgba(185, 28, 28, 0.2), var(--team-shadow); }
+.pregame-player.has-start-readiness-error { background: #fff1f2; box-shadow: inset 3px 0 0 #b91c1c; }
+.pregame-player.has-start-readiness-error .pregame-number-field input { border-color: #b91c1c; }

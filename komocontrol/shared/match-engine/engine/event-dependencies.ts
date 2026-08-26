@@ -22,6 +22,13 @@ export function dependentEventIds(
       const foulEventId = sourceFoulByPenaltyId.get(event.penaltyId);
       if (foulEventId) addChild(children, foulEventId, event.id);
     }
+    if (event.type === EventType.ROSTER_PLAYER_ADDED) {
+      for (const candidate of events) {
+        if (candidate.sequence > event.sequence && referencedPlayerIds(candidate).includes(event.playerId)) {
+          addChild(children, event.id, candidate.id);
+        }
+      }
+    }
   }
 
   const descendants = new Set<string>();
@@ -41,6 +48,37 @@ export function dependentEventIds(
     if (!right) return -1;
     return left.sequence - right.sequence || left.id.localeCompare(right.id);
   });
+}
+
+function referencedPlayerIds(event: MatchEvent): string[] {
+  switch (event.type) {
+    case EventType.ROSTER_PLAYER_ADDED:
+    case EventType.REBOUND:
+    case EventType.STEAL:
+    case EventType.BLOCK:
+    case EventType.TURNOVER:
+    case EventType.FREE_THROW:
+    case EventType.TWO_POINT:
+    case EventType.TWO_POINT_MISSED:
+    case EventType.THREE_POINT:
+    case EventType.THREE_POINT_MISSED:
+      return [event.playerId, ...(event.type === EventType.TWO_POINT || event.type === EventType.THREE_POINT ? [event.assistPlayerId].filter((id): id is string => Boolean(id)) : [])];
+    case EventType.SUBSTITUTION:
+      return [event.playerInId, event.playerOutId];
+    case EventType.LINEUP_SET:
+      return event.playerIds;
+    case EventType.PERSONAL_FOUL:
+    case EventType.TECHNICAL_FOUL:
+    case EventType.DISRUPTIVE_FOUL:
+    case EventType.FLAGRANT_FOUL:
+    case EventType.DISQUALIFYING_FOUL:
+      return [
+        ...(event.offender.kind === "PLAYER" ? [event.offender.playerId] : []),
+        ...("fouledPlayerId" in event && event.fouledPlayerId ? [event.fouledPlayerId] : []),
+      ];
+    default:
+      return [];
+  }
 }
 
 function addChild(children: Map<string, Set<string>>, parentId: string, childId: string): void {

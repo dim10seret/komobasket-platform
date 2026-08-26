@@ -5,9 +5,11 @@ export const AUTH_ERROR_CODES = [
 ] as const;
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 export interface SafeScorerContext { scorerId: string; username: string; organizationId: string; organizationName: string; expiresAt: string; }
+export interface SafeLiveContinuityContext { scorerId: string; organizationId: string; runIds: string[]; }
 export type DesktopAuthState =
     | { kind: "unauthenticated"; deviceIdSuffix: string }
     | { kind: "authenticated"; connection: "online" | "offline"; deviceIdSuffix: string; context: SafeScorerContext }
+    | { kind: "live-continuity"; deviceIdSuffix: string; context: SafeLiveContinuityContext }
     | { kind: "validation-unavailable"; errorCode: "NETWORK_UNAVAILABLE" | "MALFORMED_RESPONSE"; deviceIdSuffix: string }
     | { kind: "blocked"; errorCode: "SECURE_STORAGE_UNAVAILABLE" | "CONFIGURATION_ERROR"; deviceIdSuffix: string };
 export interface LoginInput { username: string; password: string; }

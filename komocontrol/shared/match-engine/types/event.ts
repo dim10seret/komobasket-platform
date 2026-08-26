@@ -9,6 +9,7 @@ import type {
 } from "./foul.js";
 import { TechnicalFoulCategory as TechnicalCategory } from "./foul.js";
 import type { MatchPeriod } from "./period.js";
+import type { ShirtNumber } from "./player.js";
 import type { TeamSide } from "./team-side.js";
 
 export const MATCH_EVENT_SCHEMA_VERSION = 2 as const;
@@ -105,6 +106,13 @@ export type FoulEvent =
 export type MatchEvent =
   | (EventMetadata & { type: typeof EventType.MATCH_START })
   | (EventMetadata & { type: typeof EventType.MATCH_END })
+  | (EventMetadata & {
+      type: typeof EventType.ROSTER_PLAYER_ADDED;
+      team: TeamSide;
+      playerId: string;
+      displayName: string;
+      shirtNumber: ShirtNumber;
+    })
   | (EventMetadata & { type: typeof EventType.LINEUP_SET; team: TeamSide; playerIds: string[] })
   | (EventMetadata & { type: typeof EventType.PERIOD_START; period: MatchPeriod })
   | (EventMetadata & { type: typeof EventType.PERIOD_END; period: MatchPeriod })

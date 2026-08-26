@@ -4,12 +4,15 @@ import { pathToFileURL } from "node:url";
 import { AuthCoordinator } from "./auth/auth-coordinator.cjs";
 import { authErrorCode, type LoginInput } from "./auth/auth-contracts.cjs";
 import { PlatformAuthClient } from "./auth/platform-auth-client.cjs";
-import { SecureSessionStore } from "./auth/secure-session-store.cjs";
+import { SecureSessionStore, type SessionCipher } from "./auth/secure-session-store.cjs";
+import { LiveRunAuthorizationManager } from "./auth/live-run-authorization.cjs";
 import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
 import { MatchRunManager } from "./runs/match-run.cjs";
 import { MatchGameplayManager } from "./runs/match-gameplay.cjs";
+import { parseGameplayIntent } from "./runs/gameplay-runtime.cjs";
+import { GameplaySyncWorker } from "./sync/gameplay-sync.cjs";
 import { EXTRA_BENCH_ROLES, PreGameConfigurationManager, type ExtraBenchEntryV1, type ExtraBenchRole, type PreGameConfigurationPlayerDraft, type PreGameConfigurationPresentationDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationStaffDraft, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
@@ -69,6 +72,16 @@ function gameIdInput(value: unknown): string {
     const gameId = value.trim();
     if (!gameId || gameId.length > 200) throw new Error("Invalid Game identity.");
     return gameId;
+}
+
+function gameplayObject(value: unknown): Record<string, unknown> {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid gameplay request.");
+    return value as Record<string, unknown>;
+}
+
+function gameplayId(value: unknown): string {
+    if (typeof value !== "string" || !value.trim() || value.length > 200) throw new Error("Invalid gameplay identity.");
+    return value;
 }
 
 function preGameConfigurationPlayerDraft(value: unknown): PreGameConfigurationPlayerDraft {
@@ -194,6 +207,22 @@ ipcMain.handle("runs:get-active", async (event, value: unknown) => { requireTrus
 ipcMain.handle("runs:list-local", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listLocalRuns(); });
 ipcMain.handle("pregame:get-or-create", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getOrCreatePreGameConfiguration(gameIdInput(value)); });
 ipcMain.handle("pregame:save-draft", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().savePreGameConfigurationDraft(preGameConfigurationSaveInput(value)); });
+ipcMain.handle("gameplay:start", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().startMatch(gameplayId(value)); });
+ipcMain.handle("gameplay:recover", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().recoverMatchGameplay(gameplayId(value)); });
+ipcMain.handle("gameplay:append-intent", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().appendGameplayIntent(gameplayId(input.runId), parseGameplayIntent(input.intent));
+});
+ipcMain.handle("gameplay:remove-event", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().removeGameplayEvent(gameplayId(input.runId), gameplayId(input.eventId), input.cascadeDependencies === true);
+});
+ipcMain.handle("gameplay:correct-event", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().correctGameplayEvent(gameplayId(input.runId), gameplayId(input.eventId), parseGameplayIntent(input.intent), input.cascadeDependencies === true);
+});
+ipcMain.handle("gameplay:finalize", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().finalizeMatch(gameplayId(value)); });
+ipcMain.handle("gameplay:retry-sync", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().retryGameplaySync(gameplayId(value)); });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -234,18 +263,23 @@ if (!hasSingleInstanceLock) {
                 ...localDatabase.getSafeStatus(),
                 durability: localDatabase.getDurabilityStatus(),
             });
-            const secureSessionStore = new SecureSessionStore(path.join(userDataPath, "secure", "session.bin"), {
+            const sessionCipher: SessionCipher = {
                 isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
                 encryptString: (value) => safeStorage.encryptString(value),
                 decryptString: (value) => safeStorage.decryptString(value),
-            });
+            };
+            const secureSessionStore = new SecureSessionStore(path.join(userDataPath, "secure", "session.bin"), sessionCipher);
             const baseUrl = platformBaseUrl();
             const platformClient = baseUrl ? new PlatformAuthClient(baseUrl) : null;
             const matchSetupManager = new MatchSetupManager(localDatabase);
             const matchRunManager = new MatchRunManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
             const preGameConfigurationManager = new PreGameConfigurationManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
-            const matchGameplayManager = new MatchGameplayManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
-            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, matchSetupManager, matchRunManager, preGameConfigurationManager, matchGameplayManager);
+            const liveAuthorization = new LiveRunAuthorizationManager(localDatabase, sessionCipher, localStatus.deviceIdentity.deviceId);
+            const matchGameplayManager = new MatchGameplayManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId, undefined, undefined, (details) => liveAuthorization.seal(details));
+            const syncWorker = platformClient ? new GameplaySyncWorker(localDatabase, platformClient) : null;
+            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId,
+                platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null,
+                matchSetupManager, matchRunManager, preGameConfigurationManager, matchGameplayManager, undefined, liveAuthorization, syncWorker);
             void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);

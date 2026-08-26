@@ -1,6 +1,7 @@
 import { EventType } from "../types/event-type.js";
 import type { FoulEvent, MatchEvent } from "../types/event.js";
 import type { MatchState } from "../types/match-state.js";
+import { createPlayer } from "../models/player.js";
 import { ClockEngine } from "./clock-engine.js";
 import { PeriodEngine } from "./period-engine.js";
 import { PossessionEngine } from "./possession-engine.js";
@@ -73,6 +74,7 @@ export class EventProcessor {
       !isFoulEvent(event)
       && event.type !== EventType.FREE_THROW
       && event.type !== EventType.SUBSTITUTION
+      && event.type !== EventType.ROSTER_PLAYER_ADDED
     ) state.penaltyResolution = undefined;
 
     switch (event.type) {
@@ -81,6 +83,17 @@ export class EventProcessor {
         state.clock = this.periodEngine.durationFor(state.period, state.rules);
         state.clockRunning = false;
         return;
+      case EventType.ROSTER_PLAYER_ADDED: {
+        const target = event.team === "HOME" ? state.home : state.away;
+        target.players.push(createPlayer({
+          playerId: event.playerId,
+          displayName: event.displayName,
+          shirtNumber: event.shirtNumber,
+          team: event.team,
+          onCourt: false,
+        }));
+        return;
+      }
       case EventType.LINEUP_SET:
         this.lineupSetProcessor.process(state, event);
         return;

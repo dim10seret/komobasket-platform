@@ -8,7 +8,7 @@ import {
 } from "../types/rules.js";
 
 const SUPPORTED_EVENTS: ReadonlySet<EventTypeValue> = new Set([
-  EventType.MATCH_START, EventType.MATCH_END, EventType.PERIOD_START,
+  EventType.MATCH_START, EventType.MATCH_END, EventType.ROSTER_PLAYER_ADDED, EventType.PERIOD_START,
   EventType.LINEUP_SET, EventType.PERIOD_END, EventType.JUMP_BALL,
   EventType.CLOCK_START, EventType.CLOCK_STOP, EventType.CLOCK_SET,
   EventType.ALTERNATING_POSSESSION, EventType.REBOUND, EventType.STEAL,

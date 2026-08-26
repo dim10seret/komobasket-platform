@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authoritativeTeamIndex, compactRosterView, configurationDisplayStatus, customColorLabel, displayedTeamSides, oppositeSide, playerTableColumns, rosterNeedsFilter, rosterView, savedDraftConfirmationVisible, teamAccentStyle, teamColorLabel, teamColorPresets, withPlayerParticipation } from "./PreGameConfiguration";
+import { authoritativeTeamIndex, compactRosterView, configurationDisplayStatus, customColorLabel, displayedTeamSides, livePlayerControlPolicy, oppositeSide, playerTableColumns, rosterNeedsFilter, rosterView, savedDraftConfirmationVisible, startReadinessPlayerIds, teamAccentStyle, teamColorLabel, teamColorPresets, withPlayerParticipation } from "./PreGameConfiguration";
 
 describe("KC-5B9A Save Draft feedback", () => {
     it("shows confirmation only for the clean revision returned by a successful Save", () => {
@@ -28,6 +28,21 @@ describe("KC-5B9B draft interaction helpers", () => {
     it("derives RIGHT from LEFT without changing HOME/AWAY identity", () => {
         expect(oppositeSide("HOME")).toBe("AWAY");
         expect(oppositeSide("AWAY")).toBe("HOME");
+    });
+});
+
+describe("LIVE pre-game correction controls", () => {
+    it("locks removal but keeps the shirt number editable for an existing participant", () => {
+        expect(livePlayerControlPolicy(true, true, true)).toEqual({ participationLocked: true, shirtNumberLocked: false, captainStarterLocked: true });
+    });
+
+    it("allows an omitted Package player to be added before enabling the required shirt number", () => {
+        expect(livePlayerControlPolicy(true, false, false)).toEqual({ participationLocked: false, shirtNumberLocked: true, captainStarterLocked: true });
+        expect(livePlayerControlPolicy(true, false, true)).toEqual({ participationLocked: false, shirtNumberLocked: false, captainStarterLocked: true });
+    });
+
+    it("keeps all pre-start controls available before gameplay begins", () => {
+        expect(livePlayerControlPolicy(false, true, true)).toEqual({ participationLocked: false, shirtNumberLocked: false, captainStarterLocked: false });
     });
 });
 
@@ -106,5 +121,10 @@ describe("KC-5B9B Gate 1C presentation helpers", () => {
 
     it("derives scorer-facing Draft state without exposing the internal revision", () => {
         expect(configurationDisplayStatus(false)).toEqual({ phase: "ΠΡΟΣΧΕΔΙΟ", savedLabel: "Αποθηκευμένο", saveConfirmation: "Το πρόχειρο αποθηκεύτηκε" }); expect(configurationDisplayStatus(true).savedLabel).toBe("Μη αποθηκευμένες αλλαγές"); expect(configurationDisplayStatus(false)).not.toHaveProperty("revision"); expect(configurationDisplayStatus(false).saveConfirmation).not.toMatch(/Revision|Αναθεώρηση|\d/);
+    });
+
+    it("highlights only affected players under their authoritative HOME/AWAY team", () => {
+        const issue: KomoControlStartReadinessIssue = { code: "START_SHIRT_NUMBER_MISSING", message: "safe", teamSide: "HOME", affectedPlayers: [{ playerId: "home-1", displayName: "Home One" }] };
+        expect([...startReadinessPlayerIds(issue, "HOME")]).toEqual(["home-1"]); expect(startReadinessPlayerIds(issue, "AWAY").size).toBe(0);
     });
 });

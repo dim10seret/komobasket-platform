@@ -39,7 +39,7 @@ export function parseGamePackageEnvelope(value: unknown): GamePackageEnvelope {
 
 function validateSettings(value: unknown): void {
     const item = record(value);
-    if (!item || (item.game_mode !== "SIMPLE" && item.game_mode !== "FULL") || !nonNegativeInteger(item.min_players) || !positiveInteger(item.max_players) || !positiveInteger(item.starting_players) || !positiveInteger(item.regulation_periods) || !positiveInteger(item.regulation_period_seconds) || !positiveInteger(item.overtime_seconds) || typeof item.tie_allowed !== "boolean" || typeof item.winner_required !== "boolean") throw new GamePackageFlowError("PACKAGE_INVALID");
+    if (!item || (item.game_mode !== "SIMPLE" && item.game_mode !== "FULL") || !nonNegativeInteger(item.min_players) || !positiveInteger(item.max_players) || !positiveInteger(item.starting_players) || !positiveInteger(item.regulation_periods) || !positiveInteger(item.regulation_period_seconds) || !positiveInteger(item.overtime_seconds) || typeof item.tie_allowed !== "boolean" || typeof item.winner_required !== "boolean" || item.tie_allowed === item.winner_required) throw new GamePackageFlowError("PACKAGE_INVALID");
 }
 function validateTeam(value: unknown, expectedSide: "HOME" | "AWAY"): void {
     const item = record(value);

@@ -6,7 +6,7 @@ import type { CreateLocalGameRunInput, LocalGameRunStoreResult, StoredLocalGameR
 export const MATCH_RUN_ERROR_CODES = ["RUN_UNAVAILABLE", "RUN_INVALID", "RUN_CONFLICT", "RUN_OWNERSHIP_CONFLICT"] as const;
 export type MatchRunErrorCode = (typeof MATCH_RUN_ERROR_CODES)[number];
 export interface MatchRunOwner { scorerId: string; organizationId: string; }
-export interface SafeMatchRun { runId: string; gameId: string; packageId: string; packageVersion: number; status: "active"; gameplayStarted: false; lastAcceptedSequence: 0; createdAtUtc: string; }
+export interface SafeMatchRun { runId: string; gameId: string; packageId: string; packageVersion: number; status: "active" | "finalized"; gameplayStarted: boolean; lastAcceptedSequence: number; createdAtUtc: string; }
 export interface SafeLocalRunSummary {
     runId: string; gameId: string; packageId: string; packageVersion: number; gameplayStarted: boolean; lastAcceptedSequence: number; createdAtUtc: string;
     homeTeam: { id: string; name: string }; awayTeam: { id: string; name: string }; competitionName: string; seasonName: string;
@@ -31,8 +31,10 @@ function localGameRunConflictKind(error: unknown): "ownership" | "state" | null 
 }
 
 function safeRun(run: StoredLocalGameRun): SafeMatchRun {
-    if (run.status !== "active" || run.startedAtUtc !== null || run.lastAcceptedSequence !== 0) throw new MatchRunFlowError("RUN_INVALID");
-    return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, status: "active", gameplayStarted: false, lastAcceptedSequence: 0, createdAtUtc: run.createdAtUtc };
+    if ((run.status !== "active" && run.status !== "finalized")
+        || (run.startedAtUtc === null) !== (run.lastAcceptedSequence === 0)
+        || (run.status === "finalized" && run.startedAtUtc === null)) throw new MatchRunFlowError("RUN_INVALID");
+    return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, status: run.status, gameplayStarted: run.startedAtUtc !== null, lastAcceptedSequence: run.lastAcceptedSequence, createdAtUtc: run.createdAtUtc };
 }
 
 export class MatchRunManager {

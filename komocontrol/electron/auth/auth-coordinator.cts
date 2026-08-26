@@ -1,43 +1,72 @@
-import { AuthFlowError, authErrorCode, type AuthErrorCode, type AuthOperationResult, type DesktopAuthState, type LoginInput, type SafeScorerContext } from "./auth-contracts.cjs";
+import {
+    AuthFlowError,
+    authErrorCode,
+    type AuthErrorCode,
+    type AuthOperationResult,
+    type DesktopAuthState,
+    type LoginInput,
+    type SafeScorerContext,
+} from "./auth-contracts.cjs";
 import type { LoginResponse, ScorerAuthClient, ValidatedSessionContext } from "./platform-auth-client.cjs";
 import { SecureSessionStore, type AuthorizationEnvelopeV1, type StoredAuthorization } from "./secure-session-store.cjs";
+import { LiveRunAuthorizationManager } from "./live-run-authorization.cjs";
 import type { GameDiscoveryOperationResult } from "../games/game-discovery-contracts.cjs";
 import { GamePackageDownloadManager, packageOperationFailure, type GamePackageDownloadResult } from "../games/game-package-download.cjs";
 import type { LocalGamePackageStatus } from "../persistence/local-database.cjs";
 import { MatchSetupManager, matchSetupErrorCode, type MatchSetupOperationResult } from "../games/match-setup.cjs";
 import { MatchRunManager, matchRunErrorCode, type LocalRunCatalogueResult, type MatchRunOperationResult } from "../runs/match-run.cjs";
-import { PreGameConfigurationManager, preGameConfigurationErrorCode, type PreGameConfigurationOperationResult, type PreGameConfigurationSaveDraftInput } from "../runs/pre-game-configuration.cjs";
-import { MatchGameplayFlowError, type MatchGameplayErrorCode, type MatchGameplayManager, type MatchGameplayRecovery } from "../runs/match-gameplay.cjs";
+import {
+    PreGameConfigurationManager,
+    preGameConfigurationErrorCode,
+    preGameConfigurationValidation,
+    type PreGameConfigurationOperationResult,
+    type PreGameConfigurationSaveDraftInput,
+} from "../runs/pre-game-configuration.cjs";
+import {
+    MatchGameplayFlowError,
+    type MatchGameplayManager,
+    type MatchGameplayRecovery,
+} from "../runs/match-gameplay.cjs";
+import {
+    eventFactsFromIntent,
+    safeGameplay,
+    type GameplayIntent,
+    type MatchGameplayOperationResult,
+} from "../runs/gameplay-runtime.cjs";
+import { GameplaySyncWorker } from "../sync/gameplay-sync.cjs";
 
 export class AuthCoordinator {
-    private readonly client: ScorerAuthClient | null;
-    private readonly store: SecureSessionStore;
-    private readonly deviceId: string;
     private readonly deviceIdSuffix: string;
     private currentAuthorization: AuthorizationEnvelopeV1 | null = null;
     private state: DesktopAuthState;
     private initialization: Promise<DesktopAuthState> | null = null;
 
     constructor(
-        client: ScorerAuthClient | null,
-        store: SecureSessionStore,
-        deviceId: string,
+        private readonly client: ScorerAuthClient | null,
+        private readonly store: SecureSessionStore,
+        private readonly deviceId: string,
         private readonly packageManager: GamePackageDownloadManager | null = null,
         private readonly matchSetupManager: MatchSetupManager | null = null,
         private readonly matchRunManager: MatchRunManager | null = null,
         private readonly preGameConfigurationManager: PreGameConfigurationManager | null = null,
         private readonly matchGameplayManager: MatchGameplayManager | null = null,
         private readonly now: () => Date = () => new Date(),
+        private readonly liveAuthorization: LiveRunAuthorizationManager | null = null,
+        private readonly syncWorker: GameplaySyncWorker | null = null,
     ) {
-        this.client = client;
-        this.store = store;
-        this.deviceId = deviceId;
         this.deviceIdSuffix = deviceId.slice(-8);
         this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix };
     }
 
-    initialize(): Promise<DesktopAuthState> { if (!this.initialization) this.initialization = this.restore(); return this.initialization; }
-    async getState(): Promise<DesktopAuthState> { await this.initialize(); return this.state; }
+    initialize(): Promise<DesktopAuthState> {
+        if (!this.initialization) this.initialization = this.restore();
+        return this.initialization;
+    }
+
+    async getState(): Promise<DesktopAuthState> {
+        await this.initialize();
+        return this.state;
+    }
 
     async login(input: LoginInput): Promise<AuthOperationResult> {
         await this.initialize();
@@ -45,33 +74,52 @@ export class AuthCoordinator {
             this.requireAvailableFoundation();
             const result = await this.client!.login(input.username, input.password, this.deviceId);
             const envelope = this.envelopeFromValidatedSession(result.token, result);
-            try { this.store.saveAuthorization(envelope); }
-            catch (error) { try { await this.client!.logout(result.token); } catch { /* best effort */ } throw error; }
+            try {
+                this.store.saveAuthorization(envelope);
+            } catch (error) {
+                try { await this.client!.logout(result.token); } catch { /* best effort */ }
+                throw error;
+            }
+            this.liveAuthorization?.reactivateOwner(envelope.organizationId, envelope.scorerId);
             this.currentAuthorization = envelope;
             this.state = this.authenticatedState(this.safeContext(envelope), "online");
+            this.wakeSync(true);
             return { ok: true, state: this.state };
-        } catch (error) { return this.failure(error); }
+        } catch (error) {
+            return this.failure(error);
+        }
     }
 
     async retrySession(): Promise<AuthOperationResult> {
         try {
             this.state = await this.restore();
-            return this.state.kind === "authenticated"
+            if (this.state.kind === "authenticated") this.wakeSync();
+            return this.state.kind === "authenticated" || this.state.kind === "live-continuity"
                 ? { ok: true, state: this.state }
                 : { ok: false, errorCode: this.state.kind === "validation-unavailable" ? this.state.errorCode : "SESSION_INVALID", state: this.state };
-        } catch (error) { return this.failure(error); }
+        } catch (error) {
+            return this.failure(error);
+        }
     }
 
     async logout(): Promise<AuthOperationResult> {
         await this.initialize();
+        const owner = this.currentOwner();
         let stored: StoredAuthorization | null = null;
         try { stored = this.store.loadAuthorization(); }
         catch (error) { if (authErrorCode(error) !== "SESSION_INVALID") return this.failure(error); }
         const token = this.currentAuthorization?.opaqueToken ?? (stored?.kind === "legacy" ? stored.token : stored?.envelope.opaqueToken ?? null);
         if (token && this.client && this.state.kind === "authenticated" && this.state.connection === "online") {
-            try { await this.client.logout(token); } catch { /* offline logout has no retry queue */ }
+            try { await this.client.logout(token); } catch { /* local logout remains authoritative */ }
         }
-        try { this.store.clearSession(); } catch (error) { return this.failure(error); }
+        try {
+            if (owner) this.liveAuthorization?.suspendOwner(owner.organizationId, owner.scorerId);
+            this.store.clearSession();
+        } catch (error) {
+            return this.failure(error);
+        }
+        this.syncWorker?.pause();
+        this.matchGameplayManager?.clearRuntimeSessions();
         this.currentAuthorization = null;
         this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix };
         return { ok: true, state: this.state };
@@ -81,27 +129,126 @@ export class AuthCoordinator {
         await this.initialize();
         const context = this.authorizedContext(true);
         if (!this.client || !context || !this.currentAuthorization) return { ok: false, errorCode: this.accessError(true), state: this.state };
-        try { return { ok: true, games: await this.client.listGames(this.currentAuthorization.opaqueToken), state: this.state }; }
-        catch (error) { const errorCode = this.handleOnlineFailure(error); return { ok: false, errorCode, state: this.state }; }
+        try {
+            return { ok: true, games: await this.client.listGames(this.currentAuthorization.opaqueToken), state: this.state };
+        } catch (error) {
+            return { ok: false, errorCode: this.handleOnlineFailure(error), state: this.state };
+        }
     }
 
     async listLocalRuns(): Promise<LocalRunCatalogueResult> {
         await this.initialize();
-        const context = this.authorizedContext(false);
-        if (!this.matchRunManager || !context) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
-        try { return { ok: true, runs: this.matchRunManager.listRecoverable(this.owner(context)), state: this.state }; }
-        catch (error) { return { ok: false, errorCode: matchRunErrorCode(error), state: this.state }; }
+        if (!this.matchRunManager) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        const regular = this.authorizedContext(false);
+        try {
+            if (regular) return { ok: true, runs: this.matchRunManager.listRecoverable(this.owner(regular)), state: this.state };
+            if (this.state.kind !== "live-continuity") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+            const owner = { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId };
+            const permitted = new Set(this.state.context.runIds);
+            return { ok: true, runs: this.matchRunManager.listRecoverable(owner).filter((run) => permitted.has(run.runId)), state: this.state };
+        } catch (error) {
+            return { ok: false, errorCode: matchRunErrorCode(error), state: this.state };
+        }
     }
 
-    async recoverMatchGameplay(runId: string): Promise<
-        | { ok: true; recovery: MatchGameplayRecovery; state: DesktopAuthState }
-        | { ok: false; errorCode: MatchGameplayErrorCode | "SESSION_INVALID"; state: DesktopAuthState }
-    > {
+    async recoverMatchGameplay(runId: string): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            return this.gameplaySuccess(await this.matchGameplayManager.recover(runId, owner));
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+    }
+
+    async startMatch(runId: string): Promise<MatchGameplayOperationResult> {
         await this.initialize();
         const context = this.authorizedContext(false);
         if (!this.matchGameplayManager || !context) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
-        try { return { ok: true, recovery: await this.matchGameplayManager.recover(runId, this.owner(context)), state: this.state }; }
-        catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", state: this.state }; }
+        try {
+            const owner = this.owner(context);
+            const startReadiness = this.matchGameplayManager.validateStartReadiness(runId, owner);
+            if (startReadiness) return { ok: false, errorCode: "START_NOT_READY", startReadiness, state: this.state };
+            const result = this.gameplaySuccess(await this.matchGameplayManager.initialize(runId, owner));
+            this.wakeSync();
+            return result;
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+    }
+
+    async appendGameplayIntent(runId: string, intent: GameplayIntent): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const result = this.gameplaySuccess(await this.matchGameplayManager.append(runId, owner, eventFactsFromIntent(intent)));
+            this.wakeSync();
+            return result;
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+    }
+
+    async removeGameplayEvent(runId: string, eventId: string, cascadeDependencies: boolean): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const result = this.gameplaySuccess(await this.matchGameplayManager.remove(runId, owner, eventId, cascadeDependencies));
+            this.wakeSync();
+            return result;
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+    }
+
+    async correctGameplayEvent(runId: string, eventId: string, intent: GameplayIntent, cascadeDependencies: boolean): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const result = this.gameplaySuccess(await this.matchGameplayManager.correct(runId, owner, eventId, eventFactsFromIntent(intent), cascadeDependencies));
+            this.wakeSync();
+            return result;
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+    }
+
+    async finalizeMatch(runId: string): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const result = this.gameplaySuccess(await this.matchGameplayManager.finalize(runId, owner));
+            this.wakeSync();
+            return result;
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+    }
+
+    async retryGameplaySync(runId: string): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const context = this.authorizedContext(true);
+        if (!context || !this.currentAuthorization || !this.syncWorker || !this.matchGameplayManager) {
+            return { ok: false, errorCode: this.accessError(true), state: this.state };
+        }
+        try {
+            const owner = this.owner(context);
+            const current = await this.matchGameplayManager.recover(runId, owner);
+            const sync = this.matchGameplayManager.syncState(runId);
+            if (current.lifecycle !== "finalized" || !sync || safeGameplay(current, sync).sync.status === "synced") {
+                return { ok: false, errorCode: "SYNC_INVALID", state: this.state };
+            }
+            await this.syncWorker.retry(runId, this.currentAuthorization.opaqueToken, owner);
+            return this.gameplaySuccess(await this.matchGameplayManager.recover(runId, owner));
+        } catch (error) {
+            const code = error !== null && typeof error === "object" && "code" in error ? Reflect.get(error, "code") : null;
+            return { ok: false, errorCode: typeof code === "string" ? code : "SYNC_UNAVAILABLE", state: this.state };
+        }
     }
 
     getGamePackageStatus(gameId: string): LocalGamePackageStatus {
@@ -117,19 +264,21 @@ export class AuthCoordinator {
             const result = await this.packageManager.download(this.currentAuthorization.opaqueToken, gameId);
             return { ok: true, outcome: result.outcome, status: result.status, state: this.state };
         } catch (error) {
-            const errorCode = authErrorCode(error);
-            if (errorCode === "SESSION_INVALID" || errorCode === "SCORER_DISABLED" || errorCode === "NETWORK_UNAVAILABLE" || errorCode === "MALFORMED_RESPONSE") this.handleOnlineFailure(error);
+            const code = authErrorCode(error);
+            if (code === "SESSION_INVALID" || code === "SCORER_DISABLED" || code === "NETWORK_UNAVAILABLE" || code === "MALFORMED_RESPONSE") this.handleOnlineFailure(error);
             return packageOperationFailure(error, this.state);
         }
     }
 
     getMatchSetup(gameId: string): MatchSetupOperationResult {
-        const context = this.authorizedContext(false);
-        if (!this.matchSetupManager || !context) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        const regular = this.authorizedContext(false);
+        const continuity = regular ? null : this.liveAuthorization?.resolveForGame(gameId) ?? null;
+        const owner = regular ? this.owner(regular) : continuity ? { scorerId: continuity.scorerId, organizationId: continuity.organizationId } : null;
+        if (!this.matchSetupManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
-            const setup = this.state.kind === "authenticated" && this.state.connection === "offline"
-                ? this.matchRunManager?.recoverSetup(gameId, this.owner(context))
-                : this.matchSetupManager.getMatchSetup(gameId);
+            const setup = this.state.kind === "authenticated" && this.state.connection === "online"
+                ? this.matchSetupManager.getMatchSetup(gameId)
+                : this.matchRunManager?.recoverSetup(gameId, owner);
             if (!setup) return { ok: false, errorCode: "RUN_UNAVAILABLE", state: this.state };
             return { ok: true, setup, state: this.state };
         } catch (error) {
@@ -142,59 +291,84 @@ export class AuthCoordinator {
         await this.initialize();
         const context = this.authorizedContext(true);
         if (!this.matchRunManager || !context) return { ok: false, errorCode: this.accessError(true), state: this.state };
-        try { const result = this.matchRunManager.createOrOpen(gameId, this.owner(context)); return { ok: true, ...result, state: this.state }; }
-        catch (error) { return { ok: false, errorCode: matchRunErrorCode(error), state: this.state }; }
+        try {
+            const result = this.matchRunManager.createOrOpen(gameId, this.owner(context));
+            return { ok: true, ...result, state: this.state };
+        } catch (error) {
+            return { ok: false, errorCode: matchRunErrorCode(error), state: this.state };
+        }
     }
 
     async getActiveGameRun(gameId: string): Promise<MatchRunOperationResult> {
         await this.initialize();
-        const context = this.authorizedContext(false);
-        if (!this.matchRunManager || !context) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
-        try { return { ok: true, outcome: "recovered", run: this.matchRunManager.recover(gameId, this.owner(context)), state: this.state }; }
-        catch (error) { return { ok: false, errorCode: matchRunErrorCode(error), state: this.state }; }
+        const regular = this.authorizedContext(false);
+        const continuity = regular ? null : this.liveAuthorization?.resolveForGame(gameId) ?? null;
+        const owner = regular ? this.owner(regular) : continuity ? { scorerId: continuity.scorerId, organizationId: continuity.organizationId } : null;
+        if (!this.matchRunManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            return { ok: true, outcome: "recovered", run: this.matchRunManager.recover(gameId, owner), state: this.state };
+        } catch (error) {
+            return { ok: false, errorCode: matchRunErrorCode(error), state: this.state };
+        }
     }
 
     async getOrCreatePreGameConfiguration(gameId: string): Promise<PreGameConfigurationOperationResult> {
         await this.initialize();
-        const context = this.authorizedContext(false);
-        if (!this.preGameConfigurationManager || !context) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        const owner = this.preGameConfigurationOwner(gameId);
+        if (!this.preGameConfigurationManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
-            const result = this.state.kind === "authenticated" && this.state.connection === "offline"
-                ? this.preGameConfigurationManager.recover(gameId, this.owner(context))
-                : this.preGameConfigurationManager.getOrCreate(gameId, this.owner(context));
+            const result = this.preGameConfigurationManager.getOrCreate(gameId, owner);
             return { ok: true, ...result, state: this.state };
-        } catch (error) { return { ok: false, errorCode: preGameConfigurationErrorCode(error), state: this.state }; }
+        } catch (error) {
+            return { ok: false, errorCode: preGameConfigurationErrorCode(error), validation: preGameConfigurationValidation(error), state: this.state };
+        }
     }
 
     async savePreGameConfigurationDraft(input: PreGameConfigurationSaveDraftInput): Promise<PreGameConfigurationOperationResult> {
         await this.initialize();
-        const context = this.authorizedContext(true);
-        if (!this.preGameConfigurationManager || !context) return { ok: false, errorCode: this.accessError(true), state: this.state };
+        const owner = this.preGameConfigurationOwner(input.gameId);
+        if (!this.preGameConfigurationManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
-            const configuration = this.preGameConfigurationManager.saveDraft(input, this.owner(context));
+            const configuration = this.preGameConfigurationManager.saveDraft(input, owner);
+            this.wakeSync();
             return { ok: true, outcome: "saved", configuration, state: this.state };
-        } catch (error) { return { ok: false, errorCode: preGameConfigurationErrorCode(error), state: this.state }; }
+        } catch (error) {
+            return { ok: false, errorCode: preGameConfigurationErrorCode(error), validation: preGameConfigurationValidation(error), state: this.state };
+        }
     }
 
-    dispose(): void { this.currentAuthorization = null; }
+    dispose(): void {
+        this.currentAuthorization = null;
+        this.syncWorker?.pause();
+        this.matchGameplayManager?.clearRuntimeSessions();
+    }
 
     private async restore(): Promise<DesktopAuthState> {
         this.currentAuthorization = null;
-        if (!this.store.isAvailable()) return this.setBlocked("SECURE_STORAGE_UNAVAILABLE");
+        this.syncWorker?.pause();
+        if (!this.store.isAvailable() || (this.matchGameplayManager !== null && !this.liveAuthorization?.isAvailable())) return this.setBlocked("SECURE_STORAGE_UNAVAILABLE");
         if (!this.client) return this.setBlocked("CONFIGURATION_ERROR");
         let stored: StoredAuthorization | null;
         try { stored = this.store.loadAuthorization(); }
-        catch (error) { if (authErrorCode(error) === "SESSION_INVALID") return this.setUnauthenticated(); throw error; }
-        if (!stored) return this.setUnauthenticated();
+        catch (error) {
+            if (authErrorCode(error) === "SESSION_INVALID") return this.setContinuityOrUnauthenticated();
+            throw error;
+        }
+        if (!stored) return this.setContinuityOrUnauthenticated();
 
         let fallback: AuthorizationEnvelopeV1 | null = null;
         let token: string;
-        if (stored.kind === "legacy") token = stored.token;
-        else {
-            try { this.validateOfflineEnvelope(stored.envelope); }
-            catch { this.store.clearSession(); return this.setUnauthenticated(); }
-            fallback = stored.envelope;
-            token = stored.envelope.opaqueToken;
+        if (stored.kind === "legacy") {
+            token = stored.token;
+        } else {
+            try {
+                this.validateOfflineEnvelope(stored.envelope);
+                fallback = stored.envelope;
+                token = stored.envelope.opaqueToken;
+            } catch {
+                this.store.clearSession();
+                return this.setContinuityOrUnauthenticated();
+            }
         }
 
         try {
@@ -202,18 +376,25 @@ export class AuthCoordinator {
             if (fallback && session.sessionId !== fallback.sessionId) throw new AuthFlowError("SESSION_INVALID");
             const envelope = this.envelopeFromValidatedSession(token, session);
             this.store.saveAuthorization(envelope);
+            this.liveAuthorization?.reactivateOwner(envelope.organizationId, envelope.scorerId);
             this.currentAuthorization = envelope;
             this.state = this.authenticatedState(this.safeContext(envelope), "online");
+            this.wakeSync(true);
             return this.state;
         } catch (error) {
             const code = authErrorCode(error);
-            if (code === "SESSION_INVALID" || code === "SCORER_DISABLED") { this.store.clearSession(); return this.setUnauthenticated(); }
+            if (code === "SESSION_INVALID" || code === "SCORER_DISABLED") {
+                this.store.clearSession();
+                return this.setContinuityOrUnauthenticated();
+            }
             if (code === "NETWORK_UNAVAILABLE" && fallback) {
                 this.currentAuthorization = fallback;
                 this.state = this.authenticatedState(this.safeContext(fallback), "offline");
                 return this.state;
             }
             if (code === "NETWORK_UNAVAILABLE" || code === "MALFORMED_RESPONSE") {
+                const continuity = this.continuityState();
+                if (continuity) return continuity;
                 this.state = { kind: "validation-unavailable", errorCode: code, deviceIdSuffix: this.deviceIdSuffix };
                 return this.state;
             }
@@ -225,9 +406,16 @@ export class AuthCoordinator {
         if (session.deviceId !== this.deviceId) throw new AuthFlowError("SESSION_INVALID");
         const validatedAtUtc = this.now().toISOString();
         const envelope: AuthorizationEnvelopeV1 = {
-            schemaVersion: 1, opaqueToken: token, sessionId: session.sessionId, scorerId: session.scorerId,
-            username: session.username, organizationId: session.organizationId, organizationName: session.organizationName,
-            deviceId: session.deviceId, validatedAtUtc, expiresAtUtc: session.expiresAt,
+            schemaVersion: 1,
+            opaqueToken: token,
+            sessionId: session.sessionId,
+            scorerId: session.scorerId,
+            username: session.username,
+            organizationId: session.organizationId,
+            organizationName: session.organizationName,
+            deviceId: session.deviceId,
+            validatedAtUtc,
+            expiresAtUtc: session.expiresAt,
         };
         this.validateOfflineEnvelope(envelope);
         return envelope;
@@ -243,33 +431,158 @@ export class AuthCoordinator {
 
     private authorizedContext(onlineOnly: boolean): SafeScorerContext | null {
         if (this.state.kind !== "authenticated" || !this.currentAuthorization) return null;
-        try { this.validateOfflineEnvelope(this.currentAuthorization); }
-        catch { try { this.store.clearSession(); } catch { /* fail closed */ } this.currentAuthorization = null; this.setUnauthenticated(); return null; }
+        try {
+            this.validateOfflineEnvelope(this.currentAuthorization);
+        } catch {
+            try { this.store.clearSession(); } catch { /* fail closed */ }
+            this.currentAuthorization = null;
+            this.setContinuityOrUnauthenticated();
+            return null;
+        }
         if (onlineOnly && this.state.connection !== "online") return null;
         return this.state.context;
+    }
+
+    private gameplayOwner(runId: string): { scorerId: string; organizationId: string } | null {
+        const context = this.authorizedContext(false);
+        if (context) return this.owner(context);
+        try {
+            const grant = this.liveAuthorization?.resolve(runId) ?? null;
+            return grant ? { scorerId: grant.scorerId, organizationId: grant.organizationId } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private preGameConfigurationOwner(gameId: string): { scorerId: string; organizationId: string } | null {
+        const context = this.authorizedContext(false);
+        if (context) return this.owner(context);
+        try {
+            const grant = this.liveAuthorization?.resolveForGame(gameId) ?? null;
+            return grant ? { scorerId: grant.scorerId, organizationId: grant.organizationId } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private gameplaySuccess(recovery: MatchGameplayRecovery): MatchGameplayOperationResult {
+        const sync = this.matchGameplayManager?.syncState(recovery.runId) ?? null;
+        if (!sync) return { ok: false, errorCode: "GAMEPLAY_CORRUPTED", state: this.state };
+        return { ok: true, gameplay: safeGameplay(recovery, sync), state: this.state };
+    }
+
+    private gameplayFailure(error: unknown): MatchGameplayOperationResult {
+        if (error instanceof MatchGameplayFlowError) {
+            return { ok: false, errorCode: error.code, dependentEventIds: error.dependentEventIds, state: this.state };
+        }
+        return { ok: false, errorCode: "GAMEPLAY_CORRUPTED", state: this.state };
     }
 
     private handleOnlineFailure(error: unknown): AuthErrorCode {
         const code = authErrorCode(error);
         if (code === "SESSION_INVALID" || code === "SCORER_DISABLED") {
-            try { this.store.clearSession(); } catch { /* fail closed below */ }
+            try { this.store.clearSession(); } catch { /* fail closed */ }
             this.currentAuthorization = null;
-            this.setUnauthenticated();
+            this.syncWorker?.pause();
+            this.setContinuityOrUnauthenticated();
         } else if (code === "NETWORK_UNAVAILABLE" && this.currentAuthorization) {
-            try { this.validateOfflineEnvelope(this.currentAuthorization); this.state = this.authenticatedState(this.safeContext(this.currentAuthorization), "offline"); }
-            catch { try { this.store.clearSession(); } catch { /* fail closed */ } this.currentAuthorization = null; this.setUnauthenticated(); }
+            try {
+                this.validateOfflineEnvelope(this.currentAuthorization);
+                this.state = this.authenticatedState(this.safeContext(this.currentAuthorization), "offline");
+                this.syncWorker?.pause();
+            } catch {
+                try { this.store.clearSession(); } catch { /* fail closed */ }
+                this.currentAuthorization = null;
+                this.syncWorker?.pause();
+                this.setContinuityOrUnauthenticated();
+            }
         } else if (code === "MALFORMED_RESPONSE") {
-            this.state = { kind: "validation-unavailable", errorCode: code, deviceIdSuffix: this.deviceIdSuffix };
+            this.syncWorker?.pause();
+            this.state = this.continuityState() ?? { kind: "validation-unavailable", errorCode: code, deviceIdSuffix: this.deviceIdSuffix };
         }
         return code;
     }
 
-    private requireAvailableFoundation(): void { if (!this.store.isAvailable()) throw new AuthFlowError("SECURE_STORAGE_UNAVAILABLE"); if (!this.client) throw new AuthFlowError("CONFIGURATION_ERROR"); }
-    private owner(context: SafeScorerContext): { scorerId: string; organizationId: string } { return { scorerId: context.scorerId, organizationId: context.organizationId }; }
-    private safeContext(envelope: AuthorizationEnvelopeV1): SafeScorerContext { return { scorerId: envelope.scorerId, username: envelope.username, organizationId: envelope.organizationId, organizationName: envelope.organizationName, expiresAt: envelope.expiresAtUtc }; }
-    private authenticatedState(context: SafeScorerContext, connection: "online" | "offline"): DesktopAuthState { return { kind: "authenticated", connection, deviceIdSuffix: this.deviceIdSuffix, context }; }
-    private accessError(onlineOnly: boolean): "OFFLINE_OPERATION_DENIED" | "SESSION_INVALID" { return onlineOnly && this.state.kind === "authenticated" && this.state.connection === "offline" ? "OFFLINE_OPERATION_DENIED" : "SESSION_INVALID"; }
-    private setUnauthenticated(): DesktopAuthState { this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix }; return this.state; }
-    private setBlocked(errorCode: "SECURE_STORAGE_UNAVAILABLE" | "CONFIGURATION_ERROR"): DesktopAuthState { this.state = { kind: "blocked", errorCode, deviceIdSuffix: this.deviceIdSuffix }; return this.state; }
-    private failure(error: unknown): AuthOperationResult { const errorCode: AuthErrorCode = authErrorCode(error); return { ok: false, errorCode, state: this.state }; }
+    private wakeSync(resumeAuthPaused = false): void {
+        if (this.state.kind !== "authenticated" || this.state.connection !== "online" || !this.currentAuthorization || !this.syncWorker) return;
+        this.syncWorker.wake(this.currentAuthorization.opaqueToken, this.owner(this.state.context), resumeAuthPaused);
+    }
+
+    private continuityState(): DesktopAuthState | null {
+        try {
+            const grants = this.liveAuthorization?.listAvailable() ?? [];
+            if (grants.length === 0) return null;
+            const first = grants[0];
+            const ownerGrants = grants.filter((grant) => grant.scorerId === first.scorerId && grant.organizationId === first.organizationId);
+            return {
+                kind: "live-continuity",
+                deviceIdSuffix: this.deviceIdSuffix,
+                context: {
+                    scorerId: first.scorerId,
+                    organizationId: first.organizationId,
+                    runIds: ownerGrants.map((grant) => grant.runId),
+                },
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    private setContinuityOrUnauthenticated(): DesktopAuthState {
+        const continuity = this.continuityState();
+        if (continuity) {
+            this.state = continuity;
+            return this.state;
+        }
+        return this.setUnauthenticated();
+    }
+
+    private currentOwner(): { scorerId: string; organizationId: string } | null {
+        if (this.state.kind === "authenticated") return this.owner(this.state.context);
+        if (this.state.kind === "live-continuity") return { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId };
+        return null;
+    }
+
+    private requireAvailableFoundation(): void {
+        if (!this.store.isAvailable() || (this.matchGameplayManager !== null && !this.liveAuthorization?.isAvailable())) throw new AuthFlowError("SECURE_STORAGE_UNAVAILABLE");
+        if (!this.client) throw new AuthFlowError("CONFIGURATION_ERROR");
+    }
+
+    private owner(context: SafeScorerContext): { scorerId: string; organizationId: string } {
+        return { scorerId: context.scorerId, organizationId: context.organizationId };
+    }
+
+    private safeContext(envelope: AuthorizationEnvelopeV1): SafeScorerContext {
+        return {
+            scorerId: envelope.scorerId,
+            username: envelope.username,
+            organizationId: envelope.organizationId,
+            organizationName: envelope.organizationName,
+            expiresAt: envelope.expiresAtUtc,
+        };
+    }
+
+    private authenticatedState(context: SafeScorerContext, connection: "online" | "offline"): DesktopAuthState {
+        return { kind: "authenticated", connection, deviceIdSuffix: this.deviceIdSuffix, context };
+    }
+
+    private accessError(onlineOnly: boolean): "OFFLINE_OPERATION_DENIED" | "SESSION_INVALID" {
+        return onlineOnly && this.state.kind === "authenticated" && this.state.connection === "offline"
+            ? "OFFLINE_OPERATION_DENIED"
+            : "SESSION_INVALID";
+    }
+
+    private setUnauthenticated(): DesktopAuthState {
+        this.state = { kind: "unauthenticated", deviceIdSuffix: this.deviceIdSuffix };
+        return this.state;
+    }
+
+    private setBlocked(errorCode: "SECURE_STORAGE_UNAVAILABLE" | "CONFIGURATION_ERROR"): DesktopAuthState {
+        this.state = { kind: "blocked", errorCode, deviceIdSuffix: this.deviceIdSuffix };
+        return this.state;
+    }
+
+    private failure(error: unknown): AuthOperationResult {
+        return { ok: false, errorCode: authErrorCode(error), state: this.state };
+    }
 }

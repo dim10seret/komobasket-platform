@@ -16,6 +16,7 @@ import type { MatchState } from "../types/match-state.js";
 import { ShooterPolicy } from "../types/penalty.js";
 import { PeriodKind, periodsEqual } from "../types/period.js";
 import type { Player } from "../types/player.js";
+import { isShirtNumber } from "../models/player.js";
 import { ResultPolicy } from "../types/rules.js";
 import type { Team } from "../types/team.js";
 import { TeamSide } from "../types/team-side.js";
@@ -59,6 +60,17 @@ export class ValidationEngine {
     }
 
     if (!state.started) return "MATCH_NOT_STARTED";
+    if (event.type === EventType.ROSTER_PLAYER_ADDED) {
+      if (!event.playerId.trim() || !event.displayName.trim() || !isShirtNumber(event.shirtNumber)) {
+        return "INVALID_ROSTER_AMENDMENT";
+      }
+      if ([...state.home.players, ...state.away.players].some((player) => player.playerId === event.playerId)) {
+        return "PLAYER_ALREADY_REGISTERED";
+      }
+      return teamFor(state, event.team).players.length < state.rules.maxPlayers
+        ? undefined
+        : "ROSTER_LIMIT_REACHED";
+    }
     const penaltyResolution = state.penaltyResolution;
     if (isFoulEvent(event)) {
       const priorSameStoppageFoul = priorEvents.some(

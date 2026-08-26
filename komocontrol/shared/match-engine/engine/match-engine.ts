@@ -17,6 +17,10 @@ type ReplayResult =
   | { accepted: true; match: Match }
   | { accepted: false; reason: EventRejectionReason; eventId: string };
 
+type AppendResult =
+  | { accepted: true; state: MatchState }
+  | { accepted: false; reason: EventRejectionReason; eventId: string };
+
 export class MatchEngine {
   private match: Match;
   private readonly initialState: MatchState;
@@ -44,8 +48,38 @@ export class MatchEngine {
     return structuredClone(this.match.events);
   }
 
+  preview(event: MatchEvent): EventResult {
+    const candidate = this.appendCandidate(event);
+    if (!candidate.accepted) {
+      return {
+        accepted: false,
+        state: this.getState(),
+        reason: candidate.reason,
+        blockingEventId: candidate.eventId,
+      };
+    }
+    return { accepted: true, state: cloneMatchState(candidate.state) };
+  }
+
   process(event: MatchEvent): EventResult {
-    return this.commit([...this.match.events, event]);
+    const candidate = this.appendCandidate(event);
+    if (!candidate.accepted) {
+      return {
+        accepted: false,
+        state: this.getState(),
+        reason: candidate.reason,
+        blockingEventId: candidate.eventId,
+      };
+    }
+    this.match.state = cloneMatchState(candidate.state);
+    this.match.events.push(structuredClone(event));
+    return { accepted: true, state: this.getState() };
+  }
+
+  fork(): MatchEngine {
+    const fork = MatchEngine.fromInitialState(this.initialState);
+    fork.match = { state: cloneMatchState(this.match.state), events: structuredClone(this.match.events) };
+    return fork;
   }
 
   undoLast(): EventResult | undefined {
@@ -109,6 +143,17 @@ export class MatchEngine {
 
     this.match = replayed.match;
     return { accepted: true, state: this.getState() };
+  }
+
+  private appendCandidate(event: MatchEvent): AppendResult {
+    const rejection = this.validator.validate(this.match.state, event, this.match.events);
+    if (rejection) return { accepted: false, reason: rejection, eventId: event.id };
+    if (!this.rules.supports(event.type)) return { accepted: false, reason: "UNSUPPORTED_EVENT", eventId: event.id };
+    const transaction = this.transactions.run(this.match.state, (draft) => {
+      this.processor.process(draft, event, this.match.events);
+      draft.lastProcessedSequence = event.sequence;
+    });
+    return { accepted: true, state: cloneMatchState(transaction.state) };
   }
 
   private replay(events: MatchEvent[]): ReplayResult {

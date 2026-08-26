@@ -6,6 +6,7 @@ import type { LocalGamePackageStatus } from "./persistence/local-database.cjs";
 import type { MatchSetupOperationResult } from "./games/match-setup.cjs";
 import type { LocalRunCatalogueResult, MatchRunOperationResult } from "./runs/match-run.cjs";
 import type { PreGameConfigurationOperationResult, PreGameConfigurationSaveDraftInput } from "./runs/pre-game-configuration.cjs";
+import type { GameplayIntent, MatchGameplayOperationResult } from "./runs/gameplay-runtime.cjs";
 
 interface AppInfo {
     version: string;
@@ -34,6 +35,13 @@ const bridge = Object.freeze({
     listLocalRuns: (): Promise<LocalRunCatalogueResult> => ipcRenderer.invoke("runs:list-local") as Promise<LocalRunCatalogueResult>,
     getOrCreatePreGameConfiguration: (gameId: string): Promise<PreGameConfigurationOperationResult> => ipcRenderer.invoke("pregame:get-or-create", gameId) as Promise<PreGameConfigurationOperationResult>,
     savePreGameConfigurationDraft: (input: PreGameConfigurationSaveDraftInput): Promise<PreGameConfigurationOperationResult> => ipcRenderer.invoke("pregame:save-draft", input) as Promise<PreGameConfigurationOperationResult>,
+    startMatch: (runId: string): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:start", runId) as Promise<MatchGameplayOperationResult>,
+    recoverMatchGameplay: (runId: string): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:recover", runId) as Promise<MatchGameplayOperationResult>,
+    appendGameplayIntent: (runId: string, intent: GameplayIntent): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:append-intent", { runId, intent }) as Promise<MatchGameplayOperationResult>,
+    removeGameplayEvent: (runId: string, eventId: string, cascadeDependencies = false): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:remove-event", { runId, eventId, cascadeDependencies }) as Promise<MatchGameplayOperationResult>,
+    correctGameplayEvent: (runId: string, eventId: string, intent: GameplayIntent, cascadeDependencies = false): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:correct-event", { runId, eventId, intent, cascadeDependencies }) as Promise<MatchGameplayOperationResult>,
+    finalizeMatch: (runId: string): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:finalize", runId) as Promise<MatchGameplayOperationResult>,
+    retryGameplaySync: (runId: string): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:retry-sync", runId) as Promise<MatchGameplayOperationResult>,
 });
 
 contextBridge.exposeInMainWorld("komoControl", bridge);

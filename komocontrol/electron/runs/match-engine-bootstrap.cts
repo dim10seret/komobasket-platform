@@ -45,6 +45,28 @@ export interface MatchEngineBootstrapResult {
     initialStateHash: string;
 }
 
+export const MATCH_START_READINESS_CODES = [
+    "START_PARTICIPANT_COUNT_BELOW_MINIMUM",
+    "START_PARTICIPANT_COUNT_ABOVE_MAXIMUM",
+    "START_SHIRT_NUMBER_MISSING",
+    "START_SHIRT_NUMBER_INVALID",
+    "START_SHIRT_NUMBER_DUPLICATE",
+    "START_CAPTAIN_MISSING",
+    "START_CAPTAIN_NOT_PARTICIPATING",
+    "START_STARTER_COUNT_INVALID",
+    "START_STARTER_NOT_PARTICIPATING",
+    "START_TEAM_COLOR_MISSING",
+    "START_TEAM_COLOR_INVALID",
+] as const;
+export type MatchStartReadinessCode = (typeof MATCH_START_READINESS_CODES)[number];
+export interface MatchStartReadinessPlayer { playerId: string; displayName: string; }
+export interface MatchStartReadinessIssue {
+    code: MatchStartReadinessCode;
+    message: string;
+    teamSide: "HOME" | "AWAY";
+    affectedPlayers: MatchStartReadinessPlayer[];
+}
+
 export class MatchEngineBootstrapError extends Error {
     constructor() {
         super("MATCH_ENGINE_BOOTSTRAP_INVALID");
@@ -132,18 +154,77 @@ function parseConfiguration(stored: StoredLocalGameRunConfiguration): Configurat
     return { schemaVersion: 1, runId: item.runId as string, gameId: item.gameId as string, teams: [teams[0], teams[1]] };
 }
 
-function validateAndMapTeam(configuration: ConfigurationTeam, source: MatchSetupTeam, setup: MatchSetup, createPlayer: RuntimePlayerFactory): unknown[] {
+function verifiedSourcePlayers(configuration: ConfigurationTeam, source: MatchSetupTeam): Map<string, MatchSetupTeam["players"][number]> {
     if (configuration.side !== source.side || configuration.teamId !== source.teamId) throw new MatchEngineBootstrapError();
     const sourceById = new Map(source.players.map((player) => [player.playerId, player]));
     if (sourceById.size !== source.players.length || configuration.players.length !== source.players.length || new Set(configuration.players.map((player) => player.playerId)).size !== configuration.players.length || configuration.players.some((player) => !sourceById.has(player.playerId))) throw new MatchEngineBootstrapError();
+    if (configuration.captainPlayerId !== null && !sourceById.has(configuration.captainPlayerId)) throw new MatchEngineBootstrapError();
+    if (configuration.starterPlayerIds.some((playerId) => !sourceById.has(playerId))) throw new MatchEngineBootstrapError();
+    return sourceById;
+}
+
+function affectedPlayers(players: ConfigurationPlayer[], sourceById: Map<string, MatchSetupTeam["players"][number]>): MatchStartReadinessPlayer[] {
+    return players.map((player) => {
+        const source = sourceById.get(player.playerId);
+        if (!source) throw new MatchEngineBootstrapError();
+        return { playerId: player.playerId, displayName: source.displayName };
+    });
+}
+
+function playerMessage(message: string, players: MatchStartReadinessPlayer[]): string {
+    return players.length > 0 ? `${message} Παίκτες: ${players.map((player) => player.displayName).join(", ")}.` : message;
+}
+
+function teamReadiness(configuration: ConfigurationTeam, source: MatchSetupTeam, setup: MatchSetup): MatchStartReadinessIssue | null {
+    const sourceById = verifiedSourcePlayers(configuration, source);
     const participating = configuration.players.filter((player) => player.participating);
-    if (participating.length < setup.settings.minPlayers || participating.length > setup.settings.maxPlayers) throw new MatchEngineBootstrapError();
-    const shirtNumbers = participating.map((player) => player.gameShirtNumber);
-    if (shirtNumbers.some((number) => number === null || !/^(?:0|00|[1-9][0-9]?)$/.test(number)) || new Set(shirtNumbers).size !== shirtNumbers.length) throw new MatchEngineBootstrapError();
+    const team = `${source.teamName} (${configuration.side})`;
+    const issue = (code: MatchStartReadinessCode, message: string, players: ConfigurationPlayer[] = []): MatchStartReadinessIssue => {
+        const affected = affectedPlayers(players, sourceById);
+        return { code, message: playerMessage(message, affected), teamSide: configuration.side, affectedPlayers: affected };
+    };
+    if (participating.length < setup.settings.minPlayers) return issue("START_PARTICIPANT_COUNT_BELOW_MINIMUM", `Η ομάδα ${team} χρειάζεται τουλάχιστον ${setup.settings.minPlayers} συμμετέχοντες παίκτες.`);
+    if (participating.length > setup.settings.maxPlayers) return issue("START_PARTICIPANT_COUNT_ABOVE_MAXIMUM", `Η ομάδα ${team} επιτρέπεται να έχει έως ${setup.settings.maxPlayers} συμμετέχοντες παίκτες.`);
+    const missingNumbers = participating.filter((player) => player.gameShirtNumber === null || !player.gameShirtNumber.trim());
+    if (missingNumbers.length > 0) return issue("START_SHIRT_NUMBER_MISSING", "Δεν έχουν δηλωθεί αριθμοί φανέλας σε όλους τους συμμετέχοντες παίκτες.", missingNumbers);
+    const invalidNumbers = participating.filter((player) => player.gameShirtNumber !== null && !/^(?:0|00|[1-9][0-9]?)$/.test(player.gameShirtNumber));
+    if (invalidNumbers.length > 0) return issue("START_SHIRT_NUMBER_INVALID", "Υπάρχουν μη έγκυροι αριθμοί φανέλας στους συμμετέχοντες παίκτες.", invalidNumbers);
+    const numberCounts = new Map<string, number>();
+    for (const player of participating) numberCounts.set(player.gameShirtNumber!, (numberCounts.get(player.gameShirtNumber!) ?? 0) + 1);
+    const duplicateNumbers = participating.filter((player) => (numberCounts.get(player.gameShirtNumber!) ?? 0) > 1);
+    if (duplicateNumbers.length > 0) return issue("START_SHIRT_NUMBER_DUPLICATE", `Υπάρχουν διπλοί αριθμοί φανέλας στην ομάδα ${team}.`, duplicateNumbers);
     const participatingIds = new Set(participating.map((player) => player.playerId));
-    if (configuration.captainPlayerId === null || !participatingIds.has(configuration.captainPlayerId)) throw new MatchEngineBootstrapError();
-    if (new Set(configuration.starterPlayerIds).size !== configuration.starterPlayerIds.length || configuration.starterPlayerIds.length !== setup.settings.startingPlayers || configuration.starterPlayerIds.some((id) => !participatingIds.has(id))) throw new MatchEngineBootstrapError();
-    if (configuration.gameColor === null || !/^#[0-9A-Fa-f]{6}$/.test(configuration.gameColor)) throw new MatchEngineBootstrapError();
+    if (configuration.captainPlayerId === null) return issue("START_CAPTAIN_MISSING", `Πρέπει να επιλεγεί αρχηγός για την ομάδα ${team}.`);
+    if (!participatingIds.has(configuration.captainPlayerId)) return issue("START_CAPTAIN_NOT_PARTICIPATING", "Ο αρχηγός πρέπει να είναι συμμετέχων παίκτης.", configuration.players.filter((player) => player.playerId === configuration.captainPlayerId));
+    const nonParticipatingStarters = configuration.players.filter((player) => configuration.starterPlayerIds.includes(player.playerId) && !player.participating);
+    if (nonParticipatingStarters.length > 0) return issue("START_STARTER_NOT_PARTICIPATING", "Όλοι οι βασικοί παίκτες πρέπει να συμμετέχουν στον αγώνα.", nonParticipatingStarters);
+    if (new Set(configuration.starterPlayerIds).size !== configuration.starterPlayerIds.length || configuration.starterPlayerIds.length !== setup.settings.startingPlayers) return issue("START_STARTER_COUNT_INVALID", `Πρέπει να επιλεγούν ακριβώς ${setup.settings.startingPlayers} βασικοί παίκτες για την ομάδα ${team}.`);
+    if (configuration.gameColor === null) return issue("START_TEAM_COLOR_MISSING", `Πρέπει να επιλεγεί χρώμα ομάδας για την ομάδα ${team}.`);
+    if (!/^#[0-9A-Fa-f]{6}$/.test(configuration.gameColor)) return issue("START_TEAM_COLOR_INVALID", `Το επιλεγμένο χρώμα ομάδας για την ομάδα ${team} δεν είναι έγκυρο.`);
+    return null;
+}
+
+function verifiedConfiguration(run: StoredLocalGameRun, storedConfiguration: StoredLocalGameRunConfiguration, setup: MatchSetup): ConfigurationV1 {
+    if (run.status !== "active" || run.startedAtUtc !== null || run.lastAcceptedSequence !== 0 || run.gameId !== setup.gameId || run.packageId !== setup.packageId || run.packageVersion !== setup.packageVersion || run.packageSchemaVersion !== 1) throw new MatchEngineBootstrapError();
+    const configuration = parseConfiguration(storedConfiguration);
+    if (configuration.runId !== run.runId || configuration.gameId !== run.gameId) throw new MatchEngineBootstrapError();
+    const homeConfiguration = configuration.teams.find((team) => team.side === "HOME");
+    const awayConfiguration = configuration.teams.find((team) => team.side === "AWAY");
+    if (!homeConfiguration || !awayConfiguration) throw new MatchEngineBootstrapError();
+    verifiedSourcePlayers(homeConfiguration, setup.home);
+    verifiedSourcePlayers(awayConfiguration, setup.away);
+    return configuration;
+}
+
+export function validateMatchStartReadiness(run: StoredLocalGameRun, storedConfiguration: StoredLocalGameRunConfiguration, setup: MatchSetup): MatchStartReadinessIssue | null {
+    const configuration = verifiedConfiguration(run, storedConfiguration, setup);
+    return teamReadiness(configuration.teams[0], setup.home, setup) ?? teamReadiness(configuration.teams[1], setup.away, setup);
+}
+
+function validateAndMapTeam(configuration: ConfigurationTeam, source: MatchSetupTeam, setup: MatchSetup, createPlayer: RuntimePlayerFactory): unknown[] {
+    const sourceById = verifiedSourcePlayers(configuration, source);
+    if (teamReadiness(configuration, source, setup) !== null) throw new MatchEngineBootstrapError();
+    const participating = configuration.players.filter((player) => player.participating);
     const starters = new Set(configuration.starterPlayerIds);
     return participating.map((player) => {
         const sourcePlayer = sourceById.get(player.playerId);
@@ -167,9 +248,8 @@ async function loadSharedEngine(): Promise<{ MatchEngine: RuntimeMatchEngineCons
 }
 
 export async function buildMatchEngineInitialSnapshot(run: StoredLocalGameRun, storedConfiguration: StoredLocalGameRunConfiguration, setup: MatchSetup): Promise<MatchEngineBootstrapResult> {
-    if (run.status !== "active" || run.startedAtUtc !== null || run.lastAcceptedSequence !== 0 || run.gameId !== setup.gameId || run.packageId !== setup.packageId || run.packageVersion !== setup.packageVersion || run.packageSchemaVersion !== 1) throw new MatchEngineBootstrapError();
-    const configuration = parseConfiguration(storedConfiguration);
-    if (configuration.runId !== run.runId || configuration.gameId !== run.gameId) throw new MatchEngineBootstrapError();
+    const configuration = verifiedConfiguration(run, storedConfiguration, setup);
+    if (validateMatchStartReadiness(run, storedConfiguration, setup) !== null) throw new MatchEngineBootstrapError();
     const { MatchEngine, createPlayer } = await loadSharedEngine();
     const homeConfiguration = configuration.teams.find((team) => team.side === "HOME");
     const awayConfiguration = configuration.teams.find((team) => team.side === "AWAY");
