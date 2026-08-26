@@ -9,6 +9,7 @@ import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
 import { MatchRunManager } from "./runs/match-run.cjs";
+import { MatchGameplayManager } from "./runs/match-gameplay.cjs";
 import { EXTRA_BENCH_ROLES, PreGameConfigurationManager, type ExtraBenchEntryV1, type ExtraBenchRole, type PreGameConfigurationPlayerDraft, type PreGameConfigurationPresentationDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationStaffDraft, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
 
 const developmentUrl = process.env.KOMOCONTROL_RENDERER_URL;
@@ -190,6 +191,7 @@ ipcMain.handle("games:download-package", async (event, value: unknown) => { requ
 ipcMain.handle("games:get-match-setup", (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getMatchSetup(gameIdInput(value)); });
 ipcMain.handle("runs:create-or-open", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().createOrOpenGameRun(gameIdInput(value)); });
 ipcMain.handle("runs:get-active", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getActiveGameRun(gameIdInput(value)); });
+ipcMain.handle("runs:list-local", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listLocalRuns(); });
 ipcMain.handle("pregame:get-or-create", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getOrCreatePreGameConfiguration(gameIdInput(value)); });
 ipcMain.handle("pregame:save-draft", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().savePreGameConfigurationDraft(preGameConfigurationSaveInput(value)); });
 
@@ -242,7 +244,8 @@ if (!hasSingleInstanceLock) {
             const matchSetupManager = new MatchSetupManager(localDatabase);
             const matchRunManager = new MatchRunManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
             const preGameConfigurationManager = new PreGameConfigurationManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
-            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, matchSetupManager, matchRunManager, preGameConfigurationManager);
+            const matchGameplayManager = new MatchGameplayManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
+            authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId, platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null, matchSetupManager, matchRunManager, preGameConfigurationManager, matchGameplayManager);
             void authCoordinator.initialize();
         } catch (error) {
             console.error("KomoControl local persistence initialization failed.", error);

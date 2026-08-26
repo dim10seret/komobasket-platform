@@ -107,7 +107,7 @@ export interface PreGameConfigurationSaveDraftInput {
 }
 export type PreGameConfigurationOperationResult =
     | { ok: true; outcome: "created" | "existing" | "saved"; configuration: SafePreGameConfiguration; state: DesktopAuthState }
-    | { ok: false; errorCode: PreGameConfigurationErrorCode | "SESSION_INVALID"; state: DesktopAuthState };
+    | { ok: false; errorCode: PreGameConfigurationErrorCode | "SESSION_INVALID" | "OFFLINE_OPERATION_DENIED"; state: DesktopAuthState };
 
 interface PreGameConfigurationStore {
     getActiveLocalGameRun(gameId: string): StoredLocalGameRun | null;
@@ -249,6 +249,13 @@ export class PreGameConfigurationManager {
             result = this.store.createOrOpenLocalGameRunConfiguration({ runId: run.runId, organizationId: owner.organizationId, scorerId: owner.scorerId, deviceId: this.deviceId, configurationSchemaVersion: 1, configurationJson, configurationHash: configurationHash(configurationJson) });
         } catch (error) { throw this.mapStoreError(error); }
         return { outcome: result.outcome, configuration: this.verifyStored(result.configuration, run, setup) };
+    }
+
+    recover(gameId: string, owner: PreGameConfigurationOwner): { outcome: "existing"; configuration: SafePreGameConfiguration } {
+        const { run, setup } = this.verifiedContext(gameId, owner);
+        const stored = this.store.readLocalGameRunConfiguration(run.runId);
+        if (!stored) throw new PreGameConfigurationFlowError("CONFIGURATION_UNAVAILABLE");
+        return { outcome: "existing", configuration: this.verifyStored(stored, run, setup) };
     }
 
     saveDraft(input: PreGameConfigurationSaveDraftInput, owner: PreGameConfigurationOwner): SafePreGameConfiguration {

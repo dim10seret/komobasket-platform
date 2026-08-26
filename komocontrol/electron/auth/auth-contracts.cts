@@ -1,12 +1,13 @@
 export const AUTH_ERROR_CODES = [
     "AUTH_INVALID", "SCORER_DISABLED", "SESSION_INVALID", "NETWORK_UNAVAILABLE",
     "MALFORMED_RESPONSE", "SECURE_STORAGE_UNAVAILABLE", "LOCAL_SESSION_ERROR", "CONFIGURATION_ERROR",
+    "OFFLINE_OPERATION_DENIED",
 ] as const;
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 export interface SafeScorerContext { scorerId: string; username: string; organizationId: string; organizationName: string; expiresAt: string; }
 export type DesktopAuthState =
     | { kind: "unauthenticated"; deviceIdSuffix: string }
-    | { kind: "authenticated"; connection: "online"; deviceIdSuffix: string; context: SafeScorerContext }
+    | { kind: "authenticated"; connection: "online" | "offline"; deviceIdSuffix: string; context: SafeScorerContext }
     | { kind: "validation-unavailable"; errorCode: "NETWORK_UNAVAILABLE" | "MALFORMED_RESPONSE"; deviceIdSuffix: string }
     | { kind: "blocked"; errorCode: "SECURE_STORAGE_UNAVAILABLE" | "CONFIGURATION_ERROR"; deviceIdSuffix: string };
 export interface LoginInput { username: string; password: string; }

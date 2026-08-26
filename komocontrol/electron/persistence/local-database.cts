@@ -671,6 +671,14 @@ export class LocalDatabase {
         return value === undefined ? null : storedGameRun(value);
     }
 
+    listActiveLocalGameRunsForOwner(organizationId: string, scorerId: string, deviceId: string): StoredLocalGameRun[] {
+        if (!organizationId.trim() || !scorerId.trim() || !deviceId.trim()) throw new Error("Local Game Run owner identity is required.");
+        const values = this.requireDatabase().prepare(`SELECT * FROM local_game_runs
+            WHERE organization_id = ? AND scorer_id = ? AND device_id = ? AND status = 'active'
+            ORDER BY created_at_utc, run_id`).all(organizationId, scorerId, deviceId);
+        return values.map(storedGameRun);
+    }
+
     createOrOpenLocalGameRun(input: CreateLocalGameRunInput): LocalGameRunStoreResult {
         if (!input.runId.trim() || !input.gameId.trim() || !input.packageId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim()) throw new Error("Local Game Run identity is invalid.");
         if (input.runSchemaVersion !== 1 || input.packageSchemaVersion !== 1 || !Number.isInteger(input.packageVersion) || input.packageVersion < 1) throw new Error("Local Game Run version is invalid.");

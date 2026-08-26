@@ -11,7 +11,7 @@ export interface MatchSetup {
     settings: { gameMode: "SIMPLE" | "FULL"; minPlayers: number; maxPlayers: number; startingPlayers: number; regulationPeriods: number; regulationPeriodSeconds: number; overtimeSeconds: number; tieAllowed: boolean; winnerRequired: boolean; };
     home: MatchSetupTeam; away: MatchSetupTeam;
 }
-export type MatchSetupOperationResult = { ok: true; setup: MatchSetup; state: DesktopAuthState } | { ok: false; errorCode: GamePackageErrorCode | "SESSION_INVALID"; state: DesktopAuthState };
+export type MatchSetupOperationResult = { ok: true; setup: MatchSetup; state: DesktopAuthState } | { ok: false; errorCode: GamePackageErrorCode | "SESSION_INVALID" | "RUN_UNAVAILABLE" | "RUN_INVALID" | "RUN_CONFLICT" | "RUN_OWNERSHIP_CONFLICT"; state: DesktopAuthState };
 export interface MatchSetupPackageStore { readCurrentGamePackage(gameId: string): StoredLocalGamePackage | null; readGamePackage(packageId: string): StoredLocalGamePackage | null; }
 export interface VerifiedMatchSetupSource { setup: MatchSetup; packageHash: string; packageSchemaVersion: 1; }
 

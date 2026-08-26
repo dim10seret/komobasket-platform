@@ -3,11 +3,11 @@ interface KomoControlAppInfo {
     environment: "development" | "production";
 }
 
-type KomoControlAuthErrorCode = "AUTH_INVALID" | "SCORER_DISABLED" | "SESSION_INVALID" | "NETWORK_UNAVAILABLE" | "MALFORMED_RESPONSE" | "SECURE_STORAGE_UNAVAILABLE" | "LOCAL_SESSION_ERROR" | "CONFIGURATION_ERROR";
+type KomoControlAuthErrorCode = "AUTH_INVALID" | "SCORER_DISABLED" | "SESSION_INVALID" | "NETWORK_UNAVAILABLE" | "MALFORMED_RESPONSE" | "SECURE_STORAGE_UNAVAILABLE" | "LOCAL_SESSION_ERROR" | "CONFIGURATION_ERROR" | "OFFLINE_OPERATION_DENIED";
 interface KomoControlSafeScorerContext { scorerId: string; username: string; organizationId: string; organizationName: string; expiresAt: string; }
 type KomoControlAuthState =
     | { kind: "unauthenticated"; deviceIdSuffix: string }
-    | { kind: "authenticated"; connection: "online"; deviceIdSuffix: string; context: KomoControlSafeScorerContext }
+    | { kind: "authenticated"; connection: "online" | "offline"; deviceIdSuffix: string; context: KomoControlSafeScorerContext }
     | { kind: "validation-unavailable"; errorCode: "NETWORK_UNAVAILABLE" | "MALFORMED_RESPONSE"; deviceIdSuffix: string }
     | { kind: "blocked"; errorCode: "SECURE_STORAGE_UNAVAILABLE" | "CONFIGURATION_ERROR"; deviceIdSuffix: string };
 type KomoControlAuthOperationResult = { ok: true; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlAuthErrorCode; state: KomoControlAuthState };
@@ -23,7 +23,9 @@ interface KomoControlMatchSetup { gameId: string; packageId: string; packageVers
 type KomoControlMatchSetupResult = { ok: true; setup: KomoControlMatchSetup; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlGamePackageErrorCode; state: KomoControlAuthState };
 type KomoControlMatchRunErrorCode = "RUN_UNAVAILABLE" | "RUN_INVALID" | "RUN_CONFLICT" | "RUN_OWNERSHIP_CONFLICT";
 interface KomoControlSafeMatchRun { runId: string; gameId: string; packageId: string; packageVersion: number; status: "active"; gameplayStarted: false; lastAcceptedSequence: 0; createdAtUtc: string; }
-type KomoControlMatchRunResult = { ok: true; outcome: "created" | "existing" | "recovered"; run: KomoControlSafeMatchRun | null; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
+interface KomoControlSafeLocalRunSummary { runId: string; gameId: string; packageId: string; packageVersion: number; gameplayStarted: boolean; lastAcceptedSequence: number; createdAtUtc: string; homeTeam: { id: string; name: string }; awayTeam: { id: string; name: string }; competitionName: string; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string | null; scheduledTime: string | null; venue: string | null; }
+type KomoControlMatchRunResult = { ok: true; outcome: "created" | "existing" | "recovered"; run: KomoControlSafeMatchRun | null; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID" | "OFFLINE_OPERATION_DENIED"; state: KomoControlAuthState };
+type KomoControlLocalRunCatalogueResult = { ok: true; runs: KomoControlSafeLocalRunSummary[]; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 type KomoControlPreGameConfigurationErrorCode = "CONFIGURATION_UNAVAILABLE" | "CONFIGURATION_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_OWNERSHIP_CONFLICT";
 type KomoControlTeamSide = "HOME" | "AWAY";
 interface KomoControlPreGameConfigurationPlayer { playerId: string; displayName: string; packageShirtNumber: number | null; gameShirtNumber: string | null; participating: boolean; }
@@ -36,7 +38,7 @@ interface KomoControlPreGameConfigurationPlayerDraft { playerId: string; partici
 interface KomoControlPreGameConfigurationStaffDraft { staffId: string; participating: boolean; }
 interface KomoControlPreGameConfigurationTeamDraft { side: KomoControlTeamSide; players: KomoControlPreGameConfigurationPlayerDraft[]; staff: KomoControlPreGameConfigurationStaffDraft[]; captainPlayerId: string | null; starterPlayerIds: string[]; gameColor: string | null; extraBench: KomoControlExtraBenchEntry[]; }
 interface KomoControlPreGameConfigurationSaveDraftInput { gameId: string; expectedRevision: number; teams: [KomoControlPreGameConfigurationTeamDraft, KomoControlPreGameConfigurationTeamDraft]; presentation: { leftSide: KomoControlTeamSide }; }
-type KomoControlPreGameConfigurationResult = { ok: true; outcome: "created" | "existing" | "saved"; configuration: KomoControlPreGameConfiguration; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlPreGameConfigurationErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
+type KomoControlPreGameConfigurationResult = { ok: true; outcome: "created" | "existing" | "saved"; configuration: KomoControlPreGameConfiguration; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlPreGameConfigurationErrorCode | "SESSION_INVALID" | "OFFLINE_OPERATION_DENIED"; state: KomoControlAuthState };
 
 interface KomoControlDesktopBridge {
     getAppInfo(): Promise<KomoControlAppInfo>;
@@ -55,6 +57,7 @@ interface KomoControlDesktopBridge {
     getMatchSetup(gameId: string): Promise<KomoControlMatchSetupResult>;
     createOrOpenGameRun(gameId: string): Promise<KomoControlMatchRunResult>;
     getActiveGameRun(gameId: string): Promise<KomoControlMatchRunResult>;
+    listLocalRuns(): Promise<KomoControlLocalRunCatalogueResult>;
     getOrCreatePreGameConfiguration(gameId: string): Promise<KomoControlPreGameConfigurationResult>;
     savePreGameConfigurationDraft(input: KomoControlPreGameConfigurationSaveDraftInput): Promise<KomoControlPreGameConfigurationResult>;
 }

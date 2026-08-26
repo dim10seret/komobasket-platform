@@ -2,10 +2,11 @@ import { AuthFlowError, type SafeScorerContext } from "./auth-contracts.cjs";
 import type { AvailableGame } from "../games/game-discovery-contracts.cjs";
 import { GamePackageFlowError, parseGamePackageEnvelope, type GamePackageEnvelope } from "../games/game-package-download.cjs";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-export interface LoginResponse extends SafeScorerContext { token: string; }
+export interface ValidatedSessionContext extends SafeScorerContext { sessionId: string; deviceId: string; }
+export interface LoginResponse extends ValidatedSessionContext { token: string; }
 export interface ScorerAuthClient {
     login(username: string, password: string, deviceId: string): Promise<LoginResponse>;
-    getSession(token: string): Promise<SafeScorerContext>;
+    getSession(token: string): Promise<ValidatedSessionContext>;
     logout(token: string): Promise<void>;
     listGames(token: string): Promise<AvailableGame[]>;
     downloadGamePackage(token: string, gameId: string): Promise<GamePackageEnvelope>;
@@ -13,15 +14,17 @@ export interface ScorerAuthClient {
 type FetchImplementation = (input: string, init: RequestInit) => Promise<Response>;
 function record(value: unknown): Record<string, unknown> | null { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null; }
 function requiredString(value: unknown): string | null { return typeof value === "string" && value.length > 0 ? value : null; }
-function parseContext(value: unknown): SafeScorerContext {
+function parseContext(value: unknown): ValidatedSessionContext {
     const data = record(value); const scorer = record(data?.scorer); const organization = record(data?.organization) ?? record(scorer?.organization); const session = record(data?.session);
     const scorerId = requiredString(scorer?.id) ?? requiredString(data?.scorerId);
     const username = requiredString(scorer?.username) ?? requiredString(data?.username);
     const organizationId = requiredString(organization?.id) ?? requiredString(scorer?.organizationId) ?? requiredString(data?.organizationId);
     const organizationName = requiredString(organization?.name) ?? requiredString(organization?.slug) ?? organizationId;
+    const sessionId = requiredString(session?.id) ?? requiredString(data?.sessionId);
+    const deviceId = requiredString(session?.deviceId) ?? requiredString(data?.deviceId);
     const expiresAt = requiredString(session?.expiresAt) ?? requiredString(data?.expiresAt);
-    if (!scorerId || !username || !organizationId || !organizationName || !expiresAt) throw new AuthFlowError("MALFORMED_RESPONSE");
-    return { scorerId, username, organizationId, organizationName, expiresAt };
+    if (!scorerId || !username || !organizationId || !organizationName || !sessionId || !deviceId || !expiresAt) throw new AuthFlowError("MALFORMED_RESPONSE");
+    return { scorerId, username, organizationId, organizationName, sessionId, deviceId, expiresAt };
 }
 function responseData(payload: unknown): unknown { const root = record(payload); if (!root || !("data" in root)) throw new AuthFlowError("MALFORMED_RESPONSE"); return root.data; }
 function serverErrorCode(payload: unknown): string | null { return requiredString(record(record(payload)?.error)?.code); }
@@ -43,7 +46,7 @@ export class PlatformAuthClient implements ScorerAuthClient {
         if (!token || !TOKEN_PATTERN.test(token)) throw new AuthFlowError("MALFORMED_RESPONSE");
         return { token, ...parseContext(data) };
     }
-    async getSession(token: string): Promise<SafeScorerContext> {
+    async getSession(token: string): Promise<ValidatedSessionContext> {
         const { response, payload } = await this.request("/api/komocontrol/v1/session", { method: "GET", headers: { authorization: `Bearer ${token}` } });
         if (!response.ok) { if (serverErrorCode(payload) === "SCORER_DISABLED") throw new AuthFlowError("SCORER_DISABLED"); throw new AuthFlowError("SESSION_INVALID"); }
         return parseContext(responseData(payload));
