@@ -145,6 +145,64 @@ export class LocalGameRunConfigurationConflictError extends Error {
     }
 }
 
+export interface StoredLocalMatchEngineSnapshot {
+    runId: string;
+    snapshotSchemaVersion: 1;
+    matchEventSchemaVersion: 2;
+    configurationRevision: number;
+    configurationHash: string;
+    initialStateJson: string;
+    initialStateHash: string;
+    eventHistoryRevision: number;
+    createdAtUtc: string;
+}
+
+export interface LocalMatchEventWrite {
+    eventId: string;
+    sequence: number;
+    eventSchemaVersion: 2;
+    eventJson: string;
+    eventHash: string;
+    persistedAtUtc: string;
+}
+
+export interface StoredLocalMatchEvent extends LocalMatchEventWrite {
+    runId: string;
+}
+
+export interface InitializeLocalMatchGameplayInput {
+    runId: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    configurationRevision: number;
+    configurationHash: string;
+    snapshotSchemaVersion: 1;
+    matchEventSchemaVersion: 2;
+    initialStateJson: string;
+    initialStateHash: string;
+    initialEvent: LocalMatchEventWrite;
+    startedAtUtc: string;
+}
+
+export interface RewriteLocalMatchEventHistoryInput {
+    runId: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    expectedHistoryRevision: number;
+    lastAcceptedSequence: number;
+    events: LocalMatchEventWrite[];
+    updatedAtUtc: string;
+}
+
+export class LocalMatchGameplayConflictError extends Error {
+    constructor(readonly kind: "ownership" | "state" | "revision") {
+        super(`Local Match gameplay conflict: ${kind}`);
+        this.name = "LocalMatchGameplayConflictError";
+    }
+}
+
 export interface LocalIntegrityResult {
     quickCheck: "ok";
     foreignKeyExceptions: 0;
@@ -360,7 +418,7 @@ function loadOrCreateDeviceIdentity(database: DatabaseSync): DeviceIdentity {
 }
 
 function verifyExpectedSchema(database: DatabaseSync): void {
-    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs", "local_game_run_configurations"]) {
+    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs", "local_game_run_configurations", "local_match_engine_snapshots", "local_match_events"]) {
         if (!tableExists(database, tableName)) {
             throw new Error(`Required local table is missing: ${tableName}.`);
         }
@@ -428,6 +486,56 @@ function storedGameRunConfiguration(value: unknown): StoredLocalGameRunConfigura
         createdAtUtc: stringField(row, "created_at_utc", "local_game_run_configurations"),
         updatedAtUtc: stringField(row, "updated_at_utc", "local_game_run_configurations"),
     };
+}
+
+function storedMatchEngineSnapshot(value: unknown): StoredLocalMatchEngineSnapshot {
+    const row = objectRow(value, "local_match_engine_snapshots");
+    const snapshotSchemaVersion = numberField(row, "snapshot_schema_version", "local_match_engine_snapshots");
+    const matchEventSchemaVersion = numberField(row, "match_event_schema_version", "local_match_engine_snapshots");
+    if (snapshotSchemaVersion !== 1 || matchEventSchemaVersion !== 2) throw new Error("Unsupported local Match gameplay schema.");
+    return {
+        runId: stringField(row, "run_id", "local_match_engine_snapshots"),
+        snapshotSchemaVersion: 1,
+        matchEventSchemaVersion: 2,
+        configurationRevision: numberField(row, "configuration_revision", "local_match_engine_snapshots"),
+        configurationHash: stringField(row, "configuration_hash", "local_match_engine_snapshots"),
+        initialStateJson: stringField(row, "initial_state_json", "local_match_engine_snapshots"),
+        initialStateHash: stringField(row, "initial_state_hash", "local_match_engine_snapshots"),
+        eventHistoryRevision: numberField(row, "event_history_revision", "local_match_engine_snapshots"),
+        createdAtUtc: stringField(row, "created_at_utc", "local_match_engine_snapshots"),
+    };
+}
+
+function storedMatchEvent(value: unknown): StoredLocalMatchEvent {
+    const row = objectRow(value, "local_match_events");
+    const eventSchemaVersion = numberField(row, "event_schema_version", "local_match_events");
+    if (eventSchemaVersion !== 2) throw new Error("Unsupported local MatchEvent schema.");
+    return {
+        runId: stringField(row, "run_id", "local_match_events"),
+        eventId: stringField(row, "event_id", "local_match_events"),
+        sequence: numberField(row, "sequence", "local_match_events"),
+        eventSchemaVersion: 2,
+        eventJson: stringField(row, "event_json", "local_match_events"),
+        eventHash: stringField(row, "event_hash", "local_match_events"),
+        persistedAtUtc: stringField(row, "persisted_at_utc", "local_match_events"),
+    };
+}
+
+function sha256Utf8(value: string): string {
+    return createHash("sha256").update(Buffer.from(value, "utf8")).digest("hex");
+}
+
+function parsedObject(value: string, label: string): Record<string, unknown> {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); } catch { throw new Error(`${label} JSON is malformed.`); }
+    return objectRow(parsed, label);
+}
+
+function validateMatchEventWrite(event: LocalMatchEventWrite): void {
+    if (!event.eventId.trim() || !Number.isInteger(event.sequence) || event.sequence < 1 || event.eventSchemaVersion !== 2 || !event.persistedAtUtc.trim()) throw new Error("Local MatchEvent metadata is invalid.");
+    if (!/^[0-9a-f]{64}$/.test(event.eventHash) || sha256Utf8(event.eventJson) !== event.eventHash) throw new Error("Local MatchEvent hash is invalid.");
+    const payload = parsedObject(event.eventJson, "local_match_events");
+    if (payload.schemaVersion !== 2 || payload.id !== event.eventId || payload.sequence !== event.sequence) throw new Error("Local MatchEvent JSON metadata does not match its row.");
 }
 
 function verifiedGamePackage(input: VerifiedGamePackageInput): VerifiedGamePackageInput {
@@ -664,6 +772,123 @@ export class LocalDatabase {
             if (savedValue === undefined) throw new Error("Local Game Run configuration was not saved.");
             const saved = storedGameRunConfiguration(savedValue);
             if (saved.revision !== input.expectedRevision + 1) throw new LocalGameRunConfigurationConflictError("revision");
+            database.exec("COMMIT");
+            return saved;
+        } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+        }
+    }
+
+    readLocalGameRun(runId: string): StoredLocalGameRun | null {
+        if (!runId.trim()) throw new Error("Run identity is required.");
+        const value = this.requireDatabase().prepare("SELECT * FROM local_game_runs WHERE run_id = ?").get(runId);
+        return value === undefined ? null : storedGameRun(value);
+    }
+
+    readLocalMatchEngineSnapshot(runId: string): StoredLocalMatchEngineSnapshot | null {
+        if (!runId.trim()) throw new Error("Run identity is required.");
+        const value = this.requireDatabase().prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(runId);
+        return value === undefined ? null : storedMatchEngineSnapshot(value);
+    }
+
+    readLocalMatchEvents(runId: string): StoredLocalMatchEvent[] {
+        if (!runId.trim()) throw new Error("Run identity is required.");
+        return this.requireDatabase().prepare("SELECT * FROM local_match_events WHERE run_id = ? ORDER BY sequence ASC").all(runId).map(storedMatchEvent);
+    }
+
+    initializeLocalMatchGameplay(input: InitializeLocalMatchGameplayInput): StoredLocalMatchEngineSnapshot {
+        if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim() || !input.startedAtUtc.trim()) throw new Error("Local Match gameplay identity is invalid.");
+        if (input.snapshotSchemaVersion !== 1 || input.matchEventSchemaVersion !== 2 || !Number.isInteger(input.configurationRevision) || input.configurationRevision < 1) throw new Error("Local Match gameplay version is invalid.");
+        if (!/^[0-9a-f]{64}$/.test(input.configurationHash) || !/^[0-9a-f]{64}$/.test(input.initialStateHash) || sha256Utf8(input.initialStateJson) !== input.initialStateHash) throw new Error("Local Match gameplay snapshot hash is invalid.");
+        const initialState = parsedObject(input.initialStateJson, "local_match_engine_snapshots");
+        if (initialState.id !== input.runId || initialState.started !== false || initialState.lastProcessedSequence !== 0) throw new Error("Local Match gameplay initial state is invalid.");
+        validateMatchEventWrite(input.initialEvent);
+        if (input.initialEvent.sequence !== 1) throw new Error("Initial MatchEvent sequence must be one.");
+
+        const database = this.requireDatabase();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const runValue = database.prepare("SELECT * FROM local_game_runs WHERE run_id = ?").get(input.runId);
+            if (runValue === undefined) throw new LocalMatchGameplayConflictError("state");
+            const run = storedGameRun(runValue);
+            if (run.organizationId !== input.organizationId || run.scorerId !== input.scorerId || run.deviceId !== input.deviceId) throw new LocalMatchGameplayConflictError("ownership");
+            if (run.status !== "active" || run.startedAtUtc !== null || run.lastAcceptedSequence !== 0) throw new LocalMatchGameplayConflictError("state");
+            const configurationValue = database.prepare("SELECT * FROM local_game_run_configurations WHERE run_id = ?").get(input.runId);
+            if (configurationValue === undefined) throw new LocalMatchGameplayConflictError("state");
+            const configuration = storedGameRunConfiguration(configurationValue);
+            if (configuration.revision !== input.configurationRevision || configuration.configurationHash !== input.configurationHash) throw new LocalMatchGameplayConflictError("revision");
+            if (database.prepare("SELECT run_id FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId) !== undefined) throw new LocalMatchGameplayConflictError("state");
+
+            database.prepare(`INSERT INTO local_match_engine_snapshots
+                (run_id, snapshot_schema_version, match_event_schema_version, configuration_revision, configuration_hash, initial_state_json, initial_state_hash, event_history_revision, created_at_utc)
+                VALUES (?, 1, 2, ?, ?, ?, ?, 1, ?)`)
+                .run(input.runId, input.configurationRevision, input.configurationHash, input.initialStateJson, input.initialStateHash, input.startedAtUtc);
+            database.prepare(`INSERT INTO local_match_events
+                (run_id, event_id, sequence, event_schema_version, event_json, event_hash, persisted_at_utc)
+                VALUES (?, ?, ?, 2, ?, ?, ?)`)
+                .run(input.runId, input.initialEvent.eventId, input.initialEvent.sequence, input.initialEvent.eventJson, input.initialEvent.eventHash, input.initialEvent.persistedAtUtc);
+            const update = database.prepare(`UPDATE local_game_runs
+                SET started_at_utc = ?, last_accepted_sequence = 1, updated_at_utc = ?
+                WHERE run_id = ? AND status = 'active' AND started_at_utc IS NULL AND last_accepted_sequence = 0`)
+                .run(input.startedAtUtc, input.startedAtUtc, input.runId);
+            if (Number(update.changes) !== 1) throw new LocalMatchGameplayConflictError("state");
+            const snapshotValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
+            if (snapshotValue === undefined) throw new Error("Local Match gameplay snapshot was not created.");
+            const snapshot = storedMatchEngineSnapshot(snapshotValue);
+            database.exec("COMMIT");
+            return snapshot;
+        } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+        }
+    }
+
+    rewriteLocalMatchEventHistory(input: RewriteLocalMatchEventHistoryInput): StoredLocalMatchEngineSnapshot {
+        if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim() || !input.updatedAtUtc.trim()) throw new Error("Local Match gameplay identity is invalid.");
+        if (!Number.isInteger(input.expectedHistoryRevision) || input.expectedHistoryRevision < 1 || !Number.isInteger(input.lastAcceptedSequence) || input.lastAcceptedSequence < 1) throw new Error("Local Match gameplay revision is invalid.");
+        let previousSequence = 0;
+        const ids = new Set<string>();
+        for (const event of input.events) {
+            validateMatchEventWrite(event);
+            if (event.sequence <= previousSequence || ids.has(event.eventId)) throw new Error("Local MatchEvent history ordering is invalid.");
+            previousSequence = event.sequence;
+            ids.add(event.eventId);
+        }
+        const firstEvent = input.events[0];
+        if (!firstEvent || firstEvent.sequence !== 1 || parsedObject(firstEvent.eventJson, "local_match_events").type !== "MATCH_START") throw new Error("Local MatchEvent history must begin with immutable MATCH_START sequence one.");
+
+        const database = this.requireDatabase();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const runValue = database.prepare("SELECT * FROM local_game_runs WHERE run_id = ?").get(input.runId);
+            if (runValue === undefined) throw new LocalMatchGameplayConflictError("state");
+            const run = storedGameRun(runValue);
+            if (run.organizationId !== input.organizationId || run.scorerId !== input.scorerId || run.deviceId !== input.deviceId) throw new LocalMatchGameplayConflictError("ownership");
+            if (run.status !== "active" || run.startedAtUtc === null) throw new LocalMatchGameplayConflictError("state");
+            if (input.lastAcceptedSequence !== run.lastAcceptedSequence && input.lastAcceptedSequence !== run.lastAcceptedSequence + 1) throw new LocalMatchGameplayConflictError("state");
+            if (input.lastAcceptedSequence === run.lastAcceptedSequence + 1 && !input.events.some((event) => event.sequence === input.lastAcceptedSequence)) throw new LocalMatchGameplayConflictError("state");
+            const snapshotValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
+            if (snapshotValue === undefined) throw new LocalMatchGameplayConflictError("state");
+            const snapshot = storedMatchEngineSnapshot(snapshotValue);
+            if (snapshot.eventHistoryRevision !== input.expectedHistoryRevision) throw new LocalMatchGameplayConflictError("revision");
+
+            database.prepare("DELETE FROM local_match_events WHERE run_id = ?").run(input.runId);
+            const insert = database.prepare(`INSERT INTO local_match_events
+                (run_id, event_id, sequence, event_schema_version, event_json, event_hash, persisted_at_utc)
+                VALUES (?, ?, ?, 2, ?, ?, ?)`);
+            for (const event of input.events) insert.run(input.runId, event.eventId, event.sequence, event.eventJson, event.eventHash, event.persistedAtUtc);
+            const snapshotUpdate = database.prepare(`UPDATE local_match_engine_snapshots
+                SET event_history_revision = event_history_revision + 1
+                WHERE run_id = ? AND event_history_revision = ?`).run(input.runId, input.expectedHistoryRevision);
+            if (Number(snapshotUpdate.changes) !== 1) throw new LocalMatchGameplayConflictError("revision");
+            const runUpdate = database.prepare(`UPDATE local_game_runs
+                SET last_accepted_sequence = ?, updated_at_utc = ?
+                WHERE run_id = ? AND last_accepted_sequence = ?`).run(input.lastAcceptedSequence, input.updatedAtUtc, input.runId, run.lastAcceptedSequence);
+            if (Number(runUpdate.changes) !== 1) throw new LocalMatchGameplayConflictError("state");
+            const savedValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
+            if (savedValue === undefined) throw new Error("Local Match gameplay revision was not saved.");
+            const saved = storedMatchEngineSnapshot(savedValue);
             database.exec("COMMIT");
             return saved;
         } catch (error) {

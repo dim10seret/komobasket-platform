@@ -75,7 +75,7 @@ afterEach(() => {
 });
 
 describe("KC-5B9A durable pre-game configuration", () => {
-    it("migrates 0003 to 0004 while preserving device, Package, and Run", () => {
+    it("migrates the legacy Run through 0005 while preserving device, Package, and Run", () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "komocontrol-kc5b9a-migration-")); roots.push(root); const databasePath = path.join(root, "legacy.sqlite");
         const db = new DatabaseSync(databasePath); const appliedAt = "2026-08-25T10:00:00.000Z";
         try {
@@ -87,7 +87,7 @@ describe("KC-5B9A durable pre-game configuration", () => {
         } finally { db.close(); }
         const migrationsDirectory = path.join(root, "migrations"); fs.cpSync(path.resolve("electron/migrations"), migrationsDirectory, { recursive: true });
         const localDatabase = new LocalDatabase({ databasePath, migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(localDatabase);
-        expect(localDatabase.initialize().schemaVersion).toBe("0004_game_run_configuration.sql");
+        expect(localDatabase.initialize().schemaVersion).toBe("0005_match_gameplay.sql");
         expect(localDatabase.getDeviceIdentity().deviceId).toBe(deviceId); expect(localDatabase.readGamePackage("package-v2")?.packageVersion).toBe(2); expect(localDatabase.getActiveLocalGameRun("game-1")?.runId).toBe("run-preserved"); expect(readRows(databasePath, "SELECT * FROM local_game_run_configurations")).toHaveLength(0);
     });
 
@@ -215,6 +215,6 @@ describe("KC-5B9A durable pre-game configuration", () => {
     it("returns a safe DTO and leaves Run gameplay and event state untouched", () => {
         const f = fixture(); const configuration = f.manager.getOrCreate("game-1", owner).configuration; const serialized = JSON.stringify(configuration); const run = f.localDatabase.getActiveLocalGameRun("game-1");
         expect(serialized).not.toContain("configurationJson"); expect(serialized).not.toContain("configurationHash"); expect(serialized).not.toContain("payloadJson"); expect(serialized).not.toContain("payloadHash"); expect(serialized).not.toContain(owner.scorerId); expect(serialized).not.toContain(deviceId); expect(Object.keys(configuration.teams[0].extraBench)).toEqual([]);
-        expect(run).toMatchObject({ startedAtUtc: null, lastAcceptedSequence: 0, status: "active" }); expect(readRows(f.localDatabase.databasePath, "SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name LIKE '%event%'")[0].count).toBe(0);
+        expect(run).toMatchObject({ startedAtUtc: null, lastAcceptedSequence: 0, status: "active" }); expect(readRows(f.localDatabase.databasePath, "SELECT * FROM local_match_engine_snapshots")).toHaveLength(0); expect(readRows(f.localDatabase.databasePath, "SELECT * FROM local_match_events")).toHaveLength(0);
     });
 });
