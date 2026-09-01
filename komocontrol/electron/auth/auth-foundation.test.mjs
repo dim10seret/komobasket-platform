@@ -24,11 +24,11 @@ function response(status, data) { return new Response(JSON.stringify(data), { st
 function fakeClient(overrides = {}) { return { login: vi.fn(async () => ({ token, ...context })), getSession: vi.fn(async () => context), logout: vi.fn(async () => undefined), listGames: vi.fn(async () => []), downloadGamePackage: vi.fn(async () => { throw new Error("unused"); }), ...overrides }; }
 function gameplayRecovery(overrides = {}) {
     const stateOverrides = overrides.state ?? {};
-    const player = (side) => ({ playerId: `${side.toLowerCase()}-1`, displayName: `${side} One`, onCourt: true, foulState: { total: 0, status: "ELIGIBLE" }, statistics: { points: 0 } });
+    const player = (side) => ({ playerId: `${side.toLowerCase()}-1`, displayName: `${side} One`, onCourt: true, foulState: { total: 0, category1TechnicalCount: 0, category2TechnicalCount: 0, disruptiveCount: 0, flagrantCount: 0, directDisqualification: false, status: "ELIGIBLE" }, statistics: { points: 0 } });
     const state = {
-        id: "run-1", rules: { teamFoulPenaltyThreshold: 5 },
-        home: { id: "home", name: "Home", score: 0, timeouts: 5, teamFouls: 0, players: [player("HOME")], statistics: { points: 0 } },
-        away: { id: "away", name: "Away", score: 0, timeouts: 5, teamFouls: 0, players: [player("AWAY")], statistics: { points: 0 } },
+        id: "run-1", rules: { startingPlayers: 1, regulationPeriods: 4, regulationPeriodSeconds: 600, overtimeSeconds: 300, resultPolicy: "REQUIRE_WINNER", teamFoulPenaltyThreshold: 5 },
+        home: { id: "home", name: "Home", score: 0, timeouts: 5, teamFouls: 0, discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 0, headCoachDisqualified: false, disqualifiedBenchPersonIds: [] }, players: [player("HOME")], statistics: { points: 0 } },
+        away: { id: "away", name: "Away", score: 0, timeouts: 5, teamFouls: 0, discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 0, headCoachDisqualified: false, disqualifiedBenchPersonIds: [] }, players: [player("AWAY")], statistics: { points: 0 } },
         period: { kind: "REGULATION", index: 1 }, clock: 600, clockRunning: false, possession: null, alternatingPossession: "HOME", finished: false,
         ...stateOverrides,
     };
@@ -40,7 +40,13 @@ function gameplayRecovery(overrides = {}) {
         ],
         presentation: { leftSide: "HOME" },
     };
-    return { runId: "run-1", lifecycle: "live", eventHistoryRevision: 2, lastAcceptedSequence: 1, state, eventIds: ["event-1"], events: [], currentConfiguration, ...overrides, state };
+    const setup = {
+        gameId: "game-1", packageId: "package-1", packageVersion: 2, competitionName: "Competition", seasonName: "2026-27", phaseName: null, roundLabel: null, scheduledDate: null, scheduledTime: null, venue: null,
+        settings: { gameMode: "FULL", minPlayers: 1, maxPlayers: 12, startingPlayers: 1, regulationPeriods: 4, regulationPeriodSeconds: 600, overtimeSeconds: 300, tieAllowed: false, winnerRequired: true },
+        home: { side: "HOME", teamId: "home", teamName: "Home", logoUrl: null, players: [], staff: [] },
+        away: { side: "AWAY", teamId: "away", teamName: "Away", logoUrl: null, players: [], staff: [] },
+    };
+    return { runId: "run-1", lifecycle: "live", eventHistoryRevision: 2, lastAcceptedSequence: 1, state, eventIds: ["event-1"], events: [], currentConfiguration, setup, ...overrides, state };
 }
 
 afterEach(() => {
@@ -157,6 +163,21 @@ describe("AuthCoordinator", () => {
     it("continues only the exact granted LIVE Run after the general envelope expires", async () => {
         let currentTime = new Date("2026-08-26T11:00:00.000Z"); const secureStore = store(); secureStore.saveAuthorization(envelope({ expiresAtUtc: "2026-08-26T12:00:00.000Z" })); const grant = { runId: "run-1", scorerId: context.scorerId, organizationId: context.organizationId }; const recovery = gameplayRecovery({ lastAcceptedSequence: 2, eventIds: ["event-1", "event-2"], state: { clock: 599, clockRunning: true } }); const manager = { append: vi.fn(async () => recovery), syncState: vi.fn(() => ({ runId: "run-1", lastAcknowledgedHistoryRevision: 0, lastAttemptedHistoryRevision: 0, lastAcknowledgedHistoryHash: null, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: null, consecutiveFailures: 0 })) }; const liveAuthorization = { isAvailable: vi.fn(() => true), resolve: vi.fn((runId) => runId === "run-1" ? grant : null), listAvailable: vi.fn(() => [grant]) }; const syncWorker = { wake: vi.fn(), pause: vi.fn() }; const coordinator = new AuthCoordinator(fakeClient({ getSession: vi.fn(async () => { throw new AuthFlowError("NETWORK_UNAVAILABLE"); }) }), secureStore, deviceId, null, null, null, null, manager, () => currentTime, liveAuthorization, syncWorker);
         expect((await coordinator.initialize()).connection).toBe("offline"); currentTime = new Date("2026-08-26T13:00:00.000Z"); expect(await coordinator.appendGameplayIntent("run-1", { type: "CLOCK_START" })).toMatchObject({ ok: true, state: { kind: "live-continuity" } }); expect(await coordinator.appendGameplayIntent("run-2", { type: "CLOCK_START" })).toMatchObject({ ok: false, errorCode: "SESSION_INVALID" }); expect(manager.append).toHaveBeenCalledTimes(1); expect(syncWorker.wake).not.toHaveBeenCalled();
+    });
+    it("re-authenticates the exact active Run and wakes pending sync without waiting for upload", async () => {
+        const grant = { runId: "run-1", scorerId: context.scorerId, organizationId: context.organizationId }; const recovery = gameplayRecovery();
+        const manager = { recover: vi.fn(async () => recovery), syncState: vi.fn(() => ({ runId: "run-1", lastAcknowledgedHistoryRevision: 0, lastAcknowledgedHistoryHash: null, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: "SYNC_UNAVAILABLE", consecutiveFailures: 1 })) };
+        const liveAuthorization = { isAvailable: vi.fn(() => true), resolve: vi.fn(() => grant), listAvailable: vi.fn(() => [grant]), reactivateOwner: vi.fn() }; const syncWorker = { wake: vi.fn(), pause: vi.fn() };
+        const coordinator = new AuthCoordinator(fakeClient(), store(), deviceId, null, null, null, null, manager, undefined, liveAuthorization, syncWorker);
+        expect((await coordinator.initialize()).kind).toBe("live-continuity"); const result = await coordinator.reconnectGameplaySync("run-1", { username: "test", password: "synthetic" });
+        expect(result).toMatchObject({ ok: true, gameplay: { runId: "run-1" }, state: { kind: "authenticated", connection: "online" } }); expect(manager.recover).toHaveBeenCalledWith("run-1", { scorerId: context.scorerId, organizationId: context.organizationId }); expect(syncWorker.wake).toHaveBeenCalledWith(token, { scorerId: context.scorerId, organizationId: context.organizationId }, true); expect(liveAuthorization.reactivateOwner).toHaveBeenCalledWith(context.organizationId, context.scorerId);
+    });
+    it("keeps the active Run playable after reconnect failure and permits a later attempt", async () => {
+        const grant = { runId: "run-1", scorerId: context.scorerId, organizationId: context.organizationId }; const recovery = gameplayRecovery({ lastAcceptedSequence: 2, eventIds: ["event-1", "event-2"] });
+        const manager = { recover: vi.fn(async () => recovery), append: vi.fn(async () => recovery), syncState: vi.fn(() => ({ runId: "run-1", lastAcknowledgedHistoryRevision: 0, lastAcknowledgedHistoryHash: null, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: "SYNC_UNAVAILABLE", consecutiveFailures: 1 })) };
+        const liveAuthorization = { isAvailable: vi.fn(() => true), resolve: vi.fn(() => grant), listAvailable: vi.fn(() => [grant]), reactivateOwner: vi.fn() }; const syncWorker = { wake: vi.fn(), pause: vi.fn() }; const login = vi.fn().mockRejectedValueOnce(new AuthFlowError("NETWORK_UNAVAILABLE")).mockResolvedValueOnce({ token, ...context });
+        const coordinator = new AuthCoordinator(fakeClient({ login }), store(), deviceId, null, null, null, null, manager, undefined, liveAuthorization, syncWorker);
+        expect((await coordinator.initialize()).kind).toBe("live-continuity"); expect(await coordinator.reconnectGameplaySync("run-1", { username: "test", password: "bad" })).toMatchObject({ ok: false, errorCode: "NETWORK_UNAVAILABLE", state: { kind: "live-continuity" } }); expect(await coordinator.appendGameplayIntent("run-1", { type: "CLOCK_START" })).toMatchObject({ ok: true, gameplay: { runId: "run-1" } }); expect(await coordinator.reconnectGameplaySync("run-1", { username: "test", password: "synthetic" })).toMatchObject({ ok: true, state: { kind: "authenticated", connection: "online" } }); expect(manager.append).toHaveBeenCalledOnce(); expect(syncWorker.wake).toHaveBeenCalledOnce();
     });
     it("opens and saves corrections only for the exact granted LIVE game after the general envelope expires", async () => {
         let currentTime = new Date("2026-08-26T11:00:00.000Z"); const secureStore = store(); secureStore.saveAuthorization(envelope({ expiresAtUtc: "2026-08-26T12:00:00.000Z" })); const grant = { runId: "run-1", gameId: "game-1", scorerId: context.scorerId, organizationId: context.organizationId }; const configuration = { runId: grant.runId, gameId: grant.gameId, lifecycle: "live", revision: 4 }; const saved = { ...configuration, revision: 5 }; const manager = { getOrCreate: vi.fn(() => ({ outcome: "existing", configuration })), saveDraft: vi.fn(() => saved) }; const liveAuthorization = { isAvailable: vi.fn(() => true), resolveForGame: vi.fn((gameId) => gameId === grant.gameId ? grant : null), listAvailable: vi.fn(() => [grant]) }; const client = fakeClient({ getSession: vi.fn(async () => { throw new AuthFlowError("NETWORK_UNAVAILABLE"); }) }); const coordinator = new AuthCoordinator(client, secureStore, deviceId, null, null, null, manager, null, () => currentTime, liveAuthorization);

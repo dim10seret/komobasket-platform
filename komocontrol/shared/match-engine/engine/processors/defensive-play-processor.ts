@@ -13,12 +13,16 @@ export class DefensivePlayProcessor {
     this.possession = possession;
   }
 
-  processSteal(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.STEAL }>): void {
+  processSteal(
+    state: MatchState,
+    event: Extract<MatchEvent, { type: typeof EventType.STEAL }>,
+    pairedWithTurnover = false,
+  ): void {
     const team = event.team === "HOME" ? state.home : state.away;
     const player = team.players.find((candidate) => candidate.playerId === event.playerId);
     if (!player) throw new Error("Validated player was not found while processing a steal event.");
     this.statistics.recordSteal(team, player);
-    this.possession.set(state, event.team);
+    if (!pairedWithTurnover) this.possession.set(state, event.team);
   }
 
   processBlock(state: MatchState, event: Extract<MatchEvent, { type: typeof EventType.BLOCK }>): void {

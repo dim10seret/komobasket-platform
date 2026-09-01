@@ -2,6 +2,19 @@ import { EventType } from "../types/event-type.js";
 import type { FoulEvent, MatchEvent } from "../types/event.js";
 import { penaltyIdFor } from "../types/penalty.js";
 
+export function pairedTurnoverForSteal(
+  event: MatchEvent,
+  priorEvents: readonly MatchEvent[],
+): Extract<MatchEvent, { type: typeof EventType.TURNOVER }> | undefined {
+  if (event.type !== EventType.STEAL) return undefined;
+  return priorEvents.find(
+    (candidate): candidate is Extract<MatchEvent, { type: typeof EventType.TURNOVER }> =>
+      candidate.type === EventType.TURNOVER
+      && candidate.sequence === event.sequence - 1
+      && candidate.team !== event.team,
+  );
+}
+
 export function dependentEventIds(
   events: readonly MatchEvent[],
   sourceEventId: string,
@@ -15,10 +28,12 @@ export function dependentEventIds(
   const children = new Map<string, Set<string>>();
 
   for (const event of events) {
+    const pairedTurnover = pairedTurnoverForSteal(event, events);
+    if (pairedTurnover) addChild(children, pairedTurnover.id, event.id);
     if (isFoulEvent(event) && "relatedShotEventId" in event && event.relatedShotEventId) {
       addChild(children, event.relatedShotEventId, event.id);
     }
-    if (event.type === EventType.FREE_THROW) {
+    if (event.type === EventType.FREE_THROW || event.type === EventType.PENALTY_ADMINISTRATION_ENDED) {
       const foulEventId = sourceFoulByPenaltyId.get(event.penaltyId);
       if (foulEventId) addChild(children, foulEventId, event.id);
     }
@@ -53,7 +68,6 @@ export function dependentEventIds(
 function referencedPlayerIds(event: MatchEvent): string[] {
   switch (event.type) {
     case EventType.ROSTER_PLAYER_ADDED:
-    case EventType.REBOUND:
     case EventType.STEAL:
     case EventType.BLOCK:
     case EventType.TURNOVER:
@@ -63,6 +77,8 @@ function referencedPlayerIds(event: MatchEvent): string[] {
     case EventType.THREE_POINT:
     case EventType.THREE_POINT_MISSED:
       return [event.playerId, ...(event.type === EventType.TWO_POINT || event.type === EventType.THREE_POINT ? [event.assistPlayerId].filter((id): id is string => Boolean(id)) : [])];
+    case EventType.REBOUND:
+      return event.teamRebound === true ? [] : [event.playerId];
     case EventType.SUBSTITUTION:
       return [event.playerInId, event.playerOutId];
     case EventType.LINEUP_SET:

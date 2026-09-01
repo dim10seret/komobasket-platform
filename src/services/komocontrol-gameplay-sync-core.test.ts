@@ -9,6 +9,7 @@ import {
   assertGameplaySyncIdentity,
   decideGameplayConfigurationSync,
   decideGameplaySync,
+  stable as stableGameplaySyncJson,
   validateGameplaySync,
 } from "./komocontrol-gameplay-sync-core";
 
@@ -118,6 +119,66 @@ function payload(includeRosterAmendment = false) {
 }
 
 describe("KomoControl gameplay sync replay and revision policy", () => {
+  it("omits undefined object properties without changing canonical JSON ordering or normal hashes", () => {
+    expect(stableGameplaySyncJson({ a: 1, optional: undefined, b: 2 })).toBe('{"a":1,"b":2}');
+    expect(stableGameplaySyncJson({ z: { b: 2, a: 1 }, a: [{ b: 2, a: 1 }] }))
+      .toBe('{"a":[{"a":1,"b":2}],"z":{"a":1,"b":2}}');
+    expect(sha256(stableGameplaySyncJson({ b: 2, a: 1 }))).toBe("43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777");
+    expect(() => stableGameplaySyncJson([1, undefined, 2])).toThrow(GameplaySyncValidationError);
+  });
+
+  it("accepts finalized replay when the MatchState has an undefined optional penalty resolution", () => {
+    const live = payload();
+    const engine = MatchEngine.fromInitialState(JSON.parse(live.initialStateJson));
+    for (const row of live.events) expect(engine.process(JSON.parse(row.eventJson)).accepted).toBe(true);
+    const finalEvents = [
+      { schemaVersion: 2, id: "event-clock-zero", occurredAt: Date.parse("2026-08-26T12:00:01.000Z"), sequence: 2, type: "CLOCK_SET", remainingSeconds: 0 },
+      { schemaVersion: 2, id: "event-period-end", occurredAt: Date.parse("2026-08-26T12:00:02.000Z"), sequence: 3, type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } },
+      { schemaVersion: 2, id: "event-match-end", occurredAt: Date.parse("2026-08-26T12:00:03.000Z"), sequence: 4, type: "MATCH_END" },
+    ];
+    for (const event of finalEvents) expect(engine.process(event).accepted).toBe(true);
+    const eventRows = [...live.events, ...finalEvents.map((event) => {
+      const eventJson = stableGameplaySyncJson(event);
+      return { eventId: event.id, sequence: event.sequence, eventSchemaVersion: 2 as const, eventJson, eventHash: sha256(eventJson) };
+    })];
+    const historyHash = sha256(`[${eventRows.map((event) => event.eventJson).join(",")}]`);
+    const finalState = engine.getState();
+    expect(finalState.penaltyResolution).toBeUndefined();
+    const finalStateJson = stableGameplaySyncJson(finalState);
+    const finalStateHash = sha256(finalStateJson);
+    const finalizedAtUtc = "2026-08-26T12:00:03.000Z";
+    const finalizationJson = stableGameplaySyncJson({
+      schemaVersion: 1,
+      runId: live.runId,
+      finalizedHistoryRevision: 4,
+      finalizedHistoryHash: historyHash,
+      finalStateHash,
+      finalizedAtUtc,
+    });
+    const finalized = {
+      ...live,
+      eventHistoryRevision: 4,
+      lastAcceptedSequence: 4,
+      historyHash,
+      events: eventRows,
+      finalization: {
+        schemaVersion: 1,
+        finalizedHistoryRevision: 4,
+        finalizedHistoryHash: historyHash,
+        finalStateJson,
+        finalStateHash,
+        finalizationJson,
+        finalizationHash: sha256(finalizationJson),
+        finalizedAtUtc,
+      },
+    };
+
+    expect(validateGameplaySync(finalized, live.runId)).toMatchObject({
+      eventHistoryRevision: 4,
+      finalization: { finalizedHistoryRevision: 4, finalizedHistoryHash: historyHash, finalStateHash },
+    });
+  });
+
   it("accepts an exact deterministic full-history revision after MatchEngine replay", () => {
     const input = payload();
     expect(validateGameplaySync(input, input.runId)).toMatchObject({ runId: input.runId, eventHistoryRevision: 1, historyHash: input.historyHash });

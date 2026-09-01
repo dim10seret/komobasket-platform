@@ -14,7 +14,7 @@ import type { GameDiscoveryOperationResult } from "../games/game-discovery-contr
 import { GamePackageDownloadManager, packageOperationFailure, type GamePackageDownloadResult } from "../games/game-package-download.cjs";
 import type { LocalGamePackageStatus } from "../persistence/local-database.cjs";
 import { MatchSetupManager, matchSetupErrorCode, type MatchSetupOperationResult } from "../games/match-setup.cjs";
-import { MatchRunManager, matchRunErrorCode, type LocalRunCatalogueResult, type MatchRunOperationResult } from "../runs/match-run.cjs";
+import { MatchRunManager, matchRunErrorCode, type LocalRunCatalogueResult, type MatchRunOperationResult, type MyGamesRunStateCatalogueResult } from "../runs/match-run.cjs";
 import {
     PreGameConfigurationManager,
     preGameConfigurationErrorCode,
@@ -25,11 +25,25 @@ import {
 import {
     MatchGameplayFlowError,
     type MatchGameplayManager,
+    type MatchGameplayHistoryQuery,
     type MatchGameplayRecovery,
 } from "../runs/match-gameplay.cjs";
 import {
     eventFactsFromIntent,
+    safeGameplayHistory,
+    safeGameplayScorerEventGroup,
+    safeGameplayScorerEventEditContext,
+    safeGameplayScorerEventMutationPreview,
     safeGameplay,
+    type GameplayHistoryOperationResult,
+    type GameplayScorerEventGroupOperationResult,
+    type GameplayScorerEventEditContextOperationResult,
+    type GameplayScorerEventEditModeInput,
+    type GameplayScorerEventMutationPreviewInput,
+    type GameplayScorerEventMutationPreviewOperationResult,
+    type GameplayScorerEventMutationInput,
+    type ResumableLiveFlowInput,
+    type ResumableLiveFlowOperationResult,
     type GameplayIntent,
     type MatchGameplayOperationResult,
 } from "../runs/gameplay-runtime.cjs";
@@ -151,6 +165,21 @@ export class AuthCoordinator {
         }
     }
 
+    async listMyGamesRunStates(): Promise<MyGamesRunStateCatalogueResult> {
+        await this.initialize();
+        if (!this.matchRunManager) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        const regular = this.authorizedContext(false);
+        try {
+            if (regular) return { ok: true, runs: this.matchRunManager.listMyGamesStates(this.owner(regular)), state: this.state };
+            if (this.state.kind !== "live-continuity") return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+            const owner = { scorerId: this.state.context.scorerId, organizationId: this.state.context.organizationId };
+            const permitted = new Set(this.state.context.runIds);
+            return { ok: true, runs: this.matchRunManager.listMyGamesStates(owner).filter((run) => permitted.has(run.runId)), state: this.state };
+        } catch (error) {
+            return { ok: false, errorCode: matchRunErrorCode(error), state: this.state };
+        }
+    }
+
     async recoverMatchGameplay(runId: string): Promise<MatchGameplayOperationResult> {
         await this.initialize();
         const owner = this.gameplayOwner(runId);
@@ -184,11 +213,94 @@ export class AuthCoordinator {
         if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
             const result = this.gameplaySuccess(await this.matchGameplayManager.append(runId, owner, eventFactsFromIntent(intent)));
-            this.wakeSync();
+            this.queueSync(runId);
             return result;
         } catch (error) {
             return this.gameplayFailure(error);
         }
+    }
+
+    async appendAndResolveResumableGameplayFlow(runId: string, intent: GameplayIntent): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const result = this.gameplaySuccess(await this.matchGameplayManager.appendAndResolveResumableFlow(runId, owner, eventFactsFromIntent(intent)));
+            this.queueSync(runId);
+            return result;
+        } catch (error) { return this.gameplayFailure(error); }
+    }
+
+    async saveResumableLiveFlow(runId: string, input: ResumableLiveFlowInput): Promise<ResumableLiveFlowOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { return { ok: true, flow: await this.matchGameplayManager.saveResumableLiveFlow(runId, owner, input), state: this.state }; }
+        catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", state: this.state }; }
+    }
+
+    async getResumableLiveFlow(runId: string): Promise<ResumableLiveFlowOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { return { ok: true, flow: this.matchGameplayManager.getResumableLiveFlow(runId, owner), state: this.state }; }
+        catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", state: this.state }; }
+    }
+
+    async appendGameplayIntents(runId: string, intents: GameplayIntent[]): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const result = this.gameplaySuccess(await this.matchGameplayManager.appendMany(runId, owner, intents.map(eventFactsFromIntent)));
+            this.queueSync(runId);
+            return result;
+        } catch (error) { return this.gameplayFailure(error); }
+    }
+
+    async getGameplayHistory(runId: string, query: MatchGameplayHistoryQuery): Promise<GameplayHistoryOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { return { ok: true, history: safeGameplayHistory(await this.matchGameplayManager.history(runId, owner, query)), state: this.state }; }
+        catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", state: this.state }; }
+    }
+
+    async getScorerEventGroup(runId: string, scorerEventGroupId: string): Promise<GameplayScorerEventGroupOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const group = await this.matchGameplayManager.scorerEventGroup(runId, owner, scorerEventGroupId);
+            return { ok: true, group: group ? safeGameplayScorerEventGroup(group) : null, state: this.state };
+        } catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", state: this.state }; }
+    }
+
+    async getScorerEventEditContext(runId: string, scorerEventGroupId: string, mode?: GameplayScorerEventEditModeInput): Promise<GameplayScorerEventEditContextOperationResult> {
+        await this.initialize(); const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { const context = await this.matchGameplayManager.scorerEventEditContext(runId, owner, scorerEventGroupId, mode); return { ok: true, context: context ? safeGameplayScorerEventEditContext(context) : null, state: this.state }; }
+        catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", state: this.state }; }
+    }
+
+    async previewGameplayScorerEventMutation(runId: string, input: GameplayScorerEventMutationPreviewInput): Promise<GameplayScorerEventMutationPreviewOperationResult> {
+        await this.initialize(); const owner = this.gameplayOwner(runId); if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try { const preview = await this.matchGameplayManager.previewScorerEventGroupMutation(runId, owner, { ...input, events: input.events.map((event) => ({ draftId: event.draftId, ...(event.eventId ? { eventId: event.eventId } : {}), facts: eventFactsFromIntent(event.intent) })) }); return { ok: true, preview: safeGameplayScorerEventMutationPreview(preview), state: this.state }; }
+        catch (error) { return { ok: false, errorCode: error instanceof MatchGameplayFlowError ? error.code : "GAMEPLAY_CORRUPTED", ...(error instanceof MatchGameplayFlowError && error.dependentEventIds.length ? { dependentEventIds: error.dependentEventIds } : {}), state: this.state }; }
+    }
+
+    async mutateGameplayScorerEventGroup(runId: string, mutation: GameplayScorerEventMutationInput): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        try {
+            const managerMutation = mutation.kind === "DELETE_GROUP"
+                ? mutation
+                : { ...mutation, events: mutation.events.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: eventFactsFromIntent(event.intent) })) };
+            const result = this.gameplaySuccess(await this.matchGameplayManager.mutateScorerEventGroup(runId, owner, managerMutation));
+            this.queueSync(runId);
+            return result;
+        } catch (error) { return this.gameplayFailure(error); }
     }
 
     async removeGameplayEvent(runId: string, eventId: string, cascadeDependencies: boolean): Promise<MatchGameplayOperationResult> {
@@ -197,7 +309,7 @@ export class AuthCoordinator {
         if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
             const result = this.gameplaySuccess(await this.matchGameplayManager.remove(runId, owner, eventId, cascadeDependencies));
-            this.wakeSync();
+            this.queueSync(runId);
             return result;
         } catch (error) {
             return this.gameplayFailure(error);
@@ -210,7 +322,7 @@ export class AuthCoordinator {
         if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
             const result = this.gameplaySuccess(await this.matchGameplayManager.correct(runId, owner, eventId, eventFactsFromIntent(intent), cascadeDependencies));
-            this.wakeSync();
+            this.queueSync(runId);
             return result;
         } catch (error) {
             return this.gameplayFailure(error);
@@ -227,6 +339,42 @@ export class AuthCoordinator {
             return result;
         } catch (error) {
             return this.gameplayFailure(error);
+        }
+    }
+
+    async reconnectGameplaySync(runId: string, input: LoginInput): Promise<MatchGameplayOperationResult> {
+        await this.initialize();
+        const owner = this.gameplayOwner(runId);
+        if (!owner || !this.matchGameplayManager || !this.syncWorker || !this.client) {
+            return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+        }
+        let current: MatchGameplayRecovery;
+        try {
+            current = await this.matchGameplayManager.recover(runId, owner);
+        } catch (error) {
+            return this.gameplayFailure(error);
+        }
+        try {
+            this.requireAvailableFoundation();
+            const result = await this.client.login(input.username, input.password, this.deviceId);
+            if (result.scorerId !== owner.scorerId || result.organizationId !== owner.organizationId || result.deviceId !== this.deviceId) {
+                try { await this.client.logout(result.token); } catch { /* best effort */ }
+                return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
+            }
+            const envelope = this.envelopeFromValidatedSession(result.token, result);
+            try {
+                this.store.saveAuthorization(envelope);
+            } catch (error) {
+                try { await this.client.logout(result.token); } catch { /* best effort */ }
+                throw error;
+            }
+            this.liveAuthorization?.reactivateOwner(envelope.organizationId, envelope.scorerId);
+            this.currentAuthorization = envelope;
+            this.state = this.authenticatedState(this.safeContext(envelope), "online");
+            this.wakeSync(true);
+            return this.gameplaySuccess(current);
+        } catch (error) {
+            return { ok: false, errorCode: authErrorCode(error), state: this.state };
         }
     }
 
@@ -506,6 +654,11 @@ export class AuthCoordinator {
     private wakeSync(resumeAuthPaused = false): void {
         if (this.state.kind !== "authenticated" || this.state.connection !== "online" || !this.currentAuthorization || !this.syncWorker) return;
         this.syncWorker.wake(this.currentAuthorization.opaqueToken, this.owner(this.state.context), resumeAuthPaused);
+    }
+
+    private queueSync(runId: string): void {
+        if (this.state.kind !== "authenticated" || this.state.connection !== "online" || !this.currentAuthorization || !this.syncWorker) return;
+        this.syncWorker.queue?.(runId, this.currentAuthorization.opaqueToken, this.owner(this.state.context));
     }
 
     private continuityState(): DesktopAuthState | null {

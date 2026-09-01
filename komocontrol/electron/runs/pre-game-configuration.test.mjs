@@ -87,7 +87,7 @@ describe("KC-5B9A durable pre-game configuration", () => {
         } finally { db.close(); }
         const migrationsDirectory = path.join(root, "migrations"); fs.cpSync(path.resolve("electron/migrations"), migrationsDirectory, { recursive: true });
         const localDatabase = new LocalDatabase({ databasePath, migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(localDatabase);
-        expect(localDatabase.initialize().schemaVersion).toBe("0007_live_pre_game_corrections.sql");
+        expect(localDatabase.initialize().schemaVersion).toBe("0008_resumable_live_flows.sql");
         expect(localDatabase.getDeviceIdentity().deviceId).toBe(deviceId); expect(localDatabase.readGamePackage("package-v2")?.packageVersion).toBe(2); expect(localDatabase.getActiveLocalGameRun("game-1")?.runId).toBe("run-preserved"); expect(readRows(databasePath, "SELECT * FROM local_game_run_configurations")).toHaveLength(0);
     });
 

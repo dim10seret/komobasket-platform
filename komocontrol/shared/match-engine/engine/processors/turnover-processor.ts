@@ -19,6 +19,6 @@ export class TurnoverProcessor {
     if (!player) throw new Error("Validated player was not found while processing a turnover event.");
 
     this.statistics.recordTurnover(team, player);
-    this.possession.switch(state);
+    this.possession.set(state, event.team === "HOME" ? "AWAY" : "HOME");
   }
 }

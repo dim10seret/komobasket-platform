@@ -144,7 +144,6 @@ export class FoulProcessor {
   ): void {
     player.foulState.status = status;
     player.foulState.statusReason = reason;
-    player.onCourt = false;
   }
 
 }

@@ -45,6 +45,7 @@ function terminalSyncError(code: string | null): boolean {
 export class GameplaySyncWorker {
     private readonly inFlight = new Map<string, Promise<GameplaySyncResponse>>();
     private readonly timers = new Map<string, Timer>();
+    private readonly coalesceTimers = new Map<string, Timer>();
     private token: string | null = null;
     private owner: GameplaySyncOwner | null = null;
 
@@ -52,6 +53,7 @@ export class GameplaySyncWorker {
         private readonly database: LocalDatabase,
         private readonly client: PlatformAuthClient,
         private readonly now: () => Date = () => new Date(),
+        private readonly onStateChange?: (runId: string) => void,
     ) {}
 
     wake(token: string, owner: GameplaySyncOwner, resumeAuthPaused = false): void {
@@ -66,9 +68,27 @@ export class GameplaySyncWorker {
         this.owner = null;
         for (const timer of this.timers.values()) clearTimeout(timer);
         this.timers.clear();
+        for (const timer of this.coalesceTimers.values()) clearTimeout(timer);
+        this.coalesceTimers.clear();
+    }
+
+    queue(runId: string, token: string, owner: GameplaySyncOwner): void {
+        this.token = token;
+        this.owner = owner;
+        const existing = this.coalesceTimers.get(runId);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+            this.coalesceTimers.delete(runId);
+            if (this.token === token && this.owner?.scorerId === owner.scorerId && this.owner.organizationId === owner.organizationId) this.resume(runId, token, owner);
+        }, 300);
+        timer.unref?.();
+        this.coalesceTimers.set(runId, timer);
     }
 
     async retry(runId: string, token: string, owner: GameplaySyncOwner): Promise<GameplaySyncResponse> {
+        const coalesced = this.coalesceTimers.get(runId);
+        if (coalesced) clearTimeout(coalesced);
+        this.coalesceTimers.delete(runId);
         const timer = this.timers.get(runId);
         if (timer) clearTimeout(timer);
         this.timers.delete(runId);
@@ -96,6 +116,7 @@ export class GameplaySyncWorker {
         const request = this.request(runId, owner);
         const attemptedAtUtc = this.now().toISOString();
         this.database.markGameplaySyncAttempt(runId, request.eventHistoryRevision, attemptedAtUtc);
+        this.notifyStateChange(runId);
         try {
             const response = await this.client.syncGameplay(token, request);
             if (response.runId !== request.runId
@@ -115,14 +136,20 @@ export class GameplaySyncWorker {
                 finalizationHash: request.finalization?.finalizationHash ?? null,
                 succeededAtUtc: this.now().toISOString(),
             });
+            this.notifyStateChange(runId);
             return response;
         } catch (error) {
             const code = syncErrorCode(error);
             const retryable = retryableSyncError(code);
             const state = this.database.recordGameplaySyncFailure(runId, code, this.now().toISOString(), retryable);
+            this.notifyStateChange(runId);
             if (retryable && state.nextRetryAtUtc) this.scheduleAt(runId, state.nextRetryAtUtc);
             throw error;
         }
+    }
+
+    private notifyStateChange(runId: string): void {
+        try { this.onStateChange?.(runId); } catch { /* renderer diagnostics must never affect sync */ }
     }
 
     private resume(runId: string, token: string, owner: GameplaySyncOwner, resumeAuthPaused = false): void {

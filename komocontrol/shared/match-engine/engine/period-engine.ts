@@ -41,10 +41,33 @@ export class PeriodEngine {
       && next.index === current.index + 1;
   }
 
+  timeoutAllowanceFor(period: MatchPeriod): number {
+    return period.kind === PeriodKind.OVERTIME ? 1 : period.index <= 2 ? 2 : 3;
+  }
+
+  shouldResetTimeoutPool(current: MatchPeriod, next: MatchPeriod): boolean {
+    return next.kind === PeriodKind.OVERTIME
+      || (current.kind === PeriodKind.REGULATION
+        && current.index === 2
+        && next.kind === PeriodKind.REGULATION
+        && next.index === 3);
+  }
+
   start(state: MatchState, period: MatchPeriod): void {
     if (this.shouldResetTeamFouls(state.period, period, state.rules)) {
       state.home.teamFouls = 0;
       state.away.teamFouls = 0;
+    }
+    if (
+      state.home.timeoutAllowance !== undefined
+      && state.away.timeoutAllowance !== undefined
+      && this.shouldResetTimeoutPool(state.period, period)
+    ) {
+      const allowance = this.timeoutAllowanceFor(period);
+      state.home.timeouts = allowance;
+      state.home.timeoutAllowance = allowance;
+      state.away.timeouts = allowance;
+      state.away.timeoutAllowance = allowance;
     }
     state.period = { ...period };
     state.clock = this.durationFor(period, state.rules);

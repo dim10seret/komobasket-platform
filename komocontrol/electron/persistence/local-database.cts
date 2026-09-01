@@ -202,6 +202,8 @@ export interface RewriteLocalMatchEventHistoryInput {
     lastAcceptedSequence: number;
     events: LocalMatchEventWrite[];
     updatedAtUtc: string;
+    clearResumableFlow?: boolean;
+    sequencePolicy?: "PRESERVE_HIGH_WATER" | "DENSE_RENUMBERED";
 }
 
 export interface AppendLocalMatchEventInput {
@@ -213,6 +215,42 @@ export interface AppendLocalMatchEventInput {
     expectedLastAcceptedSequence: number;
     event: LocalMatchEventWrite;
     updatedAtUtc: string;
+    clearResumableFlow?: boolean;
+}
+
+export interface AppendLocalMatchEventsInput {
+    runId: string;
+    organizationId: string;
+    scorerId: string;
+    deviceId: string;
+    expectedHistoryRevision: number;
+    expectedLastAcceptedSequence: number;
+    events: LocalMatchEventWrite[];
+    updatedAtUtc: string;
+    clearResumableFlow?: boolean;
+}
+
+export interface StoredLocalResumableLiveFlow {
+    runId: string;
+    flowSchemaVersion: 1;
+    flowKind: "SHOOTING_FOUL";
+    stage: "PENALTY";
+    rootEventId: string;
+    sourceFoulEventId: string;
+    selectedFreeThrowShooterId: string;
+    eventHistoryRevision: number;
+    stateJson: string;
+    stateHash: string;
+    createdAtUtc: string;
+    updatedAtUtc: string;
+}
+
+export interface SaveLocalResumableLiveFlowInput {
+    runId: string; organizationId: string; scorerId: string; deviceId: string;
+    expectedHistoryRevision: number;
+    flowKind: "SHOOTING_FOUL"; stage: "PENALTY";
+    rootEventId: string; sourceFoulEventId: string; selectedFreeThrowShooterId: string;
+    stateJson: string; stateHash: string; updatedAtUtc: string;
 }
 
 export interface StoredLocalLiveRunAuthorization {
@@ -506,7 +544,7 @@ function loadOrCreateDeviceIdentity(database: DatabaseSync): DeviceIdentity {
 }
 
 function verifyExpectedSchema(database: DatabaseSync): void {
-    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs", "local_game_run_configurations", "local_match_engine_snapshots", "local_match_events", "local_live_run_authorizations", "local_gameplay_sync_state", "local_match_finalizations"]) {
+    for (const tableName of ["local_schema_migrations", "device_identity", "local_game_packages", "local_game_runs", "local_game_run_configurations", "local_match_engine_snapshots", "local_match_events", "local_live_run_authorizations", "local_gameplay_sync_state", "local_match_finalizations", "local_resumable_live_flows"]) {
         if (!tableExists(database, tableName)) {
             throw new Error(`Required local table is missing: ${tableName}.`);
         }
@@ -658,6 +696,25 @@ function storedMatchFinalization(value: unknown): StoredLocalMatchFinalization {
         finalizationJson: stringField(row, "finalization_json", "local_match_finalizations"),
         finalizationHash: stringField(row, "finalization_hash", "local_match_finalizations"),
         finalizedAtUtc: stringField(row, "finalized_at_utc", "local_match_finalizations"),
+    };
+}
+
+function storedResumableLiveFlow(value: unknown): StoredLocalResumableLiveFlow {
+    const row = objectRow(value, "local_resumable_live_flows");
+    const flowSchemaVersion = numberField(row, "flow_schema_version", "local_resumable_live_flows");
+    const flowKind = stringField(row, "flow_kind", "local_resumable_live_flows");
+    const stage = stringField(row, "stage", "local_resumable_live_flows");
+    if (flowSchemaVersion !== 1 || flowKind !== "SHOOTING_FOUL" || stage !== "PENALTY") throw new Error("Unsupported resumable Live flow schema.");
+    const stateJson = stringField(row, "state_json", "local_resumable_live_flows");
+    const stateHash = stringField(row, "state_hash", "local_resumable_live_flows");
+    if (!/^[0-9a-f]{64}$/.test(stateHash) || sha256Utf8(stateJson) !== stateHash) throw new Error("Resumable Live flow hash is invalid.");
+    const state = parsedObject(stateJson, "local_resumable_live_flows");
+    if (state.schemaVersion !== 1 || state.flowKind !== flowKind || state.stage !== stage) throw new Error("Resumable Live flow payload is invalid.");
+    return {
+        runId: stringField(row, "run_id", "local_resumable_live_flows"), flowSchemaVersion: 1, flowKind: "SHOOTING_FOUL", stage: "PENALTY",
+        rootEventId: stringField(row, "root_event_id", "local_resumable_live_flows"), sourceFoulEventId: stringField(row, "source_foul_event_id", "local_resumable_live_flows"),
+        selectedFreeThrowShooterId: stringField(row, "selected_free_throw_shooter_id", "local_resumable_live_flows"), eventHistoryRevision: numberField(row, "event_history_revision", "local_resumable_live_flows"),
+        stateJson, stateHash, createdAtUtc: stringField(row, "created_at_utc", "local_resumable_live_flows"), updatedAtUtc: stringField(row, "updated_at_utc", "local_resumable_live_flows"),
     };
 }
 
@@ -816,6 +873,16 @@ export class LocalDatabase {
         const values = this.requireDatabase().prepare(`SELECT * FROM local_game_runs
             WHERE organization_id = ? AND scorer_id = ? AND device_id = ? AND status IN ('active', 'finalized')
             ORDER BY created_at_utc, run_id`).all(organizationId, scorerId, deviceId);
+        return values.map(storedGameRun);
+    }
+
+    listMyGamesLocalRunsForOwner(organizationId: string, scorerId: string, deviceId: string): StoredLocalGameRun[] {
+        if (!organizationId.trim() || !scorerId.trim() || !deviceId.trim()) throw new Error("Local Game Run owner identity is required.");
+        const values = this.requireDatabase().prepare(`SELECT * FROM local_game_runs
+            WHERE organization_id = ? AND scorer_id = ? AND device_id = ? AND status IN ('active', 'finalized')
+            ORDER BY game_id,
+                CASE status WHEN 'active' THEN 0 ELSE 1 END,
+                updated_at_utc DESC, created_at_utc DESC, run_id DESC`).all(organizationId, scorerId, deviceId);
         return values.map(storedGameRun);
     }
 
@@ -1058,6 +1125,47 @@ export class LocalDatabase {
         return value === undefined ? null : storedMatchFinalization(value);
     }
 
+    readLocalResumableLiveFlow(runId: string): StoredLocalResumableLiveFlow | null {
+        if (!runId.trim()) throw new Error("Run identity is required.");
+        const value = this.requireDatabase().prepare("SELECT * FROM local_resumable_live_flows WHERE run_id = ?").get(runId);
+        return value === undefined ? null : storedResumableLiveFlow(value);
+    }
+
+    saveLocalResumableLiveFlow(input: SaveLocalResumableLiveFlowInput): StoredLocalResumableLiveFlow {
+        if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim() || !input.rootEventId.trim() || !input.sourceFoulEventId.trim() || !input.selectedFreeThrowShooterId.trim() || !input.updatedAtUtc.trim()
+            || input.flowKind !== "SHOOTING_FOUL" || input.stage !== "PENALTY" || !Number.isInteger(input.expectedHistoryRevision) || input.expectedHistoryRevision < 1
+            || !/^[0-9a-f]{64}$/.test(input.stateHash) || sha256Utf8(input.stateJson) !== input.stateHash) throw new Error("Resumable Live flow metadata is invalid.");
+        const state = parsedObject(input.stateJson, "local_resumable_live_flows");
+        if (state.schemaVersion !== 1 || state.flowKind !== input.flowKind || state.stage !== input.stage || state.rootEventId !== input.rootEventId || state.sourceFoulEventId !== input.sourceFoulEventId || state.selectedFreeThrowShooterId !== input.selectedFreeThrowShooterId) throw new Error("Resumable Live flow state is invalid.");
+        const database = this.requireDatabase();
+        database.exec("BEGIN IMMEDIATE");
+        try {
+            const runValue = database.prepare("SELECT * FROM local_game_runs WHERE run_id = ?").get(input.runId);
+            const snapshotValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
+            if (runValue === undefined || snapshotValue === undefined) throw new LocalMatchGameplayConflictError("state");
+            const run = storedGameRun(runValue); const snapshot = storedMatchEngineSnapshot(snapshotValue);
+            if (run.organizationId !== input.organizationId || run.scorerId !== input.scorerId || run.deviceId !== input.deviceId) throw new LocalMatchGameplayConflictError("ownership");
+            if (run.status !== "active" || run.startedAtUtc === null || snapshot.eventHistoryRevision !== input.expectedHistoryRevision) throw new LocalMatchGameplayConflictError("state");
+            const rootValue = database.prepare("SELECT * FROM local_match_events WHERE run_id = ? AND event_id = ?").get(input.runId, input.rootEventId);
+            const sourceValue = database.prepare("SELECT * FROM local_match_events WHERE run_id = ? AND event_id = ?").get(input.runId, input.sourceFoulEventId);
+            if (rootValue === undefined || sourceValue === undefined) throw new LocalMatchGameplayConflictError("state");
+            const root = parsedObject(storedMatchEvent(rootValue).eventJson, "local_match_events");
+            const source = parsedObject(storedMatchEvent(sourceValue).eventJson, "local_match_events");
+            if (!(root.type === "TWO_POINT" || root.type === "TWO_POINT_MISSED" || root.type === "THREE_POINT" || root.type === "THREE_POINT_MISSED")
+                || !(source.type === "PERSONAL_FOUL" || source.type === "TECHNICAL_FOUL" || source.type === "DISRUPTIVE_FOUL" || source.type === "FLAGRANT_FOUL" || source.type === "DISQUALIFYING_FOUL")
+                || source.relatedShotEventId !== input.rootEventId) throw new LocalMatchGameplayConflictError("state");
+            database.prepare(`INSERT INTO local_resumable_live_flows
+                (run_id, flow_schema_version, flow_kind, stage, root_event_id, source_foul_event_id, selected_free_throw_shooter_id, event_history_revision, state_json, state_hash, created_at_utc, updated_at_utc)
+                VALUES (?, 1, 'SHOOTING_FOUL', 'PENALTY', ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET root_event_id=excluded.root_event_id, source_foul_event_id=excluded.source_foul_event_id,
+                selected_free_throw_shooter_id=excluded.selected_free_throw_shooter_id, event_history_revision=excluded.event_history_revision,
+                state_json=excluded.state_json, state_hash=excluded.state_hash, updated_at_utc=excluded.updated_at_utc`)
+                .run(input.runId, input.rootEventId, input.sourceFoulEventId, input.selectedFreeThrowShooterId, input.expectedHistoryRevision, input.stateJson, input.stateHash, input.updatedAtUtc, input.updatedAtUtc);
+            const saved = this.readLocalResumableLiveFlow(input.runId); if (!saved) throw new Error("Resumable Live flow was not stored.");
+            database.exec("COMMIT"); return saved;
+        } catch (error) { database.exec("ROLLBACK"); throw error; }
+    }
+
     listPendingGameplaySyncRunIds(organizationId: string, scorerId: string): string[] {
         if (!organizationId.trim() || !scorerId.trim()) throw new Error("Gameplay sync owner is invalid.");
         return this.requireDatabase().prepare(`SELECT r.run_id
@@ -1213,16 +1321,19 @@ export class LocalDatabase {
     rewriteLocalMatchEventHistory(input: RewriteLocalMatchEventHistoryInput): StoredLocalMatchEngineSnapshot {
         if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim() || !input.updatedAtUtc.trim()) throw new Error("Local Match gameplay identity is invalid.");
         if (!Number.isInteger(input.expectedHistoryRevision) || input.expectedHistoryRevision < 1 || !Number.isInteger(input.lastAcceptedSequence) || input.lastAcceptedSequence < 1) throw new Error("Local Match gameplay revision is invalid.");
+        const sequencePolicy = input.sequencePolicy ?? "PRESERVE_HIGH_WATER";
         let previousSequence = 0;
         const ids = new Set<string>();
         for (const event of input.events) {
             validateMatchEventWrite(event);
-            if (event.sequence <= previousSequence || ids.has(event.eventId)) throw new Error("Local MatchEvent history ordering is invalid.");
+            const invalidSequence = sequencePolicy === "DENSE_RENUMBERED" ? event.sequence !== previousSequence + 1 : event.sequence <= previousSequence;
+            if (invalidSequence || ids.has(event.eventId)) throw new Error("Local MatchEvent history ordering is invalid.");
             previousSequence = event.sequence;
             ids.add(event.eventId);
         }
         const firstEvent = input.events[0];
         if (!firstEvent || firstEvent.sequence !== 1 || parsedObject(firstEvent.eventJson, "local_match_events").type !== "MATCH_START") throw new Error("Local MatchEvent history must begin with immutable MATCH_START sequence one.");
+        if (sequencePolicy === "DENSE_RENUMBERED" ? input.lastAcceptedSequence !== previousSequence : input.lastAcceptedSequence < previousSequence) throw new Error("Local MatchEvent history high-water sequence is invalid.");
 
         const database = this.requireDatabase();
         database.exec("BEGIN IMMEDIATE");
@@ -1232,8 +1343,6 @@ export class LocalDatabase {
             const run = storedGameRun(runValue);
             if (run.organizationId !== input.organizationId || run.scorerId !== input.scorerId || run.deviceId !== input.deviceId) throw new LocalMatchGameplayConflictError("ownership");
             if (run.status !== "active" || run.startedAtUtc === null) throw new LocalMatchGameplayConflictError("state");
-            if (input.lastAcceptedSequence !== run.lastAcceptedSequence && input.lastAcceptedSequence !== run.lastAcceptedSequence + 1) throw new LocalMatchGameplayConflictError("state");
-            if (input.lastAcceptedSequence === run.lastAcceptedSequence + 1 && !input.events.some((event) => event.sequence === input.lastAcceptedSequence)) throw new LocalMatchGameplayConflictError("state");
             const snapshotValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
             if (snapshotValue === undefined) throw new LocalMatchGameplayConflictError("state");
             const snapshot = storedMatchEngineSnapshot(snapshotValue);
@@ -1252,6 +1361,7 @@ export class LocalDatabase {
                 SET last_accepted_sequence = ?, updated_at_utc = ?
                 WHERE run_id = ? AND last_accepted_sequence = ?`).run(input.lastAcceptedSequence, input.updatedAtUtc, input.runId, run.lastAcceptedSequence);
             if (Number(runUpdate.changes) !== 1) throw new LocalMatchGameplayConflictError("state");
+            if (input.clearResumableFlow) database.prepare("DELETE FROM local_resumable_live_flows WHERE run_id = ?").run(input.runId);
             const savedValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
             if (savedValue === undefined) throw new Error("Local Match gameplay revision was not saved.");
             const saved = storedMatchEngineSnapshot(savedValue);
@@ -1264,11 +1374,21 @@ export class LocalDatabase {
     }
 
     appendLocalMatchEvent(input: AppendLocalMatchEventInput): StoredLocalMatchEngineSnapshot {
+        return this.appendLocalMatchEvents({ ...input, events: [input.event] });
+    }
+
+    appendLocalMatchEvents(input: AppendLocalMatchEventsInput): StoredLocalMatchEngineSnapshot {
         if (!input.runId.trim() || !input.organizationId.trim() || !input.scorerId.trim() || !input.deviceId.trim() || !input.updatedAtUtc.trim()) throw new Error("Local Match append identity is invalid.");
         if (!Number.isInteger(input.expectedHistoryRevision) || input.expectedHistoryRevision < 1
             || !Number.isInteger(input.expectedLastAcceptedSequence) || input.expectedLastAcceptedSequence < 1) throw new Error("Local Match append revision is invalid.");
-        validateMatchEventWrite(input.event);
-        if (input.event.sequence !== input.expectedLastAcceptedSequence + 1) throw new Error("Local Match append sequence is invalid.");
+        if (!Array.isArray(input.events) || input.events.length < 1 || input.events.length > 16) throw new Error("Local Match append batch is invalid.");
+        const eventIds = new Set<string>();
+        input.events.forEach((event, index) => {
+            validateMatchEventWrite(event);
+            if (event.sequence !== input.expectedLastAcceptedSequence + index + 1 || eventIds.has(event.eventId)) throw new Error("Local Match append sequence is invalid.");
+            eventIds.add(event.eventId);
+        });
+        const lastEvent = input.events[input.events.length - 1];
 
         const database = this.requireDatabase();
         database.exec("BEGIN IMMEDIATE");
@@ -1282,19 +1402,20 @@ export class LocalDatabase {
             if (run.status !== "active" || run.startedAtUtc === null || run.lastAcceptedSequence !== input.expectedLastAcceptedSequence) throw new LocalMatchGameplayConflictError("state");
             if (snapshot.eventHistoryRevision !== input.expectedHistoryRevision) throw new LocalMatchGameplayConflictError("revision");
 
-            database.prepare(`INSERT INTO local_match_events
+            const insert = database.prepare(`INSERT INTO local_match_events
                 (run_id, event_id, sequence, event_schema_version, event_json, event_hash, persisted_at_utc)
-                VALUES (?, ?, ?, 2, ?, ?, ?)`)
-                .run(input.runId, input.event.eventId, input.event.sequence, input.event.eventJson, input.event.eventHash, input.event.persistedAtUtc);
+                VALUES (?, ?, ?, 2, ?, ?, ?)`);
+            for (const event of input.events) insert.run(input.runId, event.eventId, event.sequence, event.eventJson, event.eventHash, event.persistedAtUtc);
             const snapshotUpdate = database.prepare(`UPDATE local_match_engine_snapshots
                 SET event_history_revision = event_history_revision + 1
                 WHERE run_id = ? AND event_history_revision = ?`).run(input.runId, input.expectedHistoryRevision);
             const runUpdate = database.prepare(`UPDATE local_game_runs
                 SET last_accepted_sequence = ?, updated_at_utc = ?
                 WHERE run_id = ? AND last_accepted_sequence = ?`)
-                .run(input.event.sequence, input.updatedAtUtc, input.runId, input.expectedLastAcceptedSequence);
+                .run(lastEvent.sequence, input.updatedAtUtc, input.runId, input.expectedLastAcceptedSequence);
             if (Number(snapshotUpdate.changes) !== 1) throw new LocalMatchGameplayConflictError("revision");
             if (Number(runUpdate.changes) !== 1) throw new LocalMatchGameplayConflictError("state");
+            if (input.clearResumableFlow) database.prepare("DELETE FROM local_resumable_live_flows WHERE run_id = ?").run(input.runId);
             const savedValue = database.prepare("SELECT * FROM local_match_engine_snapshots WHERE run_id = ?").get(input.runId);
             if (savedValue === undefined) throw new Error("Local Match append revision was not stored.");
             const saved = storedMatchEngineSnapshot(savedValue);

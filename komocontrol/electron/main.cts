@@ -11,7 +11,7 @@ import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
 import { MatchRunManager } from "./runs/match-run.cjs";
 import { MatchGameplayManager } from "./runs/match-gameplay.cjs";
-import { parseGameplayIntent } from "./runs/gameplay-runtime.cjs";
+import { parseGameplayHistoryQuery, parseGameplayIntent, parseGameplayIntents, parseGameplayScorerEventEditModeInput, parseGameplayScorerEventMutationInput, parseGameplayScorerEventMutationPreviewInput, parseResumableLiveFlowInput } from "./runs/gameplay-runtime.cjs";
 import { GameplaySyncWorker } from "./sync/gameplay-sync.cjs";
 import { EXTRA_BENCH_ROLES, PreGameConfigurationManager, type ExtraBenchEntryV1, type ExtraBenchRole, type PreGameConfigurationPlayerDraft, type PreGameConfigurationPresentationDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationStaffDraft, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
 
@@ -205,6 +205,7 @@ ipcMain.handle("games:get-match-setup", (event, value: unknown) => { requireTrus
 ipcMain.handle("runs:create-or-open", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().createOrOpenGameRun(gameIdInput(value)); });
 ipcMain.handle("runs:get-active", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getActiveGameRun(gameIdInput(value)); });
 ipcMain.handle("runs:list-local", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listLocalRuns(); });
+ipcMain.handle("runs:list-my-games-state", async (event) => { requireTrustedSender(event); return requireAuthCoordinator().listMyGamesRunStates(); });
 ipcMain.handle("pregame:get-or-create", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getOrCreatePreGameConfiguration(gameIdInput(value)); });
 ipcMain.handle("pregame:save-draft", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().savePreGameConfigurationDraft(preGameConfigurationSaveInput(value)); });
 ipcMain.handle("gameplay:start", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().startMatch(gameplayId(value)); });
@@ -212,6 +213,39 @@ ipcMain.handle("gameplay:recover", async (event, value: unknown) => { requireTru
 ipcMain.handle("gameplay:append-intent", async (event, value: unknown) => {
     requireTrustedSender(event); const input = gameplayObject(value);
     return requireAuthCoordinator().appendGameplayIntent(gameplayId(input.runId), parseGameplayIntent(input.intent));
+});
+ipcMain.handle("gameplay:append-and-resolve-flow", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().appendAndResolveResumableGameplayFlow(gameplayId(input.runId), parseGameplayIntent(input.intent));
+});
+ipcMain.handle("gameplay:save-resumable-flow", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().saveResumableLiveFlow(gameplayId(input.runId), parseResumableLiveFlowInput(input.flow));
+});
+ipcMain.handle("gameplay:get-resumable-flow", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().getResumableLiveFlow(gameplayId(value)); });
+ipcMain.handle("gameplay:append-intents", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().appendGameplayIntents(gameplayId(input.runId), parseGameplayIntents(input.intents));
+});
+ipcMain.handle("gameplay:get-history", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().getGameplayHistory(gameplayId(input.runId), parseGameplayHistoryQuery(input.query));
+});
+ipcMain.handle("gameplay:get-scorer-event-group", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().getScorerEventGroup(gameplayId(input.runId), gameplayId(input.scorerEventGroupId));
+});
+ipcMain.handle("gameplay:get-scorer-event-edit-context", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().getScorerEventEditContext(gameplayId(input.runId), gameplayId(input.scorerEventGroupId), input.mode === undefined ? undefined : parseGameplayScorerEventEditModeInput(input.mode));
+});
+ipcMain.handle("gameplay:preview-scorer-event-mutation", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().previewGameplayScorerEventMutation(gameplayId(input.runId), parseGameplayScorerEventMutationPreviewInput(input.preview));
+});
+ipcMain.handle("gameplay:mutate-scorer-event-group", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().mutateGameplayScorerEventGroup(gameplayId(input.runId), parseGameplayScorerEventMutationInput(input.mutation));
 });
 ipcMain.handle("gameplay:remove-event", async (event, value: unknown) => {
     requireTrustedSender(event); const input = gameplayObject(value);
@@ -223,6 +257,10 @@ ipcMain.handle("gameplay:correct-event", async (event, value: unknown) => {
 });
 ipcMain.handle("gameplay:finalize", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().finalizeMatch(gameplayId(value)); });
 ipcMain.handle("gameplay:retry-sync", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().retryGameplaySync(gameplayId(value)); });
+ipcMain.handle("gameplay:reconnect-sync", async (event, value: unknown) => {
+    requireTrustedSender(event); const input = gameplayObject(value);
+    return requireAuthCoordinator().reconnectGameplaySync(gameplayId(input.runId), loginInput(input.credentials));
+});
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -276,7 +314,9 @@ if (!hasSingleInstanceLock) {
             const preGameConfigurationManager = new PreGameConfigurationManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId);
             const liveAuthorization = new LiveRunAuthorizationManager(localDatabase, sessionCipher, localStatus.deviceIdentity.deviceId);
             const matchGameplayManager = new MatchGameplayManager(matchSetupManager, localDatabase, localStatus.deviceIdentity.deviceId, undefined, undefined, (details) => liveAuthorization.seal(details));
-            const syncWorker = platformClient ? new GameplaySyncWorker(localDatabase, platformClient) : null;
+            const syncWorker = platformClient ? new GameplaySyncWorker(localDatabase, platformClient, undefined, (runId) => {
+                if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("gameplay:sync-state-changed", runId);
+            }) : null;
             authCoordinator = new AuthCoordinator(platformClient, secureSessionStore, localStatus.deviceIdentity.deviceId,
                 platformClient ? new GamePackageDownloadManager(platformClient, localDatabase) : null,
                 matchSetupManager, matchRunManager, preGameConfigurationManager, matchGameplayManager, undefined, liveAuthorization, syncWorker);

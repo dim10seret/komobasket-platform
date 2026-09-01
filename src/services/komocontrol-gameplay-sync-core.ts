@@ -97,12 +97,12 @@ function iso(value: unknown): string {
   return result;
 }
 
-function stable(value: unknown): string {
+export function stable(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
   if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   const item = object(value);
-  return `{${Object.keys(item).sort().map((key) => `${JSON.stringify(key)}:${stable(item[key])}`).join(",")}}`;
+  return `{${Object.keys(item).filter((key) => item[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${stable(item[key])}`).join(",")}}`;
 }
 
 export function sha256(value: string): string {

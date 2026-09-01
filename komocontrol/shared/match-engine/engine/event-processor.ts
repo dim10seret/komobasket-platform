@@ -1,4 +1,5 @@
 import { EventType } from "../types/event-type.js";
+import { pairedTurnoverForSteal } from "./event-dependencies.js";
 import type { FoulEvent, MatchEvent } from "../types/event.js";
 import type { MatchState } from "../types/match-state.js";
 import { createPlayer } from "../models/player.js";
@@ -73,8 +74,12 @@ export class EventProcessor {
     if (
       !isFoulEvent(event)
       && event.type !== EventType.FREE_THROW
+      && event.type !== EventType.PENALTY_ADMINISTRATION_ENDED
       && event.type !== EventType.SUBSTITUTION
       && event.type !== EventType.ROSTER_PLAYER_ADDED
+      && event.type !== EventType.CLOCK_START
+      && event.type !== EventType.CLOCK_STOP
+      && event.type !== EventType.CLOCK_SET
     ) state.penaltyResolution = undefined;
 
     switch (event.type) {
@@ -118,7 +123,7 @@ export class EventProcessor {
         this.reboundProcessor.process(state, event);
         return;
       case EventType.STEAL:
-        this.defensivePlayProcessor.processSteal(state, event);
+        this.defensivePlayProcessor.processSteal(state, event, Boolean(pairedTurnoverForSteal(event, priorEvents)));
         return;
       case EventType.BLOCK:
         this.defensivePlayProcessor.processBlock(state, event);
@@ -133,15 +138,19 @@ export class EventProcessor {
         this.clockEngine.set(state, event.remainingSeconds);
         return;
       case EventType.TWO_POINT:
+        this.possessionEngine.set(state, event.team);
         this.twoPointProcessor.process(state, event);
         return;
       case EventType.TWO_POINT_MISSED:
+        this.possessionEngine.set(state, event.team);
         this.missedShotProcessor.processTwoPoint(state, event);
         return;
       case EventType.THREE_POINT:
+        this.possessionEngine.set(state, event.team);
         this.threePointProcessor.process(state, event);
         return;
       case EventType.THREE_POINT_MISSED:
+        this.possessionEngine.set(state, event.team);
         this.missedShotProcessor.processThreePoint(state, event);
         return;
       case EventType.TURNOVER:
@@ -156,6 +165,9 @@ export class EventProcessor {
         return;
       case EventType.FREE_THROW:
         this.freeThrowProcessor.process(state, event);
+        return;
+      case EventType.PENALTY_ADMINISTRATION_ENDED:
+        this.freeThrowProcessor.endAdministration(state, event);
         return;
       case EventType.SUBSTITUTION:
         this.substitutionProcessor.process(state, event);

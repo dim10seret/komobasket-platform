@@ -13,7 +13,6 @@ import {
   TechnicalFoulCategory,
 } from "../types/foul.js";
 import type { MatchState } from "../types/match-state.js";
-import { ShooterPolicy } from "../types/penalty.js";
 import { PeriodKind, periodsEqual } from "../types/period.js";
 import type { Player } from "../types/player.js";
 import { isShirtNumber } from "../models/player.js";
@@ -91,7 +90,11 @@ export class ValidationEngine {
     } else if (
       penaltyResolution?.freeThrowQueue.length
       && event.type !== EventType.FREE_THROW
+      && event.type !== EventType.PENALTY_ADMINISTRATION_ENDED
       && event.type !== EventType.SUBSTITUTION
+      && event.type !== EventType.CLOCK_START
+      && event.type !== EventType.CLOCK_STOP
+      && event.type !== EventType.CLOCK_SET
     ) return "PENALTY_IN_PROGRESS";
 
     if (event.type === EventType.CLOCK_START) {
@@ -121,9 +124,6 @@ export class ValidationEngine {
       || event.type === EventType.THREE_POINT_MISSED
       || event.type === EventType.TURNOVER
     ) {
-      if (event.team !== state.possession) {
-        return event.type === EventType.TURNOVER ? "INVALID_POSSESSION_TEAM" : "INVALID_SCORING_TEAM";
-      }
       const team = teamFor(state, event.team);
       const player = team.players.find((candidate) => candidate.playerId === event.playerId);
       if (!player) return "PLAYER_NOT_FOUND";
@@ -138,6 +138,7 @@ export class ValidationEngine {
 
     if (isFoulEvent(event)) return this.validateFoul(state, event, priorEvents);
     if (event.type === EventType.FREE_THROW) return this.validateFreeThrow(state, event);
+    if (event.type === EventType.PENALTY_ADMINISTRATION_ENDED) return this.validatePenaltyAdministrationEnd(state, event);
 
     if (event.type === EventType.SUBSTITUTION) {
       if (event.playerInId === event.playerOutId) return "INVALID_SUBSTITUTION";
@@ -154,6 +155,7 @@ export class ValidationEngine {
       if (team.timeouts === 0) return "NO_TIMEOUTS_REMAINING";
     }
     if (event.type === EventType.REBOUND) {
+      if (event.teamRebound === true) return event.playerId === undefined ? undefined : "PLAYER_NOT_FOUND";
       const player = teamFor(state, event.team).players.find(
         (candidate) => candidate.playerId === event.playerId,
       );
@@ -161,7 +163,6 @@ export class ValidationEngine {
       if (rejection) return rejection;
     }
     if (event.type === EventType.STEAL || event.type === EventType.BLOCK) {
-      if (event.team === state.possession) return "INVALID_DEFENSIVE_TEAM";
       const player = teamFor(state, event.team).players.find(
         (candidate) => candidate.playerId === event.playerId,
       );
@@ -279,11 +280,16 @@ export class ValidationEngine {
       (candidate) => candidate.playerId === event.playerId,
     );
     if (!player || !isPlayerEligible(player)) return "INVALID_FREE_THROW_SHOOTER";
-    if (
-      penalty.shooterPolicy === ShooterPolicy.FOULED_PLAYER
-      && event.playerId !== penalty.designatedPlayerId
-    ) return "INVALID_FREE_THROW_SHOOTER";
     return undefined;
+  }
+
+  private validatePenaltyAdministrationEnd(
+    state: MatchState,
+    event: Extract<MatchEvent, { type: typeof EventType.PENALTY_ADMINISTRATION_ENDED }>,
+  ): EventRejectionReason | undefined {
+    const penalty = state.penaltyResolution?.freeThrowQueue[0];
+    if (!penalty) return "NO_ACTIVE_PENALTY";
+    return event.penaltyId === penalty.penaltyId ? undefined : "INVALID_PENALTY_ID";
   }
 
   private validateFouledPlayer(

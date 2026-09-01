@@ -14,11 +14,27 @@ import type { TeamSide } from "./team-side.js";
 
 export const MATCH_EVENT_SCHEMA_VERSION = 2 as const;
 
+export type ScorerEventUnresolvedStep = "ASSIST" | "STEALER" | "FT1" | "FT2" | "FT3" | "REBOUNDER" | "CHOOSE_SHOOTER" | "FOULER" | "DRAWN_BY";
+
+export interface ScorerEventTerminal {
+  reason: "NATURAL" | "ENTER_EARLY";
+  unresolvedStep?: ScorerEventUnresolvedStep;
+  decisions?: { assist?: "NONE"; steal?: "NONE" };
+  resumeContext?: { penaltyShooterPlayerId?: string };
+}
+
+export interface ScorerEventContext {
+  technicalStaffSource?: "COACH" | "BENCH";
+}
+
 export interface EventMetadata {
   schemaVersion: typeof MATCH_EVENT_SCHEMA_VERSION;
   id: string;
   occurredAt: number;
   sequence: number;
+  scorerEventId?: string;
+  scorerEventTerminal?: ScorerEventTerminal;
+  scorerEventContext?: ScorerEventContext;
 }
 
 type ShotEvent = EventMetadata & {
@@ -118,7 +134,10 @@ export type MatchEvent =
   | (EventMetadata & { type: typeof EventType.PERIOD_END; period: MatchPeriod })
   | (EventMetadata & { type: typeof EventType.JUMP_BALL; possession: TeamSide })
   | (EventMetadata & { type: typeof EventType.ALTERNATING_POSSESSION })
-  | (EventMetadata & { type: typeof EventType.REBOUND; team: TeamSide; playerId: string; offensive: boolean })
+  | (EventMetadata & { type: typeof EventType.REBOUND; team: TeamSide; offensive: boolean } & (
+      | { playerId: string; teamRebound?: false }
+      | { teamRebound: true; playerId?: never }
+    ))
   | (EventMetadata & { type: typeof EventType.STEAL; team: TeamSide; playerId: string })
   | (EventMetadata & { type: typeof EventType.BLOCK; team: TeamSide; playerId: string })
   | (EventMetadata & { type: typeof EventType.CLOCK_START })
@@ -133,6 +152,7 @@ export type MatchEvent =
       playerId: string;
       made: boolean;
     })
+  | (EventMetadata & { type: typeof EventType.PENALTY_ADMINISTRATION_ENDED; penaltyId: string })
   | FoulEvent
   | (EventMetadata & { type: typeof EventType.TURNOVER; team: TeamSide; playerId: string })
   | (EventMetadata & { type: typeof EventType.SUBSTITUTION; team: TeamSide; playerInId: string; playerOutId: string })

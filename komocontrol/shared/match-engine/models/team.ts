@@ -8,7 +8,8 @@ export function createTeam(id: string, name: string, side: TeamSide, players: Pl
     name,
     side,
     score: 0,
-    timeouts: 5,
+    timeouts: 2,
+    timeoutAllowance: 2,
     teamFouls: 0,
     discipline: {
       headCoachCategory1TechnicalCount: 0,

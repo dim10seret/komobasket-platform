@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { DesktopAuthState } from "../auth/auth-contracts.cjs";
 import type { MatchSetup, MatchSetupManager, VerifiedMatchSetupSource } from "../games/match-setup.cjs";
-import type { CreateLocalGameRunInput, LocalGameRunStoreResult, StoredLocalGameRun } from "../persistence/local-database.cjs";
+import type { CreateLocalGameRunInput, LocalGameRunStoreResult, StoredLocalGameRun, StoredLocalGameplaySyncState, StoredLocalMatchEngineSnapshot, StoredLocalMatchFinalization } from "../persistence/local-database.cjs";
+import { parseDeterministicJson, sha256JsonBytes, type JsonValue } from "./match-engine-bootstrap.cjs";
 
 export const MATCH_RUN_ERROR_CODES = ["RUN_UNAVAILABLE", "RUN_INVALID", "RUN_CONFLICT", "RUN_OWNERSHIP_CONFLICT"] as const;
 export type MatchRunErrorCode = (typeof MATCH_RUN_ERROR_CODES)[number];
@@ -14,11 +15,22 @@ export interface SafeLocalRunSummary {
 }
 export type MatchRunOperationResult = { ok: true; outcome: "created" | "existing" | "recovered"; run: SafeMatchRun | null; state: DesktopAuthState } | { ok: false; errorCode: MatchRunErrorCode | "SESSION_INVALID" | "OFFLINE_OPERATION_DENIED"; state: DesktopAuthState };
 export type LocalRunCatalogueResult = { ok: true; runs: SafeLocalRunSummary[]; state: DesktopAuthState } | { ok: false; errorCode: MatchRunErrorCode | "SESSION_INVALID"; state: DesktopAuthState };
+export type MyGamesRunSyncStatus = "active" | "pending" | "retry-needed" | "conflict" | "completed";
+export interface SafeMyGamesRunState {
+    gameId: string; runId: string; lifecycle: "active" | "finalized"; historyRevision: number; acknowledgedHistoryRevision: number;
+    finalizationHash: string | null; acknowledgedFinalizationHash: string | null; syncStatus: MyGamesRunSyncStatus;
+    homeScore: number | null; awayScore: number | null;
+}
+export type MyGamesRunStateCatalogueResult = { ok: true; runs: SafeMyGamesRunState[]; state: DesktopAuthState } | { ok: false; errorCode: MatchRunErrorCode | "SESSION_INVALID"; state: DesktopAuthState };
 
 interface MatchRunStore {
     createOrOpenLocalGameRun(input: CreateLocalGameRunInput): LocalGameRunStoreResult;
     getActiveLocalGameRun(gameId: string): StoredLocalGameRun | null;
     listActiveLocalGameRunsForOwner(organizationId: string, scorerId: string, deviceId: string): StoredLocalGameRun[];
+    listMyGamesLocalRunsForOwner(organizationId: string, scorerId: string, deviceId: string): StoredLocalGameRun[];
+    readLocalMatchEngineSnapshot(runId: string): StoredLocalMatchEngineSnapshot | null;
+    readLocalGameplaySyncState(runId: string): StoredLocalGameplaySyncState | null;
+    readLocalMatchFinalization(runId: string): StoredLocalMatchFinalization | null;
 }
 
 export class MatchRunFlowError extends Error {
@@ -35,6 +47,55 @@ function safeRun(run: StoredLocalGameRun): SafeMatchRun {
         || (run.startedAtUtc === null) !== (run.lastAcceptedSequence === 0)
         || (run.status === "finalized" && run.startedAtUtc === null)) throw new MatchRunFlowError("RUN_INVALID");
     return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, status: run.status, gameplayStarted: run.startedAtUtc !== null, lastAcceptedSequence: run.lastAcceptedSequence, createdAtUtc: run.createdAtUtc };
+}
+
+function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
+    return value !== null && !Array.isArray(value) && typeof value === "object" ? value : null;
+}
+
+export function selectAuthoritativeMyGamesRuns(runs: StoredLocalGameRun[]): StoredLocalGameRun[] {
+    const ordered = [...runs].sort((left, right) => {
+        if (left.gameId !== right.gameId) return left.gameId.localeCompare(right.gameId);
+        if (left.status !== right.status) return left.status === "active" ? -1 : right.status === "active" ? 1 : 0;
+        return right.updatedAtUtc.localeCompare(left.updatedAtUtc) || right.createdAtUtc.localeCompare(left.createdAtUtc) || right.runId.localeCompare(left.runId);
+    });
+    const selected = new Map<string, StoredLocalGameRun>();
+    for (const run of ordered) if (!selected.has(run.gameId)) selected.set(run.gameId, run);
+    return [...selected.values()];
+}
+
+export function projectMyGamesRunState(run: StoredLocalGameRun, snapshot: StoredLocalMatchEngineSnapshot | null, sync: StoredLocalGameplaySyncState | null, finalization: StoredLocalMatchFinalization | null): SafeMyGamesRunState {
+    const base = {
+        gameId: run.gameId, runId: run.runId, lifecycle: run.status === "finalized" ? "finalized" as const : "active" as const,
+        historyRevision: snapshot?.eventHistoryRevision ?? 0, acknowledgedHistoryRevision: sync?.lastAcknowledgedHistoryRevision ?? 0,
+        finalizationHash: finalization?.finalizationHash ?? null, acknowledgedFinalizationHash: sync?.lastAcknowledgedFinalizationHash ?? null,
+    };
+    if (run.status === "active") return { ...base, lifecycle: "active", syncStatus: "active", homeScore: null, awayScore: null };
+    const conflict = sync?.lastErrorCode === "SYNC_RUN_CONFLICT" || sync?.lastErrorCode === "SYNC_INTEGRITY_CONFLICT";
+    try {
+        if (!snapshot || !sync || !finalization || sha256JsonBytes(finalization.finalStateJson) !== finalization.finalStateHash || sha256JsonBytes(finalization.finalizationJson) !== finalization.finalizationHash) throw new Error("Invalid finalized Run read model.");
+        const state = jsonRecord(parseDeterministicJson(finalization.finalStateJson));
+        const manifest = jsonRecord(parseDeterministicJson(finalization.finalizationJson));
+        const home = state ? jsonRecord(state.home) : null;
+        const away = state ? jsonRecord(state.away) : null;
+        if (!state || !manifest || state.id !== run.runId || state.finished !== true || state.lastProcessedSequence !== run.lastAcceptedSequence
+            || typeof home?.score !== "number" || !Number.isInteger(home.score) || home.score < 0
+            || typeof away?.score !== "number" || !Number.isInteger(away.score) || away.score < 0
+            || manifest.schemaVersion !== 1 || manifest.runId !== run.runId
+            || manifest.finalizedHistoryRevision !== finalization.finalizedHistoryRevision
+            || manifest.finalizedHistoryHash !== finalization.finalizedHistoryHash
+            || manifest.finalStateHash !== finalization.finalStateHash
+            || manifest.finalizedAtUtc !== finalization.finalizedAtUtc
+            || finalization.finalizedHistoryRevision !== snapshot.eventHistoryRevision) throw new Error("Invalid finalized Run read model.");
+        const completed = !conflict && sync.lastErrorCode === null && sync.consecutiveFailures === 0 && sync.nextRetryAtUtc === null
+            && sync.lastAcknowledgedHistoryRevision === finalization.finalizedHistoryRevision
+            && sync.lastAcknowledgedHistoryHash === finalization.finalizedHistoryHash
+            && sync.lastAcknowledgedFinalizationHash === finalization.finalizationHash;
+        const syncStatus: MyGamesRunSyncStatus = conflict ? "conflict" : completed ? "completed" : sync.lastErrorCode !== null ? "retry-needed" : "pending";
+        return { ...base, lifecycle: "finalized", syncStatus, homeScore: completed ? home.score : null, awayScore: completed ? away.score : null };
+    } catch {
+        return { ...base, lifecycle: "finalized", syncStatus: "conflict", homeScore: null, awayScore: null };
+    }
 }
 
 export class MatchRunManager {
@@ -66,6 +127,13 @@ export class MatchRunManager {
                 competitionName: setup.competitionName, seasonName: setup.seasonName, phaseName: setup.phaseName,
                 roundLabel: setup.roundLabel, scheduledDate: setup.scheduledDate, scheduledTime: setup.scheduledTime, venue: setup.venue,
             };
+        });
+    }
+    listMyGamesStates(owner: MatchRunOwner): SafeMyGamesRunState[] {
+        const runs = selectAuthoritativeMyGamesRuns(this.store.listMyGamesLocalRunsForOwner(owner.organizationId, owner.scorerId, this.deviceId));
+        return runs.map((run) => {
+            this.verifiedSource(run, owner);
+            return projectMyGamesRunState(run, this.store.readLocalMatchEngineSnapshot(run.runId), this.store.readLocalGameplaySyncState(run.runId), this.store.readLocalMatchFinalization(run.runId));
         });
     }
     private verifyRun(run: StoredLocalGameRun, owner: MatchRunOwner): SafeMatchRun {

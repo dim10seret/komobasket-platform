@@ -15,7 +15,7 @@ const SUPPORTED_EVENTS: ReadonlySet<EventTypeValue> = new Set([
   EventType.BLOCK, EventType.TWO_POINT, EventType.THREE_POINT,
   EventType.TWO_POINT_MISSED, EventType.THREE_POINT_MISSED, EventType.TURNOVER,
   EventType.PERSONAL_FOUL, EventType.DISRUPTIVE_FOUL, EventType.FLAGRANT_FOUL,
-  EventType.FREE_THROW,
+  EventType.FREE_THROW, EventType.PENALTY_ADMINISTRATION_ENDED,
   EventType.SUBSTITUTION, EventType.TIMEOUT, EventType.TECHNICAL_FOUL,
   EventType.DISQUALIFYING_FOUL,
 ]);

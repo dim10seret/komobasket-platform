@@ -34,7 +34,7 @@ function packageInput(settings = {}) {
     return { packageId: "package-gameplay-v2", gameId: "game-gameplay", packageVersion: 2, packageSchemaVersion: 1, payloadJson, payloadHash: createHash("sha256").update(Buffer.from(payloadJson, "utf8")).digest("hex"), publishedAtUtc: "2026-08-26T10:00:00.000Z" };
 }
 
-function copyMigrations(target, maximum = "0007") {
+function copyMigrations(target, maximum = "0008") {
     fs.mkdirSync(target, { recursive: true });
     for (const name of fs.readdirSync(path.resolve("electron/migrations")).filter((name) => name.endsWith(".sql") && name.slice(0, 4) <= maximum).sort()) fs.copyFileSync(path.resolve("electron/migrations", name), path.join(target, name));
 }
@@ -99,6 +99,14 @@ function rows(databasePath, sql, ...params) {
     try { return database.prepare(sql).all(...params); } finally { database.close(); }
 }
 
+function draftEvents(group) {
+    return group.items.map((item) => ({ draftId: item.eventId, eventId: item.eventId, facts: item.facts }));
+}
+
+function factsOf(group, type) {
+    return group.items.find((item) => item.type === type)?.facts;
+}
+
 function mutateConfiguration(fixtureValue, change) {
     const stored = fixtureValue.localDatabase.readLocalGameRunConfiguration(fixtureValue.run.runId);
     const value = JSON.parse(stored.configurationJson); change(value);
@@ -124,8 +132,9 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         fs.copyFileSync(path.resolve("electron/migrations/0005_match_gameplay.sql"), path.join(migrationsDirectory, "0005_match_gameplay.sql"));
         fs.copyFileSync(path.resolve("electron/migrations/0006_gameplay_sync.sql"), path.join(migrationsDirectory, "0006_gameplay_sync.sql"));
         fs.copyFileSync(path.resolve("electron/migrations/0007_live_pre_game_corrections.sql"), path.join(migrationsDirectory, "0007_live_pre_game_corrections.sql"));
+        fs.copyFileSync(path.resolve("electron/migrations/0008_resumable_live_flows.sql"), path.join(migrationsDirectory, "0008_resumable_live_flows.sql"));
         const migrated = new LocalDatabase({ databasePath, migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(migrated);
-        expect(migrated.initialize().schemaVersion).toBe("0007_live_pre_game_corrections.sql"); expect(migrated.getDeviceIdentity().deviceId).toBe(preservedDevice); expect(migrated.readGamePackage("package-gameplay-v2")?.packageVersion).toBe(2); expect(migrated.readLocalGameRun(runId)?.runId).toBe(runId); expect(migrated.readLocalGameRunConfiguration(runId)?.revision).toBe(1); expect(migrated.readLocalMatchEngineSnapshot(runId)).toBeNull(); expect(migrated.readLocalMatchEvents(runId)).toEqual([]);
+        expect(migrated.initialize().schemaVersion).toBe("0008_resumable_live_flows.sql"); expect(migrated.getDeviceIdentity().deviceId).toBe(preservedDevice); expect(migrated.readGamePackage("package-gameplay-v2")?.packageVersion).toBe(2); expect(migrated.readLocalGameRun(runId)?.runId).toBe(runId); expect(migrated.readLocalGameRunConfiguration(runId)?.revision).toBe(1); expect(migrated.readLocalMatchEngineSnapshot(runId)).toBeNull(); expect(migrated.readLocalMatchEvents(runId)).toEqual([]); expect(migrated.readLocalResumableLiveFlow(runId)).toBeNull();
     });
 
     it("bootstraps strict HOME/AWAY participating identity, text numbers, starters, and pinned rules", async () => {
@@ -165,6 +174,33 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         await expect(f.gameplay.initialize(f.run.runId, owner)).rejects.toThrow(/GAMEPLAY_CONFLICT/); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshot); expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(events); expect(f.localDatabase.readLocalGameRun(f.run.runId)).toEqual(run);
     });
 
+    it("persists one run-scoped incomplete shooting-foul flow without duplicating MatchEvents and clears it atomically on the final free throw", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "resumable-stoppage" });
+        const rootEventId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "resumable-stoppage", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: rootEventId });
+        const sourceFoulEventId = foul.eventIds.at(-1); const before = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        const saved = await f.gameplay.saveResumableLiveFlow(f.run.runId, owner, { flowKind: "SHOOTING_FOUL", stage: "PENALTY", rootEventId, sourceFoulEventId, selectedFreeThrowShooterId: "home-2", expectedHistoryRevision: foul.eventHistoryRevision });
+        expect(saved).toMatchObject({ flowKind: "SHOOTING_FOUL", stage: "PENALTY", rootEventId, sourceFoulEventId, selectedFreeThrowShooterId: "home-2" });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(before);
+        const recovered = await new MatchGameplayManager(f.setup, f.localDatabase, deviceId).recover(f.run.runId, owner);
+        expect(f.localDatabase.readLocalResumableLiveFlow(f.run.runId)).toMatchObject({ selectedFreeThrowShooterId: "home-2", eventHistoryRevision: recovered.eventHistoryRevision });
+        const penaltyId = `penalty:${sourceFoulEventId}`;
+        await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-2", penaltyId, attemptIndex: 1, made: true });
+        await f.gameplay.appendAndResolveResumableFlow(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-2", penaltyId, attemptIndex: 2, made: true });
+        expect(f.localDatabase.readLocalResumableLiveFlow(f.run.runId)).toBeNull();
+    });
+
+    it("persists an early penalty administration end without inventing a free throw", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "FLAGRANT_FOUL", team: "AWAY", stoppageId: "early-flagrant", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_SHOOTING", teamControlFoul: false }, fouledPlayerId: "home-1" });
+        const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+        const ended = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId });
+        expect(ended.state.penaltyResolution?.freeThrowQueue).toEqual([]);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId).map((event) => JSON.parse(event.eventJson).type)).toEqual(["MATCH_START", "FLAGRANT_FOUL", "PENALTY_ADMINISTRATION_ENDED"]);
+        expect((await new MatchGameplayManager(f.setup, f.localDatabase, deviceId).recover(f.run.runId, owner)).state).toEqual(ended.state);
+    });
+
     it("appends atomically, rejects invalid engine events without writes, and recovers identically after restart", async () => {
         const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); const appended = await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START" }); expect(appended.lastAcceptedSequence).toBe(2); expect(appended.eventHistoryRevision).toBe(2); const before = rows(f.localDatabase.databasePath, "SELECT * FROM local_match_events WHERE run_id=? ORDER BY sequence", f.run.runId); const revision = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId).eventHistoryRevision;
         await expect(f.gameplay.append(f.run.runId, owner, { type: "MATCH_START" })).rejects.toThrow(/GAMEPLAY_EVENT_REJECTED/); expect(rows(f.localDatabase.databasePath, "SELECT * FROM local_match_events WHERE run_id=? ORDER BY sequence", f.run.runId)).toEqual(before); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId).eventHistoryRevision).toBe(revision);
@@ -202,6 +238,17 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         expect(() => f.localDatabase.rewriteLocalMatchEventHistory({ runId: f.run.runId, organizationId: owner.organizationId, scorerId: owner.scorerId, deviceId, expectedHistoryRevision: snapshot.eventHistoryRevision, lastAcceptedSequence: run.lastAcceptedSequence, events: [{ eventId: invalidEvent.id, sequence: 2, eventSchemaVersion: 2, eventJson, eventHash: sha256JsonBytes(eventJson), persistedAtUtc: "2026-08-26T13:00:00.000Z" }], updatedAtUtc: "2026-08-26T13:00:00.000Z" })).toThrow(/immutable MATCH_START sequence one/); expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(beforeEvents); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshot); expect(f.localDatabase.readLocalGameRun(f.run.runId)).toEqual(run);
     });
 
+    it("enforces dense ordering and exact high-water only for DENSE_RENUMBERED history rewrites", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "HOME" });
+        const snapshot = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId); const run = f.localDatabase.readLocalGameRun(f.run.runId); const beforeEvents = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        const rewritten = (sequences) => beforeEvents.map((row, index) => { const event = { ...JSON.parse(row.eventJson), sequence: sequences[index] }; const eventJson = deterministicJson(event); return { eventId: row.eventId, sequence: sequences[index], eventSchemaVersion: 2, eventJson, eventHash: sha256JsonBytes(eventJson), persistedAtUtc: row.persistedAtUtc }; });
+        const input = (events, lastAcceptedSequence) => ({ runId: f.run.runId, organizationId: owner.organizationId, scorerId: owner.scorerId, deviceId, expectedHistoryRevision: snapshot.eventHistoryRevision, lastAcceptedSequence, events, updatedAtUtc: "2026-08-26T13:00:00.000Z", sequencePolicy: "DENSE_RENUMBERED" });
+        expect(() => f.localDatabase.rewriteLocalMatchEventHistory(input(rewritten([1, 3]), 3))).toThrow(/history ordering is invalid/);
+        expect(() => f.localDatabase.rewriteLocalMatchEventHistory(input(rewritten([1, 1]), 1))).toThrow(/history ordering is invalid/);
+        expect(() => f.localDatabase.rewriteLocalMatchEventHistory(input(rewritten([1, 2]), 3))).toThrow(/high-water sequence is invalid/);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(beforeEvents); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshot); expect(f.localDatabase.readLocalGameRun(f.run.runId)).toEqual(run);
+    });
+
     it("rolls back event rows, history revision, and Run metadata on a transaction failure", async () => {
         const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); const beforeEvents = f.localDatabase.readLocalMatchEvents(f.run.runId); const beforeSnapshot = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId); const beforeRun = f.localDatabase.readLocalGameRun(f.run.runId); const database = new DatabaseSync(f.localDatabase.databasePath); database.exec("CREATE TRIGGER synthetic_gameplay_failure BEFORE INSERT ON local_match_events WHEN NEW.sequence = 2 BEGIN SELECT RAISE(ABORT, 'synthetic rollback'); END;"); database.close();
         await expect(f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START" })).rejects.toThrow(/synthetic rollback/); expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(beforeEvents); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(beforeSnapshot); expect(f.localDatabase.readLocalGameRun(f.run.runId)).toEqual(beforeRun);
@@ -222,7 +269,53 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
     });
 
     it("uses only local Package/configuration stores for bootstrap, mutation, and recovery", async () => {
-        const f = fixture(); let localPackageReads = 0; const localSetup = { getVerifiedPackageMatchSetup: (packageId) => { localPackageReads += 1; return f.setup.getVerifiedPackageMatchSetup(packageId); } }; const gameplay = new MatchGameplayManager(localSetup, f.localDatabase, deviceId, undefined, undefined, () => "sealed-live-run-authorization"); await gameplay.initialize(f.run.runId, owner); await gameplay.append(f.run.runId, owner, { type: "CLOCK_START" }); await gameplay.recover(f.run.runId, owner); expect(localPackageReads).toBe(1);
+        const f = fixture(); let localPackageReads = 0; const localSetup = { getVerifiedPackageMatchSetup: (packageId) => { localPackageReads += 1; return f.setup.getVerifiedPackageMatchSetup(packageId); }, getMatchSetup: (gameId) => { localPackageReads += 1; return f.setup.getMatchSetup(gameId); } }; const gameplay = new MatchGameplayManager(localSetup, f.localDatabase, deviceId, undefined, undefined, () => "sealed-live-run-authorization"); await gameplay.initialize(f.run.runId, owner); await gameplay.append(f.run.runId, owner, { type: "CLOCK_START" }); await gameplay.recover(f.run.runId, owner); expect(localPackageReads).toBe(4);
+    });
+
+    it("persists and replays stopped zero without disturbing an active free-throw penalty", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START" });
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "clock-zero-penalty", scorerEventId: "clock-zero-penalty" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "clock-zero-penalty", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "clock-zero-penalty" });
+        const penaltyId = `penalty:${foul.eventIds.at(-1)}`; const penaltyBefore = foul.state.penaltyResolution;
+        const expired = await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 });
+        expect(expired.state).toMatchObject({ period: { kind: "REGULATION", index: 1 }, clock: 0, clockRunning: false, penaltyResolution: penaltyBefore });
+        const eventTypes = f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => JSON.parse(row.eventJson).type);
+        expect(eventTypes.filter((type) => type === "CLOCK_SET")).toHaveLength(1); expect(eventTypes).not.toContain("CLOCK_STOP"); expect(eventTypes).not.toContain("PERIOD_END"); expect(eventTypes).not.toContain("MATCH_END");
+        f.gameplay.clearRuntimeSessions(); const recovered = await f.gameplay.recover(f.run.runId, owner);
+        expect(recovered.state).toMatchObject({ period: { kind: "REGULATION", index: 1 }, clock: 0, clockRunning: false, penaltyResolution: penaltyBefore });
+        const continued = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: "clock-zero-penalty" });
+        expect(continued.state.penaltyResolution.freeThrowQueue[0]).toEqual({ ...penaltyBefore.freeThrowQueue[0], completedAttempts: 1 });
+        expect(f.localDatabase.readLocalGameRun(f.run.runId).status).toBe("active");
+    });
+
+    it("persists and replays the first-half, second-half, and per-overtime timeout pools", async () => {
+        const f = fixture(); const started = await f.gameplay.initialize(f.run.runId, owner);
+        expect(started.state).toMatchObject({ home: { timeouts: 2, timeoutAllowance: 2 }, away: { timeouts: 2, timeoutAllowance: 2 } });
+        await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "HOME" });
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 }); await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } });
+        let current = await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_START", period: { kind: "REGULATION", index: 2 } });
+        expect(current.state.home).toMatchObject({ timeouts: 1, timeoutAllowance: 2 });
+        f.gameplay.clearRuntimeSessions(); expect((await f.gameplay.recover(f.run.runId, owner)).state.home).toMatchObject({ timeouts: 1, timeoutAllowance: 2 });
+
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 }); await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 2 } });
+        current = await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_START", period: { kind: "REGULATION", index: 3 } });
+        expect(current.state).toMatchObject({ home: { timeouts: 3, timeoutAllowance: 3 }, away: { timeouts: 3, timeoutAllowance: 3 } });
+        await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "HOME" });
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 }); await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 3 } });
+        current = await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_START", period: { kind: "REGULATION", index: 4 } });
+        expect(current.state.home).toMatchObject({ timeouts: 2, timeoutAllowance: 3 });
+        f.gameplay.clearRuntimeSessions(); expect((await f.gameplay.recover(f.run.runId, owner)).state.home).toMatchObject({ timeouts: 2, timeoutAllowance: 3 });
+
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 }); await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 4 } });
+        current = await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_START", period: { kind: "OVERTIME", index: 1 } });
+        expect(current.state).toMatchObject({ home: { timeouts: 1, timeoutAllowance: 1 }, away: { timeouts: 1, timeoutAllowance: 1 } });
+        await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "HOME" });
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 }); await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "OVERTIME", index: 1 } });
+        current = await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_START", period: { kind: "OVERTIME", index: 2 } });
+        expect(current.state).toMatchObject({ home: { timeouts: 1, timeoutAllowance: 1 }, away: { timeouts: 1, timeoutAllowance: 1 } });
+        f.gameplay.clearRuntimeSessions(); const recovered = await f.gameplay.recover(f.run.runId, owner);
+        expect(recovered.state).toMatchObject({ period: { kind: "OVERTIME", index: 2 }, home: { timeouts: 1, timeoutAllowance: 1 }, away: { timeouts: 1, timeoutAllowance: 1 } });
     });
 
     it("atomically creates Run continuity and sync state, then finalizes locally without network", async () => {
@@ -335,4 +428,589 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         const f = fixture({ tie_allowed: true, winner_required: false, regulation_periods: 1 }); await f.gameplay.initialize(f.run.runId, owner); await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 }); await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } }); await f.gameplay.finalize(f.run.runId, owner); const storedBefore = f.localDatabase.readLocalGameRunConfiguration(f.run.runId); const eventsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId);
         expect(() => f.configurations.getOrCreate("game-gameplay", owner)).toThrow(/CONFIGURATION_CONFLICT/); expect(f.localDatabase.readLocalGameRunConfiguration(f.run.runId)).toEqual(storedBefore); expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(eventsBefore);
     });
+
+    it("persists a guided multi-event action in one atomic history revision", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const accepted = await f.gameplay.appendMany(f.run.runId, owner, [{ type: "CLOCK_START" }, { type: "CLOCK_STOP" }]);
+        expect(accepted.lastAcceptedSequence).toBe(3);
+        expect(accepted.eventHistoryRevision).toBe(2);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId).map((event) => event.sequence)).toEqual([1, 2, 3]);
+        const before = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        await expect(f.gameplay.appendMany(f.run.runId, owner, [{ type: "CLOCK_START" }, { type: "CLOCK_START" }])).rejects.toThrow(/GAMEPLAY_EVENT_REJECTED/);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(before);
+        expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId).eventHistoryRevision).toBe(2);
+    });
+
+    it("persists, replays, and preserves scorer-event metadata through correction", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = "scorer-event-guided";
+        await f.gameplay.appendMany(f.run.runId, owner, [
+            { type: "CLOCK_START", scorerEventId },
+            { type: "CLOCK_STOP", scorerEventId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1", resumeContext: { penaltyShooterPlayerId: "home-1" } } },
+        ]);
+        const persisted = f.localDatabase.readLocalMatchEvents(f.run.runId).slice(-2).map((row) => JSON.parse(row.eventJson));
+        expect(persisted).toMatchObject([
+            { scorerEventId },
+            { scorerEventId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1", resumeContext: { penaltyShooterPlayerId: "home-1" } } },
+        ]);
+        await f.gameplay.correct(f.run.runId, owner, persisted[1].id, { type: "CLOCK_STOP" });
+        const recovered = await f.gameplay.recover(f.run.runId, owner);
+        expect(recovered.events.slice(-2)).toMatchObject([
+            { scorerEventId },
+            { scorerEventId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1", resumeContext: { penaltyShooterPlayerId: "home-1" } } },
+        ]);
+        const history = await f.gameplay.history(f.run.runId, owner, { limit: 10, beforeSequence: null, period: null });
+        expect(history.items.find((item) => item.scorerEventTerminal)?.facts).toMatchObject({ scorerEventId, scorerEventTerminal: { reason: "ENTER_EARLY" } });
+        expect(recovered.state).toMatchObject({ clockRunning: false });
+    });
+
+    it("preserves Technical GD staff source metadata and gates ambiguous historical reconstruction", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const addStaffTechnical = async (side, groupId, technicalStaffSource) => {
+            const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: side, stoppageId: `stop-${groupId}`, offender: { kind: "BENCH", personId: `coach:${side}`, role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: groupId, scorerEventContext: { technicalStaffSource } });
+            const foulId = foul.eventIds.at(-1);
+            await f.gameplay.correct(f.run.runId, owner, foulId, { type: "TECHNICAL_FOUL", team: side, stoppageId: `stop-${groupId}`, offender: { kind: "BENCH", personId: `coach:${side}`, role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1" });
+            await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foulId}`, scorerEventId: groupId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
+            return foulId;
+        };
+        const coachId = await addStaffTechnical("HOME", "technical-coach", "COACH");
+        const benchId = await addStaffTechnical("AWAY", "technical-bench", "BENCH");
+        const recovered = await f.gameplay.recover(f.run.runId, owner);
+        const persisted = f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => JSON.parse(row.eventJson));
+        expect(persisted.find((event) => event.id === coachId)).toMatchObject({ offender: { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" }, scorerEventContext: { technicalStaffSource: "COACH" } });
+        expect(persisted.find((event) => event.id === benchId)).toMatchObject({ offender: { kind: "BENCH", personId: "coach:AWAY", role: "HEAD_COACH" }, scorerEventContext: { technicalStaffSource: "BENCH" } });
+        expect(recovered.events.find((event) => event.eventId === coachId)).toMatchObject({ scorerEventContext: { technicalStaffSource: "COACH" } });
+        expect(recovered.events.find((event) => event.eventId === benchId)).toMatchObject({ scorerEventContext: { technicalStaffSource: "BENCH" } });
+        expect(recovered.state).toMatchObject({ home: { discipline: { headCoachCategory1TechnicalCount: 1, benchCategory1TechnicalCount: 0 } }, away: { discipline: { headCoachCategory1TechnicalCount: 1, benchCategory1TechnicalCount: 0 } } });
+        expect(await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:technical-coach")).toMatchObject({ safeForReconstruction: true, items: [{ scorerEventContext: { technicalStaffSource: "COACH" } }, {}] });
+        expect(await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:technical-bench")).toMatchObject({ safeForReconstruction: true, items: [{ scorerEventContext: { technicalStaffSource: "BENCH" } }, {}] });
+
+        const old = fixture(); await old.gameplay.initialize(old.run.runId, owner);
+        const ambiguous = await old.gameplay.append(old.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "old-technical", offender: { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: "old-technical" });
+        const ambiguousId = ambiguous.eventIds.at(-1);
+        await old.gameplay.append(old.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${ambiguousId}`, scorerEventId: "old-technical", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
+        expect(await old.gameplay.scorerEventGroup(old.run.runId, owner, "explicit:old-technical")).toMatchObject({ groupingSource: "EXPLICIT", safeForReconstruction: false });
+        const player = await old.gameplay.append(old.run.runId, owner, { type: "TECHNICAL_FOUL", team: "AWAY", stoppageId: "player-technical", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: "player-technical" });
+        const playerId = player.eventIds.at(-1);
+        await old.gameplay.append(old.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${playerId}`, scorerEventId: "player-technical", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
+        expect(await old.gameplay.scorerEventGroup(old.run.runId, owner, "explicit:player-technical")).toMatchObject({ groupingSource: "EXPLICIT", safeForReconstruction: true });
+    });
+
+    it("projects explicit scorer groups, hidden terminal carriers, and distinct negative decisions", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const groupId = "technical-enter-early";
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: "AWAY", stoppageId: "technical-group", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_2", scorerEventId: groupId });
+        const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`;
+        await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: groupId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
+        await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId: "no-assist", scorerEventTerminal: { reason: "NATURAL", decisions: { assist: "NONE" } } });
+        await f.gameplay.append(f.run.runId, owner, { type: "TURNOVER", team: "HOME", playerId: "home-1", scorerEventId: "no-steal", scorerEventTerminal: { reason: "NATURAL", decisions: { steal: "NONE" } } });
+        await f.gameplay.append(f.run.runId, owner, { type: "TURNOVER", team: "AWAY", playerId: "away-1", scorerEventId: "early-stealer", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "STEALER" } });
+        const page = await f.gameplay.history(f.run.runId, owner, { limit: 20, beforeSequence: null, period: null });
+        const groupedRows = page.items.filter((item) => item.scorerEventGroupId === `explicit:${groupId}`);
+        expect(groupedRows.map((item) => item.eventId).sort()).toEqual([foulId, page.items.find((item) => item.type === "PENALTY_ADMINISTRATION_ENDED")?.eventId].sort());
+        expect(new Set(groupedRows.map((item) => item.scorerEventGroupOrdinal)).size).toBe(1);
+        const before = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, `explicit:${groupId}`);
+        expect(group).toMatchObject({ groupingSource: "EXPLICIT", canonicalEventIds: [foulId, expect.any(String)], visibleEventIds: [foulId], scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" }, terminalConflict: false, safeForReconstruction: true });
+        expect(group.items.map((item) => item.type)).toEqual(["TECHNICAL_FOUL", "PENALTY_ADMINISTRATION_ENDED"]);
+        expect((await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:no-assist"))?.scorerEventTerminal).toEqual({ reason: "NATURAL", decisions: { assist: "NONE" } });
+        expect((await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:no-steal"))?.scorerEventTerminal).toEqual({ reason: "NATURAL", decisions: { steal: "NONE" } });
+        expect((await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:early-stealer"))?.scorerEventTerminal).toEqual({ reason: "ENTER_EARLY", unresolvedStep: "STEALER" });
+        expect(await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:missing")).toBeNull();
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(before);
+    });
+
+    it("groups only provable legacy causal chains and leaves ambiguous play sequences atomic", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "legacy-shooting" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "legacy-shooting", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId }); const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`;
+        await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true });
+        await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId });
+        const turnover = await f.gameplay.append(f.run.runId, owner, { type: "TURNOVER", team: "HOME", playerId: "home-1" }); const turnoverId = turnover.eventIds.at(-1);
+        const steal = await f.gameplay.append(f.run.runId, owner, { type: "STEAL", team: "AWAY", playerId: "away-1" }); const stealId = steal.eventIds.at(-1);
+        const miss = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "AWAY", playerId: "away-1" }); const missId = miss.eventIds.at(-1);
+        const rebound = await f.gameplay.append(f.run.runId, owner, { type: "REBOUND", team: "HOME", playerId: "home-1", offensive: false }); const reboundId = rebound.eventIds.at(-1);
+        const blockedMiss = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1" }); const blockedMissId = blockedMiss.eventIds.at(-1);
+        const block = await f.gameplay.append(f.run.runId, owner, { type: "BLOCK", team: "AWAY", playerId: "away-1" }); const blockId = block.eventIds.at(-1);
+        const blockRebound = await f.gameplay.append(f.run.runId, owner, { type: "REBOUND", team: "AWAY", playerId: "away-1", offensive: false }); const blockReboundId = blockRebound.eventIds.at(-1);
+        const page = await f.gameplay.history(f.run.runId, owner, { limit: 30, beforeSequence: null, period: null }); const byId = new Map(page.items.map((item) => [item.eventId, item]));
+        expect([shotId, foulId].map((id) => byId.get(id)?.scorerEventGroupId)).toEqual([`legacy:${shotId}`, `legacy:${shotId}`]);
+        expect((await f.gameplay.scorerEventGroup(f.run.runId, owner, `legacy:${shotId}`))?.canonicalEventIds).toEqual([shotId, foulId, expect.any(String), expect.any(String)]);
+        expect((await f.gameplay.scorerEventGroup(f.run.runId, owner, `legacy:${shotId}`))?.safeForReconstruction).toBe(false);
+        expect([turnoverId, stealId].map((id) => byId.get(id)?.scorerEventGroupId)).toEqual([`legacy:${turnoverId}`, `legacy:${turnoverId}`]);
+        expect([missId, reboundId, blockedMissId, blockId, blockReboundId].map((id) => byId.get(id)?.scorerEventGroupingSource)).toEqual(["LEGACY_ATOMIC", "LEGACY_ATOMIC", "LEGACY_ATOMIC", "LEGACY_ATOMIC", "LEGACY_ATOMIC"]);
+        expect(new Set([missId, reboundId, blockedMissId, blockId, blockReboundId].map((id) => byId.get(id)?.scorerEventGroupId)).size).toBe(5);
+        expect((await f.gameplay.scorerEventGroup(f.run.runId, owner, `legacy:${missId}`))?.safeForReconstruction).toBe(false);
+    });
+
+    it("assigns full-history ordinals before paging and preserves a group crossing the 28-row boundary", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const facts = [{ type: "CLOCK_SET", remainingSeconds: 599, scorerEventId: "clock-preface", scorerEventTerminal: { reason: "NATURAL" } }, { type: "CLOCK_START", scorerEventId: "boundary-group" }, { type: "CLOCK_STOP", scorerEventId: "boundary-group", scorerEventTerminal: { reason: "NATURAL" } }];
+        for (let index = 3; index < 30; index += 1) facts.push({ type: index % 2 === 1 ? "CLOCK_START" : "CLOCK_STOP", scorerEventId: `clock-${index}`, scorerEventTerminal: { reason: "NATURAL" } });
+        await f.gameplay.appendMany(f.run.runId, owner, facts.slice(0, 16));
+        await f.gameplay.appendMany(f.run.runId, owner, facts.slice(16));
+        const page = await f.gameplay.history(f.run.runId, owner, { limit: 28, beforeSequence: null, period: null });
+        const visibleBoundaryMember = page.items.find((item) => item.sequence === 4);
+        expect(visibleBoundaryMember).toMatchObject({ scorerEventGroupId: "explicit:boundary-group", scorerEventGroupingSource: "EXPLICIT" });
+        const complete = await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:boundary-group");
+        expect(complete?.canonicalEventIds).toHaveLength(2);
+        expect(visibleBoundaryMember?.scorerEventGroupOrdinal).toBe(complete?.groupOrdinal);
+        const restarted = new MatchGameplayManager(f.setup, f.localDatabase, deviceId, () => new Date("2026-08-26T13:00:00.000Z"), () => "unused-history-id", () => "synthetic-cache-authorization");
+        const reloaded = await restarted.scorerEventGroup(f.run.runId, owner, "explicit:boundary-group");
+        expect(reloaded?.groupOrdinal).toBe(complete?.groupOrdinal);
+        expect(reloaded?.canonicalEventIds).toEqual(complete?.canonicalEventIds);
+    });
+
+    it("projects GOAL FOUL only from factual made-shot shooting-foul relationships", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const addShootingFoul = async (shotType, groupId, stoppageId) => {
+            const shot = await f.gameplay.append(f.run.runId, owner, { type: shotType, team: "HOME", playerId: "home-1", stoppageId, scorerEventId: groupId }); const shotId = shot.eventIds.at(-1);
+            const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: groupId }); const foulId = foul.eventIds.at(-1);
+            await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foulId}`, scorerEventId: groupId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1" } });
+            return shotId;
+        };
+        const madeTwoId = await addShootingFoul("TWO_POINT", "goal-foul-two", "stop-goal-foul-two");
+        const madeThreeId = await addShootingFoul("THREE_POINT", "goal-foul-three", "stop-goal-foul-three");
+        const missedId = await addShootingFoul("TWO_POINT_MISSED", "missed-shooting-foul", "stop-missed-shooting-foul");
+        const ordinary = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId: "same-group-no-relation" }); const ordinaryId = ordinary.eventIds.at(-1);
+        await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "stop-unrelated", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_SHOOTING" }, fouledPlayerId: "home-1", scorerEventId: "same-group-no-relation", scorerEventTerminal: { reason: "NATURAL" } });
+        const page = await f.gameplay.history(f.run.runId, owner, { limit: 30, beforeSequence: null, period: null }); const byId = new Map(page.items.map((item) => [item.eventId, item]));
+        expect(byId.get(madeTwoId)).toMatchObject({ type: "TWO_POINT", isGoalFoul: true });
+        expect(byId.get(madeThreeId)).toMatchObject({ type: "THREE_POINT", isGoalFoul: true });
+        expect(byId.get(missedId)).not.toHaveProperty("isGoalFoul");
+        expect(byId.get(ordinaryId)).not.toHaveProperty("isGoalFoul");
+    });
+
+    it("projects GOAL FOUL before paging when the related Shot and Foul cross a page boundary", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT", team: "HOME", playerId: "home-1", stoppageId: "stop-cross-page", scorerEventId: "cross-page-goal-foul" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "stop-cross-page", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "cross-page-goal-foul" }); const foulId = foul.eventIds.at(-1);
+        await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foulId}`, scorerEventId: "cross-page-goal-foul", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1" } });
+        const filler = Array.from({ length: 26 }, (_, index) => ({ type: index % 2 === 0 ? "CLOCK_START" : "CLOCK_STOP", scorerEventId: `cross-page-clock-${index}`, scorerEventTerminal: { reason: "NATURAL" } }));
+        await f.gameplay.appendMany(f.run.runId, owner, filler.slice(0, 16));
+        await f.gameplay.appendMany(f.run.runId, owner, filler.slice(16));
+        const firstPage = await f.gameplay.history(f.run.runId, owner, { limit: 28, beforeSequence: null, period: null });
+        expect(firstPage.items.some((item) => item.eventId === foulId)).toBe(true);
+        expect(firstPage.items.some((item) => item.eventId === shotId)).toBe(false);
+        const secondPage = await f.gameplay.history(f.run.runId, owner, { limit: 28, beforeSequence: firstPage.nextBeforeSequence, period: null });
+        expect(secondPage.items.find((item) => item.eventId === shotId)).toMatchObject({ type: "THREE_POINT", isGoalFoul: true });
+    });
+
+    it("marks multiple terminal carriers as a deterministic non-editable conflict", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        await f.gameplay.appendMany(f.run.runId, owner, [{ type: "CLOCK_START", scorerEventId: "terminal-conflict", scorerEventTerminal: { reason: "NATURAL" } }, { type: "CLOCK_STOP", scorerEventId: "terminal-conflict", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "ASSIST" } }]);
+        const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:terminal-conflict");
+        expect(group).toMatchObject({ terminalConflict: true, safeForReconstruction: false });
+        expect(group).not.toHaveProperty("scorerEventTerminal");
+    });
+
+    it("atomically resumes an ENTER_EARLY scorer event with stable historical identities and context", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const early = await f.gameplay.append(f.run.runId, owner, { type: "TURNOVER", team: "HOME", playerId: "home-1", scorerEventId: "turnover-resume", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "STEALER" } });
+        const turnoverId = early.eventIds.at(-1);
+        const later = await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START", scorerEventId: "later-clock", scorerEventTerminal: { reason: "NATURAL" } });
+        const laterId = later.eventIds.at(-1);
+        const beforeGroup = await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:turnover-resume");
+        const replaced = await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: "explicit:turnover-resume", expectedHistoryRevision: later.eventHistoryRevision, events: [
+            { eventId: turnoverId, facts: { type: "TURNOVER", team: "HOME", playerId: "home-1" } },
+            { facts: { type: "STEAL", team: "AWAY", playerId: "away-1", scorerEventTerminal: { reason: "NATURAL" } } },
+        ] });
+        const afterGroup = await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:turnover-resume");
+        expect(afterGroup).toMatchObject({ period: beforeGroup.period, clockSeconds: beforeGroup.clockSeconds, scorerEventTerminal: { reason: "NATURAL" }, safeForReconstruction: true });
+        expect(afterGroup.canonicalEventIds[0]).toBe(turnoverId); expect(afterGroup.canonicalEventIds[1]).not.toBe(turnoverId);
+        expect(replaced.eventIds).toContain(laterId); expect(replaced.eventIds.filter((id) => id === laterId)).toHaveLength(1);
+        expect((await f.gameplay.recover(f.run.runId, owner)).state).toEqual(replaced.state);
+        await expect(f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "DELETE_GROUP", scorerEventGroupId: "explicit:turnover-resume", expectedHistoryRevision: later.eventHistoryRevision })).rejects.toMatchObject({ code: "GAMEPLAY_CONFLICT" });
+    });
+
+    it("propagates a DRAWN BY correction forward but keeps a direct remaining-FT shooter correction independent", async () => {
+        const buildShootingGroup = async (f, groupId) => {
+            await f.gameplay.initialize(f.run.runId, owner);
+            const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: groupId, scorerEventId: groupId }); const shotId = shot.eventIds.at(-1);
+            const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: groupId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: groupId }); const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`;
+            const freeThrow = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: groupId }); const freeThrowId = freeThrow.eventIds.at(-1);
+            const ended = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: groupId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT2", resumeContext: { penaltyShooterPlayerId: "home-1" } } }); const endId = ended.eventIds.at(-1);
+            return { shotId, foulId, freeThrowId, endId, penaltyId, revision: ended.eventHistoryRevision };
+        };
+        const corrected = fixture(); const first = await buildShootingGroup(corrected, "drawn-by-correction");
+        await corrected.gameplay.mutateScorerEventGroup(corrected.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: "explicit:drawn-by-correction", expectedHistoryRevision: first.revision, events: [
+            { eventId: first.shotId, facts: { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "drawn-by-correction" } },
+            { eventId: first.foulId, facts: { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "drawn-by-correction", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-2", relatedShotEventId: first.shotId } },
+            { eventId: first.freeThrowId, facts: { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId: first.penaltyId, attemptIndex: 1, made: true } },
+            { eventId: first.endId, facts: { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: first.penaltyId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT2", resumeContext: { penaltyShooterPlayerId: "home-2" } } } },
+        ] });
+        const correctedFacts = (await corrected.gameplay.scorerEventGroup(corrected.run.runId, owner, "explicit:drawn-by-correction")).items.map((item) => item.facts);
+        expect(correctedFacts.find((item) => item.type === "TWO_POINT_MISSED").playerId).toBe("home-2");
+        expect(correctedFacts.find((item) => item.type === "PERSONAL_FOUL").fouledPlayerId).toBe("home-2");
+        expect(correctedFacts.find((item) => item.type === "FREE_THROW").playerId).toBe("home-2");
+
+        const shooterOnly = fixture(); const second = await buildShootingGroup(shooterOnly, "shooter-only-correction");
+        await shooterOnly.gameplay.mutateScorerEventGroup(shooterOnly.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: "explicit:shooter-only-correction", expectedHistoryRevision: second.revision, events: [
+            { eventId: second.shotId, facts: { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "shooter-only-correction" } },
+            { eventId: second.foulId, facts: { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "shooter-only-correction", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: second.shotId } },
+            { eventId: second.freeThrowId, facts: { type: "FREE_THROW", team: "HOME", playerId: "home-2", penaltyId: second.penaltyId, attemptIndex: 1, made: true } },
+            { eventId: second.endId, facts: { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: second.penaltyId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT2", resumeContext: { penaltyShooterPlayerId: "home-2" } } } },
+        ] });
+        const shooterFacts = (await shooterOnly.gameplay.scorerEventGroup(shooterOnly.run.runId, owner, "explicit:shooter-only-correction")).items.map((item) => item.facts);
+        expect(shooterFacts.find((item) => item.type === "PERSONAL_FOUL").fouledPlayerId).toBe("home-1");
+        expect(shooterFacts.find((item) => item.type === "FREE_THROW").playerId).toBe("home-2");
+    });
+
+    it("deletes a complete safe group including hidden terminal facts and densely replays later events", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "delete-technical", offender: { kind: "PLAYER", playerId: "home-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_2", scorerEventId: "delete-technical" }); const foulId = foul.eventIds.at(-1);
+        const ended = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foulId}`, scorerEventId: "delete-technical", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
+        const later = await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "AWAY", scorerEventId: "later-timeout", scorerEventTerminal: { reason: "NATURAL" } }); const laterId = later.eventIds.at(-1);
+        const deleted = await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "DELETE_GROUP", scorerEventGroupId: "explicit:delete-technical", expectedHistoryRevision: later.eventHistoryRevision });
+        expect(deleted.eventIds).not.toContain(foulId); expect(deleted.eventIds).toContain(laterId); expect(deleted.lastAcceptedSequence).toBe(later.lastAcceptedSequence - 2);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => row.sequence)).toEqual(Array.from({ length: deleted.lastAcceptedSequence }, (_, index) => index + 1));
+        expect(await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:delete-technical")).toBeNull();
+        expect((await f.gameplay.recover(f.run.runId, owner)).state).toEqual(deleted.state);
+        expect(ended.eventHistoryRevision).toBeLessThan(deleted.eventHistoryRevision);
+    });
+
+    it("rejects unsafe, finalized, and replay-invalid group mutations without partial durable changes", async () => {
+        const unsafe = fixture(); await unsafe.gameplay.initialize(unsafe.run.runId, owner);
+        const legacy = await unsafe.gameplay.append(unsafe.run.runId, owner, { type: "TIMEOUT", team: "HOME" }); const legacyId = legacy.eventIds.at(-1); const unsafeRows = unsafe.localDatabase.readLocalMatchEvents(unsafe.run.runId);
+        await expect(unsafe.gameplay.mutateScorerEventGroup(unsafe.run.runId, owner, { kind: "DELETE_GROUP", scorerEventGroupId: `legacy:${legacyId}`, expectedHistoryRevision: legacy.eventHistoryRevision })).rejects.toMatchObject({ code: "GAMEPLAY_EVENT_REJECTED" });
+        expect(unsafe.localDatabase.readLocalMatchEvents(unsafe.run.runId)).toEqual(unsafeRows);
+
+        const invalid = fixture();
+        const currentConfiguration = invalid.configurations.getOrCreate("game-gameplay", owner).configuration; const participatingConfiguration = configurationDraft(currentConfiguration); const homeConfiguration = participatingConfiguration.teams.find((team) => team.side === "HOME");
+        Object.assign(homeConfiguration.players.find((player) => player.playerId === "home-3"), { participating: true, gameShirtNumber: "7" });
+        invalid.configurations.saveDraft(participatingConfiguration, owner);
+        await invalid.gameplay.initialize(invalid.run.runId, owner);
+        const substitution = await invalid.gameplay.append(invalid.run.runId, owner, { type: "SUBSTITUTION", team: "HOME", playerInId: "home-3", playerOutId: "home-1", scorerEventId: "sub-in-home3", scorerEventTerminal: { reason: "NATURAL" } }); const substitutionId = substitution.eventIds.at(-1);
+        const miss = await invalid.gameplay.append(invalid.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-3", scorerEventId: "home3-shot", scorerEventTerminal: { reason: "NATURAL" } }); const missId = miss.eventIds.at(-1);
+        const substitutionGroup = await invalid.gameplay.scorerEventGroup(invalid.run.runId, owner, "explicit:sub-in-home3"); const shotGroup = await invalid.gameplay.scorerEventGroup(invalid.run.runId, owner, "explicit:home3-shot");
+        expect(substitutionGroup).toMatchObject({ safeForReconstruction: true, canonicalEventIds: [substitutionId] }); expect(shotGroup).toMatchObject({ safeForReconstruction: true, canonicalEventIds: [missId] });
+        const invalidRows = invalid.localDatabase.readLocalMatchEvents(invalid.run.runId); const invalidSnapshot = invalid.localDatabase.readLocalMatchEngineSnapshot(invalid.run.runId); const invalidRun = invalid.localDatabase.readLocalGameRun(invalid.run.runId); const invalidState = miss.state;
+        const rowIdentity = (rows) => rows.map((row) => { const event = JSON.parse(row.eventJson); return { eventId: row.eventId, sequence: row.sequence, scorerEventId: event.scorerEventId, eventJson: row.eventJson, eventHash: row.eventHash }; });
+        await expect(invalid.gameplay.mutateScorerEventGroup(invalid.run.runId, owner, { kind: "DELETE_GROUP", scorerEventGroupId: "explicit:sub-in-home3", expectedHistoryRevision: invalidSnapshot.eventHistoryRevision })).rejects.toMatchObject({ code: "GAMEPLAY_EVENT_REJECTED" });
+        const rowsAfterRejectedMutation = invalid.localDatabase.readLocalMatchEvents(invalid.run.runId);
+        expect(rowsAfterRejectedMutation).toEqual(invalidRows); expect(rowsAfterRejectedMutation).toHaveLength(invalidRows.length); expect(rowIdentity(rowsAfterRejectedMutation)).toEqual(rowIdentity(invalidRows));
+        expect(invalid.localDatabase.readLocalMatchEngineSnapshot(invalid.run.runId)).toEqual(invalidSnapshot); expect(invalid.localDatabase.readLocalGameRun(invalid.run.runId)).toEqual(invalidRun);
+        expect((await invalid.gameplay.recover(invalid.run.runId, owner)).state).toEqual(invalidState);
+        expect(await invalid.gameplay.scorerEventGroup(invalid.run.runId, owner, "explicit:sub-in-home3")).toEqual(substitutionGroup); expect(await invalid.gameplay.scorerEventGroup(invalid.run.runId, owner, "explicit:home3-shot")).toEqual(shotGroup);
+
+        const finalized = fixture({ tie_allowed: true, winner_required: false, regulation_periods: 1 }); await finalized.gameplay.initialize(finalized.run.runId, owner);
+        const grouped = await finalized.gameplay.append(finalized.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0, scorerEventId: "finalized-clock", scorerEventTerminal: { reason: "NATURAL" } });
+        await finalized.gameplay.append(finalized.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } }); await finalized.gameplay.finalize(finalized.run.runId, owner);
+        await expect(finalized.gameplay.mutateScorerEventGroup(finalized.run.runId, owner, { kind: "DELETE_GROUP", scorerEventGroupId: "explicit:finalized-clock", expectedHistoryRevision: grouped.eventHistoryRevision })).rejects.toMatchObject({ code: "GAMEPLAY_CONFLICT" });
+    });
+
+    it("derives historical candidates from target-time lineup, survives reload, and performs zero writes", async () => {
+        const f = fixture(); const current = f.configurations.getOrCreate("game-gameplay", owner).configuration; const draft = configurationDraft(current); const home = draft.teams.find((team) => team.side === "HOME");
+        Object.assign(home.players.find((player) => player.playerId === "home-3"), { participating: true, gameShirtNumber: "7" }); f.configurations.saveDraft(draft, owner); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId: "historical-assist", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "ASSIST" } });
+        await f.gameplay.append(f.run.runId, owner, { type: "SUBSTITUTION", team: "HOME", playerInId: "home-3", playerOutId: "home-1", scorerEventId: "later-sub", scorerEventTerminal: { reason: "NATURAL" } });
+        const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); const snapshotBefore = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:historical-assist");
+        expect(context).toMatchObject({ expectedHistoryRevision: snapshotBefore.eventHistoryRevision, editCapabilities: { safeForEdit: true, canResume: true, canDeleteGroup: true }, continuationPlan: { kind: "ASSIST", side: "HOME", candidatePlayerIds: ["home-2"], noAssistAllowed: true } });
+        const historicalHomePlayers = new Map(context.historicalState.teams.find((team) => team.side === "HOME").players.map((player) => [player.playerId, player]));
+        expect(historicalHomePlayers.get("home-1")).toMatchObject({ side: "HOME", onCourt: true, eligible: true, foulStatus: "ELIGIBLE" });
+        expect(historicalHomePlayers.get("home-2")).toMatchObject({ side: "HOME", onCourt: true, eligible: true, foulStatus: "ELIGIBLE" });
+        expect(historicalHomePlayers.get("home-3")).toMatchObject({ side: "HOME", onCourt: false, eligible: true, foulStatus: "ELIGIBLE" });
+        expect(context.editCapabilities.targets.find((target) => target.kind === "SHOOTER")).toMatchObject({ eventId: shot.eventIds.at(-1), currentPlayerId: "home-1", candidatePlayerIds: ["home-1", "home-2"] });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshotBefore);
+        const restarted = new MatchGameplayManager(f.setup, f.localDatabase, deviceId, () => new Date("2026-08-26T13:00:00.000Z"), () => "unused-edit-context-id", () => "synthetic-edit-context-authorization"); expect(await restarted.scorerEventEditContext(f.run.runId, owner, "explicit:historical-assist")).toEqual(context);
+    });
+
+    it("projects factual target candidates, causal conflicts, and unsupported staff as read-only", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", assistPlayerId: "home-2", stoppageId: "targets", scorerEventId: "targets" }); const shotId = shot.eventIds.at(-1);
+        await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "targets", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "targets", scorerEventTerminal: { reason: "NATURAL" } });
+        const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:targets"); const byKind = new Map(context.editCapabilities.targets.map((target) => [target.kind, target]));
+        expect(byKind.get("SHOOTER")).toMatchObject({ canonicalSide: "HOME", candidatePlayerIds: ["home-1"] }); expect(byKind.get("ASSIST")).toMatchObject({ candidatePlayerIds: ["home-2"] }); expect(byKind.get("FOULER")).toMatchObject({ canonicalSide: "AWAY", currentPlayerId: "away-1" }); expect(byKind.get("DRAWN_BY")).toMatchObject({ canonicalSide: "HOME", candidatePlayerIds: ["home-1"], forwardPropagation: true }); expect(byKind.get("DRAWN_BY").candidatePlayerIds).not.toContain("home-2");
+        const staffFixture = fixture(); await staffFixture.gameplay.initialize(staffFixture.run.runId, owner);
+        const staff = await staffFixture.gameplay.append(staffFixture.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "staff-target", offender: { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: "staff-target", scorerEventContext: { technicalStaffSource: "BENCH" } }); const penaltyId = `penalty:${staff.eventIds.at(-1)}`;
+        await staffFixture.gameplay.append(staffFixture.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: "staff-target", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } }); const staffContext = await staffFixture.gameplay.scorerEventEditContext(staffFixture.run.runId, owner, "explicit:staff-target");
+        expect(staffContext.editCapabilities.targets.find((target) => target.kind === "FOULER")).toMatchObject({ editable: false, readOnlyReason: "UNSUPPORTED_TARGET" }); expect(staffContext.editCapabilities).toMatchObject({ safeForEdit: true, canResume: true });
+    });
+
+    it("projects non-penalty continuation plans from factual history and terminal metadata", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId: "resume-assist", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "ASSIST" } }); await f.gameplay.append(f.run.runId, owner, { type: "TURNOVER", team: "HOME", playerId: "home-1", scorerEventId: "resume-stealer", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "STEALER" } }); await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "AWAY", playerId: "away-1", scorerEventId: "resume-rebound", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "REBOUNDER" } });
+        expect((await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:resume-assist")).continuationPlan).toMatchObject({ kind: "ASSIST", candidatePlayerIds: ["home-2"], noAssistAllowed: true }); expect((await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:resume-stealer")).continuationPlan).toMatchObject({ kind: "STEALER", side: "AWAY", candidatePlayerIds: ["away-1", "away-2"], noStealAllowed: true }); expect((await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:resume-rebound")).continuationPlan).toMatchObject({ kind: "REBOUNDER", teamReboundAllowed: true, penaltyId: null });
+    });
+
+    it("derives manual and preselected Technical plus shooting-FT continuation from authoritative entitlements", async () => {
+        const technical = fixture(); await technical.gameplay.initialize(technical.run.runId, owner); const foul = await technical.gameplay.append(technical.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "technical-edit", offender: { kind: "PLAYER", playerId: "home-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_2", scorerEventId: "technical-edit" }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`; await technical.gameplay.append(technical.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: "technical-edit", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
+        expect((await technical.gameplay.scorerEventEditContext(technical.run.runId, owner, "explicit:technical-edit")).continuationPlan).toMatchObject({ kind: "CHOOSE_SHOOTER", candidatePlayerIds: ["away-1", "away-2"], penalty: { totalAttempts: 1, completedAttempts: 0, remainingAttempts: 1, restartKind: "RESUME_INTERRUPTED" } });
+        const selected = fixture(); await selected.gameplay.initialize(selected.run.runId, owner); const selectedFoul = await selected.gameplay.append(selected.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "technical-selected", offender: { kind: "PLAYER", playerId: "home-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_2", scorerEventId: "technical-selected" }); const selectedPenaltyId = `penalty:${selectedFoul.eventIds.at(-1)}`; await selected.gameplay.append(selected.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: selectedPenaltyId, scorerEventId: "technical-selected", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER", resumeContext: { penaltyShooterPlayerId: "away-2" } } }); expect((await selected.gameplay.scorerEventEditContext(selected.run.runId, owner, "explicit:technical-selected")).continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", shooterPlayerId: "away-2", attemptNumber: 1, postResultContinuation: "END" });
+        const shooting = fixture(); await shooting.gameplay.initialize(shooting.run.runId, owner); const shot = await shooting.gameplay.append(shooting.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "shooting-edit", scorerEventId: "shooting-edit" }); const shotId = shot.eventIds.at(-1); const shootingFoul = await shooting.gameplay.append(shooting.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "shooting-edit", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "shooting-edit" }); const shootingPenaltyId = `penalty:${shootingFoul.eventIds.at(-1)}`; await shooting.gameplay.append(shooting.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId: shootingPenaltyId, attemptIndex: 1, made: true, scorerEventId: "shooting-edit" }); await shooting.gameplay.append(shooting.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: shootingPenaltyId, scorerEventId: "shooting-edit", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT2", resumeContext: { penaltyShooterPlayerId: "home-1" } } }); expect((await shooting.gameplay.scorerEventEditContext(shooting.run.runId, owner, "explicit:shooting-edit")).continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2, penalty: { totalAttempts: 3, completedAttempts: 1, remainingAttempts: 2, restartKind: "LIVE_BALL" }, postResultContinuation: "NEXT_FREE_THROW" });
+    });
+
+    it("exposes final live-ball rebound and keeps preview, edit, delete, unsafe, and finalized capabilities separate", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "final-ft", scorerEventId: "final-ft" }); const shotId = shot.eventIds.at(-1); const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "final-ft", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "final-ft" }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`; await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: "final-ft" }); await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 2, made: false, scorerEventId: "final-ft", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "REBOUNDER" } }); expect((await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:final-ft")).continuationPlan).toMatchObject({ kind: "REBOUNDER", penaltyId, teamReboundAllowed: true });
+        const timeout = await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "HOME", scorerEventId: "preview-only", scorerEventTerminal: { reason: "NATURAL" } }); expect(await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:preview-only")).toMatchObject({ group: { safeForReconstruction: true }, editCapabilities: { safeForEdit: false, canResume: false, canDeleteGroup: true, targets: [] }, expectedHistoryRevision: timeout.eventHistoryRevision }); const legacy = await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "AWAY" }); expect(await f.gameplay.scorerEventEditContext(f.run.runId, owner, `legacy:${legacy.eventIds.at(-1)}`)).toMatchObject({ editCapabilities: { safeForEdit: false, canResume: false, canDeleteGroup: false }, continuationPlan: null });
+        const finalized = fixture({ tie_allowed: true, winner_required: false, regulation_periods: 1 }); await finalized.gameplay.initialize(finalized.run.runId, owner); await finalized.gameplay.append(finalized.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0, scorerEventId: "finalized-context", scorerEventTerminal: { reason: "NATURAL" } }); await finalized.gameplay.append(finalized.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } }); await finalized.gameplay.finalize(finalized.run.runId, owner); expect(await finalized.gameplay.scorerEventEditContext(finalized.run.runId, owner, "explicit:finalized-context")).toMatchObject({ lifecycle: "finalized", editCapabilities: { safeForEdit: false, canResume: false, canDeleteGroup: false }, continuationPlan: null });
+    });
+
+    it("previews DRAWN BY forward propagation, direct FT independence, refreshed capabilities, and SAVE equivalence without writes", async () => {
+        const f = fixture({ min_players: 3, starting_players: 3 });
+        const current = f.configurations.getOrCreate("game-gameplay", owner).configuration; const draft = configurationDraft(current);
+        for (const team of draft.teams) { const third = team.players.find((player) => player.playerId === `${team.side.toLowerCase()}-3`); Object.assign(third, { participating: true, gameShirtNumber: "7" }); team.starterPlayerIds.push(third.playerId); }
+        f.configurations.saveDraft(draft, owner); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", assistPlayerId: "home-2", stoppageId: "preview-propagation", scorerEventId: "preview-propagation" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "preview-propagation", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "preview-propagation" }); const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`;
+        const completed = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: "preview-propagation", scorerEventTerminal: { reason: "NATURAL" } });
+        const groupId = "explicit:preview-propagation"; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId);
+        const beforeRows = f.localDatabase.readLocalMatchEvents(f.run.runId); const beforeSnapshot = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId); const beforeRun = f.localDatabase.readLocalGameRun(f.run.runId);
+        const drawnBy = context.editCapabilities.targets.find((target) => target.kind === "DRAWN_BY");
+        const preview = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: draftEvents(group), action: { kind: "CORRECT_PLAYER", targetId: drawnBy.targetId, playerId: "home-3" } });
+        expect(factsOf(preview.normalizedGroup, "TWO_POINT")).toMatchObject({ playerId: "home-3", assistPlayerId: "home-2" });
+        expect(factsOf(preview.normalizedGroup, "PERSONAL_FOUL")).toMatchObject({ fouledPlayerId: "home-3" });
+        expect(factsOf(preview.normalizedGroup, "FREE_THROW")).toMatchObject({ playerId: "home-3" });
+        expect(preview.editContext.editCapabilities.targets.find((target) => target.kind === "DRAWN_BY")).toMatchObject({ currentPlayerId: "home-3", forwardPropagation: true });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(beforeRows); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(beforeSnapshot); expect(f.localDatabase.readLocalGameRun(f.run.runId)).toEqual(beforeRun);
+
+        const directDraft = draftEvents(group).map((event) => event.eventId === completed.eventIds.at(-1) ? { ...event, facts: { ...event.facts, playerId: "home-3" } } : event);
+        const direct = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: directDraft });
+        expect(factsOf(direct.normalizedGroup, "PERSONAL_FOUL")).toMatchObject({ fouledPlayerId: "home-1" }); expect(factsOf(direct.normalizedGroup, "FREE_THROW")).toMatchObject({ playerId: "home-3" });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(beforeRows);
+
+        await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: preview.draftEvents.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: event.facts })) });
+        const saved = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId);
+        expect(saved.items.map((item) => item.facts)).toEqual(preview.normalizedGroup.items.map((item) => item.facts));
+    });
+
+    it("previews repeated FT1 to FT2 to FT3 progression and final LIVE_BALL rebound without persistence", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "preview-ft", scorerEventId: "preview-ft" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "preview-ft", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "preview-ft" }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+        const ended = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: "preview-ft", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1", resumeContext: { penaltyShooterPlayerId: "home-1" } } });
+        const groupId = "explicit:preview-ft"; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); const snapshotBefore = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId);
+        const initial = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: draftEvents(group) }); expect(initial.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 1, postResultContinuation: "NEXT_FREE_THROW" });
+        const ft1 = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: initial.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); expect(ft1.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2, postResultContinuation: "NEXT_FREE_THROW" });
+        const ft2 = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: ft1.draftEvents, action: { kind: "FREE_THROW_RESULT", made: true } }); expect(ft2.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 3, postResultContinuation: "REBOUNDER_IF_FINAL_MISS" });
+        const ft3 = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: ft2.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); expect(ft3.editContext.continuationPlan).toMatchObject({ kind: "REBOUNDER", teamReboundAllowed: true, penaltyId, candidatePlayerIds: expect.arrayContaining(["home-1", "away-1"]) });
+        const rebound = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: ft3.draftEvents, action: { kind: "REBOUNDER", team: "AWAY", playerId: "away-1", teamRebound: false } });
+        expect(rebound.editContext.continuationPlan).toBeNull(); expect(factsOf(rebound.normalizedGroup, "REBOUND")).toMatchObject({ team: "AWAY", playerId: "away-1", offensive: false, scorerEventTerminal: { reason: "NATURAL" } });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshotBefore);
+        await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: rebound.draftEvents.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: event.facts })) });
+        const saved = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); expect(saved.items.map((item) => item.facts)).toEqual(rebound.normalizedGroup.items.map((item) => item.facts));
+    });
+
+    it("normalizes a corrected 3PT Shooting Foul result across authoritative MADE and MISS branches", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT", team: "HOME", playerId: "home-1", assistPlayerId: "home-2", stoppageId: "correct-shot-result", scorerEventId: "correct-shot-result" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "correct-shot-result", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "correct-shot-result" }); const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`;
+        const completed = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: "correct-shot-result", scorerEventTerminal: { reason: "NATURAL" } });
+        const groupId = "explicit:correct-shot-result"; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId); const resultTarget = context.editCapabilities.targets.find((target) => target.kind === "SHOT_RESULT");
+        const corrected = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: draftEvents(group), action: { kind: "CORRECT_SHOT_RESULT", targetId: resultTarget.targetId, made: false } });
+        const correctedShot = factsOf(corrected.normalizedGroup, "THREE_POINT_MISSED"); expect(correctedShot).toMatchObject({ playerId: "home-1" }); expect(correctedShot).not.toHaveProperty("assistPlayerId");
+        expect(factsOf(corrected.normalizedGroup, "PERSONAL_FOUL")).toMatchObject({ offender: { kind: "PLAYER", playerId: "away-1" }, fouledPlayerId: "home-1", relatedShotEventId: shotId });
+        expect(corrected.normalizedGroup.items.filter((item) => item.type === "FREE_THROW")).toHaveLength(0);
+        expect(factsOf(corrected.normalizedGroup, "PENALTY_ADMINISTRATION_ENDED")).toMatchObject({ penaltyId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1", resumeContext: { penaltyShooterPlayerId: "home-1" } } });
+        expect(corrected.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 1, penalty: { penaltyId, totalAttempts: 3, remainingAttempts: 3 }, postResultContinuation: "NEXT_FREE_THROW" });
+
+        const ft1Made = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: corrected.draftEvents, action: { kind: "FREE_THROW_RESULT", made: true } }); expect(ft1Made.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2, postResultContinuation: "NEXT_FREE_THROW" });
+        const ft1Miss = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: corrected.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); expect(ft1Miss.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2, postResultContinuation: "NEXT_FREE_THROW" });
+        const ft2 = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: ft1Made.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); expect(ft2.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 3, postResultContinuation: "REBOUNDER_IF_FINAL_MISS" });
+        const ft3Made = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: ft2.draftEvents, action: { kind: "FREE_THROW_RESULT", made: true } }); expect(ft3Made.editContext.continuationPlan).toBeNull();
+        const ft3Miss = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: ft2.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); expect(ft3Miss.editContext.continuationPlan).toMatchObject({ kind: "REBOUNDER", penaltyId, teamReboundAllowed: true });
+        expect(ft3Made.normalizedGroup.items.every((item) => item.scorerEventId === "correct-shot-result")).toBe(true);
+        await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: ft3Made.draftEvents.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: event.facts })) });
+        const saved = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); expect(saved.items.map((item) => item.facts)).toEqual(ft3Made.normalizedGroup.items.map((item) => item.facts));
+
+        const reverse = fixture(); await reverse.gameplay.initialize(reverse.run.runId, owner);
+        const reverseShot = await reverse.gameplay.append(reverse.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "correct-shot-reverse", scorerEventId: "correct-shot-reverse" }); const reverseShotId = reverseShot.eventIds.at(-1);
+        const reverseFoul = await reverse.gameplay.append(reverse.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "correct-shot-reverse", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: reverseShotId, scorerEventId: "correct-shot-reverse" }); const reversePenaltyId = `penalty:${reverseFoul.eventIds.at(-1)}`;
+        await reverse.gameplay.append(reverse.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId: reversePenaltyId, attemptIndex: 1, made: true, scorerEventId: "correct-shot-reverse" });
+        await reverse.gameplay.append(reverse.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId: reversePenaltyId, attemptIndex: 2, made: true, scorerEventId: "correct-shot-reverse" });
+        await reverse.gameplay.append(reverse.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId: reversePenaltyId, attemptIndex: 3, made: false, scorerEventId: "correct-shot-reverse" });
+        const reverseCompleted = await reverse.gameplay.append(reverse.run.runId, owner, { type: "REBOUND", team: "AWAY", playerId: "away-1", offensive: false, scorerEventId: "correct-shot-reverse", scorerEventTerminal: { reason: "NATURAL" } });
+        const reverseGroupId = "explicit:correct-shot-reverse"; const reverseGroup = await reverse.gameplay.scorerEventGroup(reverse.run.runId, owner, reverseGroupId); const reverseContext = await reverse.gameplay.scorerEventEditContext(reverse.run.runId, owner, reverseGroupId); const reverseTarget = reverseContext.editCapabilities.targets.find((target) => target.kind === "SHOT_RESULT");
+        const made = await reverse.gameplay.previewScorerEventGroupMutation(reverse.run.runId, owner, { scorerEventGroupId: reverseGroupId, expectedHistoryRevision: reverseCompleted.eventHistoryRevision, events: draftEvents(reverseGroup), action: { kind: "CORRECT_SHOT_RESULT", targetId: reverseTarget.targetId, made: true } });
+        expect(factsOf(made.normalizedGroup, "THREE_POINT")).toMatchObject({ playerId: "home-1" }); expect(made.normalizedGroup.items.some((item) => item.type === "FREE_THROW" || item.type === "REBOUND")).toBe(false); expect(made.editContext.continuationPlan).toMatchObject({ kind: "ASSIST", shotEventId: reverseShotId });
+        const noAssist = await reverse.gameplay.previewScorerEventGroupMutation(reverse.run.runId, owner, { scorerEventGroupId: reverseGroupId, expectedHistoryRevision: reverseCompleted.eventHistoryRevision, events: made.draftEvents, action: { kind: "ASSIST", playerId: null } }); expect(noAssist.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 1, penalty: { totalAttempts: 1, remainingAttempts: 1 } });
+    });
+
+    it("edits the authoritative CURRENT_OPEN zero-terminal scorer event", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = "current-open-shot"; const mode = { mode: "CURRENT_OPEN", scorerEventId };
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: scorerEventId, scorerEventId }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: scorerEventId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId });
+        const groupId = `explicit:${scorerEventId}`; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId);
+        const historical = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId); const historicalTarget = historical.editCapabilities.targets.find((target) => target.kind === "SHOT_RESULT");
+        expect(historical).toMatchObject({ group: { safeForReconstruction: false }, editCapabilities: { safeForEdit: false } }); expect(historicalTarget).toMatchObject({ editable: false, readOnlyReason: "UNSAFE_GROUP" });
+        const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId, mode); const target = context.editCapabilities.targets.find((candidate) => candidate.kind === "SHOT_RESULT" && candidate.eventId === shotId);
+        expect(context).toMatchObject({ group: { safeForReconstruction: false }, editCapabilities: { safeForEdit: true, canResume: false, canDeleteGroup: false }, continuationPlan: { kind: "FREE_THROW_RESULT", attemptNumber: 1, penalty: { totalAttempts: 3, remainingAttempts: 3 } } }); expect(target).toMatchObject({ editable: true, currentValue: "MISS" });
+        const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); const snapshotBefore = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId);
+        const preview = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: foul.eventHistoryRevision, mode, events: draftEvents(group), action: { kind: "CORRECT_SHOT_RESULT", targetId: target.targetId, made: true } });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshotBefore);
+        expect(factsOf(preview.normalizedGroup, "THREE_POINT")).toMatchObject({ playerId: "home-1" }); expect(factsOf(preview.normalizedGroup, "PERSONAL_FOUL")).toMatchObject({ offender: { kind: "PLAYER", playerId: "away-1" }, fouledPlayerId: "home-1", relatedShotEventId: shotId });
+        expect(preview.normalizedGroup.items.some((item) => item.type === "FREE_THROW" || item.type === "PENALTY_ADMINISTRATION_ENDED")).toBe(false); expect(preview.normalizedGroup.items.every((item) => item.scorerEventId === scorerEventId)).toBe(true); expect(preview.normalizedGroup.items.every((item) => item.scorerEventTerminal === undefined)).toBe(true); expect(preview.editContext.continuationPlan).toMatchObject({ kind: "ASSIST", shotEventId: shotId });
+        let rewrites = 0; const rewrite = f.localDatabase.rewriteLocalMatchEventHistory.bind(f.localDatabase); f.localDatabase.rewriteLocalMatchEventHistory = (...args) => { rewrites += 1; return rewrite(...args); };
+        const savedResult = await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: groupId, expectedHistoryRevision: foul.eventHistoryRevision, mode, events: preview.draftEvents.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: event.facts })) });
+        const saved = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); expect(rewrites).toBe(1); expect(saved.items.map((item) => item.facts)).toEqual(preview.normalizedGroup.items.map((item) => item.facts)); expect(saved.items.every((item) => item.scorerEventId === scorerEventId)).toBe(true); expect(savedResult.state.home.score).toBe(3);
+    });
+
+    it("rejects an older completed scorer group in CURRENT_OPEN mode", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = "completed-shot";
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId, scorerEventTerminal: { reason: "NATURAL", decisions: { assist: "NONE" } } });
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START", scorerEventId: "later-group", scorerEventTerminal: { reason: "NATURAL" } });
+        const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, `explicit:${scorerEventId}`, { mode: "CURRENT_OPEN", scorerEventId });
+        const target = context.editCapabilities.targets.find((candidate) => candidate.kind === "SHOT_RESULT" && candidate.eventId === shot.eventIds.at(-1));
+        expect(context).toMatchObject({ editCapabilities: { safeForEdit: false } });
+        expect(target).toMatchObject({ editable: false });
+    });
+
+    it("keeps a factual FT1 editable in CURRENT_OPEN while FT2 remains unresolved", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = "current-open-ft"; const mode = { mode: "CURRENT_OPEN", scorerEventId };
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: scorerEventId, scorerEventId }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: scorerEventId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+        const ft1 = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId }); const ft1Id = ft1.eventIds.at(-1);
+        const groupId = `explicit:${scorerEventId}`; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId, mode); const target = context.editCapabilities.targets.find((candidate) => candidate.kind === "FREE_THROW_RESULT" && candidate.eventId === ft1Id);
+        expect(target).toMatchObject({ editable: true, currentValue: "MADE" }); expect(context.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2 });
+        const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); const preview = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ft1.eventHistoryRevision, mode, events: draftEvents(group), action: { kind: "CORRECT_FREE_THROW_RESULT", targetId: target.targetId, made: false } });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(preview.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2 }); expect(preview.normalizedGroup.items.find((item) => item.eventId === ft1Id)?.facts).toMatchObject({ made: false }); expect(preview.normalizedGroup.items.every((item) => item.scorerEventTerminal === undefined)).toBe(true);
+    });
+
+    it.each([true, false])("advances CURRENT_OPEN FT1 %s to FT2 without PAE", async (made) => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = `current-open-ft1-${made ? "made" : "miss"}`; const mode = { mode: "CURRENT_OPEN", scorerEventId };
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: scorerEventId, scorerEventId }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: scorerEventId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId });
+        const groupId = `explicit:${scorerEventId}`; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); const snapshotBefore = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId);
+        const preview = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: foul.eventHistoryRevision, mode, events: draftEvents(group), action: { kind: "FREE_THROW_RESULT", made } });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshotBefore);
+        expect(preview.normalizedGroup.items.filter((item) => item.type === "FREE_THROW")).toHaveLength(1); expect(factsOf(preview.normalizedGroup, "FREE_THROW")).toMatchObject({ attemptIndex: 1, made, scorerEventId });
+        expect(preview.normalizedGroup.items.some((item) => item.type === "PENALTY_ADMINISTRATION_ENDED")).toBe(false); expect(preview.normalizedGroup.items.every((item) => item.scorerEventTerminal === undefined)).toBe(true); expect(preview.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2 });
+        let rewrites = 0; const rewrite = f.localDatabase.rewriteLocalMatchEventHistory.bind(f.localDatabase); f.localDatabase.rewriteLocalMatchEventHistory = (...args) => { rewrites += 1; return rewrite(...args); };
+        await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: groupId, expectedHistoryRevision: foul.eventHistoryRevision, mode, events: preview.draftEvents.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: event.facts })) });
+        const saved = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); expect(rewrites).toBe(1); expect(saved.items.map((item) => item.facts)).toEqual(preview.normalizedGroup.items.map((item) => item.facts)); expect(saved.items.every((item) => item.scorerEventId === scorerEventId)).toBe(true);
+    });
+
+    it.each([true, false])("advances CURRENT_OPEN FT2 %s to FT3 without PAE", async (made) => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = `current-open-ft2-${made ? "made" : "miss"}`; const mode = { mode: "CURRENT_OPEN", scorerEventId };
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: scorerEventId, scorerEventId }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: scorerEventId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+        const ft1 = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId });
+        const groupId = `explicit:${scorerEventId}`; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        const preview = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ft1.eventHistoryRevision, mode, events: draftEvents(group), action: { kind: "FREE_THROW_RESULT", made } });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(preview.normalizedGroup.items.filter((item) => item.type === "FREE_THROW")).toHaveLength(2); expect(preview.normalizedGroup.items.filter((item) => item.type === "FREE_THROW").at(-1)?.facts).toMatchObject({ attemptIndex: 2, made, scorerEventId });
+        expect(preview.normalizedGroup.items.some((item) => item.type === "PENALTY_ADMINISTRATION_ENDED")).toBe(false); expect(preview.normalizedGroup.items.every((item) => item.scorerEventTerminal === undefined)).toBe(true); expect(preview.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 3 });
+    });
+
+    it("continues the corrected CURRENT_OPEN 3PT Shooting Foul from FT1 to FT2", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const scorerEventId = "current-open-corrected-shot-ft"; const mode = { mode: "CURRENT_OPEN", scorerEventId };
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT", team: "HOME", playerId: "home-1", assistPlayerId: "home-2", stoppageId: scorerEventId, scorerEventId }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: scorerEventId, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId });
+        const groupId = `explicit:${scorerEventId}`; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId, mode); const resultTarget = context.editCapabilities.targets.find((target) => target.kind === "SHOT_RESULT");
+        const corrected = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: foul.eventHistoryRevision, mode, events: draftEvents(group), action: { kind: "CORRECT_SHOT_RESULT", targetId: resultTarget.targetId, made: false } });
+        expect(corrected.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 1, penalty: { totalAttempts: 3 } });
+        const ft1 = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: foul.eventHistoryRevision, mode, events: corrected.draftEvents, action: { kind: "FREE_THROW_RESULT", made: true } });
+        expect(ft1.normalizedGroup.items.filter((item) => item.type === "FREE_THROW")).toHaveLength(1); expect(ft1.normalizedGroup.items.some((item) => item.type === "PENALTY_ADMINISTRATION_ENDED")).toBe(false); expect(ft1.normalizedGroup.items.every((item) => item.scorerEventTerminal === undefined)).toBe(true); expect(ft1.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2 });
+    });
+
+    it("CORRECT_FREE_THROW_RESULT reopens a final LIVE_BALL miss at REBOUNDER and preserves preview-save equivalence", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT", team: "HOME", playerId: "home-1", assistPlayerId: "home-2", stoppageId: "correct-final-ft", scorerEventId: "correct-final-ft" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "correct-final-ft", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "correct-final-ft" }); const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`;
+        const completed = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: "correct-final-ft", scorerEventTerminal: { reason: "NATURAL" } }); const freeThrowId = completed.eventIds.at(-1);
+        const groupId = "explicit:correct-final-ft"; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId); const target = context.editCapabilities.targets.find((candidate) => candidate.kind === "FREE_THROW_RESULT");
+        const rowsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); const snapshotBefore = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId);
+        const corrected = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: draftEvents(group), action: { kind: "CORRECT_FREE_THROW_RESULT", targetId: target.targetId, made: false } });
+        const correctedFreeThrow = corrected.normalizedGroup.items.find((item) => item.type === "FREE_THROW");
+        expect(correctedFreeThrow).toMatchObject({ eventId: freeThrowId, scorerEventId: "correct-final-ft", facts: { playerId: "home-1", penaltyId, attemptIndex: 1, made: false, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "REBOUNDER" } } });
+        expect(corrected.normalizedGroup.items.find((item) => item.type === "THREE_POINT")?.facts).toMatchObject({ assistPlayerId: "home-2" }); expect(corrected.normalizedGroup.items.find((item) => item.type === "PERSONAL_FOUL")?.eventId).toBe(foulId);
+        expect(corrected.normalizedGroup.items.some((item) => item.type === "REBOUND")).toBe(false); expect(corrected.editContext.continuationPlan).toMatchObject({ kind: "REBOUNDER", sourceEventId: freeThrowId, penaltyId, teamReboundAllowed: true, candidatePlayerIds: expect.arrayContaining(["home-1", "away-1"]) });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(rowsBefore); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(snapshotBefore);
+        const reversed = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: corrected.draftEvents, action: { kind: "CORRECT_FREE_THROW_RESULT", targetId: corrected.editContext.editCapabilities.targets.find((candidate) => candidate.kind === "FREE_THROW_RESULT").targetId, made: true } });
+        expect(reversed.editContext.continuationPlan).toBeNull(); expect(reversed.normalizedGroup.items.find((item) => item.type === "FREE_THROW")?.facts.scorerEventTerminal).toEqual({ reason: "NATURAL" }); expect(reversed.normalizedGroup.items.some((item) => item.type === "REBOUND")).toBe(false);
+        await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "REPLACE_GROUP", scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: corrected.draftEvents.map((event) => ({ ...(event.eventId ? { eventId: event.eventId } : {}), facts: event.facts })) });
+        const saved = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); expect(saved.items.map((item) => item.facts)).toEqual(corrected.normalizedGroup.items.map((item) => item.facts));
+    });
+
+    it("CORRECT_FREE_THROW_RESULT keeps non-final misses on the next factual FT", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const shot = await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT_MISSED", team: "HOME", playerId: "home-1", stoppageId: "correct-non-final-ft", scorerEventId: "correct-non-final-ft" }); const shotId = shot.eventIds.at(-1);
+        const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "correct-non-final-ft", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "SHOOTING" }, fouledPlayerId: "home-1", relatedShotEventId: shotId, scorerEventId: "correct-non-final-ft" }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+        const ft1 = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: "HOME", playerId: "home-1", penaltyId, attemptIndex: 1, made: true, scorerEventId: "correct-non-final-ft" }); const ft1Id = ft1.eventIds.at(-1);
+        const ended = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: "correct-non-final-ft", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT2", resumeContext: { penaltyShooterPlayerId: "home-1" } } });
+        const groupId = "explicit:correct-non-final-ft"; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId); const target = context.editCapabilities.targets.find((candidate) => candidate.kind === "FREE_THROW_RESULT" && candidate.eventId === ft1Id);
+        const corrected = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: draftEvents(group), action: { kind: "CORRECT_FREE_THROW_RESULT", targetId: target.targetId, made: false } });
+        expect(corrected.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2 }); expect(corrected.normalizedGroup.items.find((item) => item.eventId === ft1Id)?.facts.scorerEventTerminal).toBeUndefined(); expect(corrected.normalizedGroup.items.some((item) => item.scorerEventTerminal?.unresolvedStep === "REBOUNDER")).toBe(false);
+    });
+
+    it("CORRECT_FREE_THROW_RESULT keeps non-LIVE_BALL final misses naturally terminal", async () => {
+        const cases = [
+            { name: "technical", foul: { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "correct-technical-ft", offender: { kind: "PLAYER", playerId: "home-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_2", scorerEventId: "correct-technical-ft" }, shooterTeam: "AWAY", shooter: "away-1", attempts: 1 },
+            ...["FLAGRANT_FOUL", "DISRUPTIVE_FOUL", "DISQUALIFYING_FOUL"].map((type) => ({ name: type, foul: { type, team: "AWAY", stoppageId: `correct-${type}`, offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_SHOOTING" }, fouledPlayerId: "home-1", scorerEventId: `correct-${type}` }, shooterTeam: "HOME", shooter: "home-1", attempts: 2 })),
+        ];
+        for (const scenario of cases) {
+            const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); const foul = await f.gameplay.append(f.run.runId, owner, scenario.foul); const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+            if (scenario.attempts === 2) await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: scenario.shooterTeam, playerId: scenario.shooter, penaltyId, attemptIndex: 1, made: true, scorerEventId: scenario.foul.scorerEventId });
+            const completed = await f.gameplay.append(f.run.runId, owner, { type: "FREE_THROW", team: scenario.shooterTeam, playerId: scenario.shooter, penaltyId, attemptIndex: scenario.attempts, made: true, scorerEventId: scenario.foul.scorerEventId, scorerEventTerminal: { reason: "NATURAL" } }); const finalFtId = completed.eventIds.at(-1);
+            const groupId = `explicit:${scenario.foul.scorerEventId}`; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const context = await f.gameplay.scorerEventEditContext(f.run.runId, owner, groupId); const target = context.editCapabilities.targets.find((candidate) => candidate.kind === "FREE_THROW_RESULT" && candidate.eventId === finalFtId);
+            const corrected = await f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: completed.eventHistoryRevision, events: draftEvents(group), action: { kind: "CORRECT_FREE_THROW_RESULT", targetId: target.targetId, made: false } });
+            expect(corrected.editContext.continuationPlan, scenario.name).toBeNull(); expect(corrected.normalizedGroup.items.find((item) => item.eventId === finalFtId)?.facts.scorerEventTerminal, scenario.name).toEqual({ reason: "NATURAL" }); expect(corrected.normalizedGroup.items.some((item) => item.type === "REBOUND"), scenario.name).toBe(false);
+        }
+    });
+
+    it("previews Technical shooter selection and keeps non-LIVE_BALL final misses naturally terminal", async () => {
+        const technical = fixture(); await technical.gameplay.initialize(technical.run.runId, owner);
+        const foul = await technical.gameplay.append(technical.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "preview-technical", offender: { kind: "PLAYER", playerId: "home-1" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_2", scorerEventId: "preview-technical" }); const penaltyId = `penalty:${foul.eventIds.at(-1)}`;
+        const ended = await technical.gameplay.append(technical.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: "preview-technical", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } }); const groupId = "explicit:preview-technical"; const group = await technical.gameplay.scorerEventGroup(technical.run.runId, owner, groupId);
+        const selected = await technical.gameplay.previewScorerEventGroupMutation(technical.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: draftEvents(group), action: { kind: "CHOOSE_SHOOTER", playerId: "away-1" } }); expect(selected.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", shooterPlayerId: "away-1", attemptNumber: 1, postResultContinuation: "END" });
+        const missed = await technical.gameplay.previewScorerEventGroupMutation(technical.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: ended.eventHistoryRevision, events: selected.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); expect(missed.editContext.continuationPlan).toBeNull(); expect(factsOf(missed.normalizedGroup, "FREE_THROW")).toMatchObject({ playerId: "away-1", made: false, scorerEventTerminal: { reason: "NATURAL" } });
+
+        const severe = fixture(); await severe.gameplay.initialize(severe.run.runId, owner); const severeFoul = await severe.gameplay.append(severe.run.runId, owner, { type: "FLAGRANT_FOUL", team: "AWAY", stoppageId: "preview-frontcourt", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_SHOOTING" }, fouledPlayerId: "home-1", scorerEventId: "preview-frontcourt" }); const severePenaltyId = `penalty:${severeFoul.eventIds.at(-1)}`;
+        const severeEnd = await severe.gameplay.append(severe.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: severePenaltyId, scorerEventId: "preview-frontcourt", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "FT1", resumeContext: { penaltyShooterPlayerId: "home-1" } } }); const severeGroupId = "explicit:preview-frontcourt"; const severeGroup = await severe.gameplay.scorerEventGroup(severe.run.runId, owner, severeGroupId);
+        const severeFt1 = await severe.gameplay.previewScorerEventGroupMutation(severe.run.runId, owner, { scorerEventGroupId: severeGroupId, expectedHistoryRevision: severeEnd.eventHistoryRevision, events: draftEvents(severeGroup), action: { kind: "FREE_THROW_RESULT", made: true } }); expect(severeFt1.editContext.continuationPlan).toMatchObject({ kind: "FREE_THROW_RESULT", attemptNumber: 2, postResultContinuation: "END" });
+        const severeFinal = await severe.gameplay.previewScorerEventGroupMutation(severe.run.runId, owner, { scorerEventGroupId: severeGroupId, expectedHistoryRevision: severeEnd.eventHistoryRevision, events: severeFt1.draftEvents, action: { kind: "FREE_THROW_RESULT", made: false } }); const finalSevereFreeThrow = severeFinal.normalizedGroup.items.filter((item) => item.type === "FREE_THROW").at(-1); expect(severeFinal.editContext.continuationPlan).toBeNull(); expect(finalSevereFreeThrow.facts.scorerEventTerminal).toEqual({ reason: "NATURAL" });
+    });
+
+    it("previews Assist, no Assist, Stealer, no Steal, player Rebound, and TEAM Rebound continuations", async () => {
+        const assist = fixture(); await assist.gameplay.initialize(assist.run.runId, owner); const shot = await assist.gameplay.append(assist.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId: "preview-assist", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "ASSIST" } }); const assistGroup = await assist.gameplay.scorerEventGroup(assist.run.runId, owner, "explicit:preview-assist");
+        const assisted = await assist.gameplay.previewScorerEventGroupMutation(assist.run.runId, owner, { scorerEventGroupId: "explicit:preview-assist", expectedHistoryRevision: shot.eventHistoryRevision, events: draftEvents(assistGroup), action: { kind: "ASSIST", playerId: "home-2" } }); expect(factsOf(assisted.normalizedGroup, "TWO_POINT")).toMatchObject({ assistPlayerId: "home-2", scorerEventTerminal: { reason: "NATURAL" } });
+        const noAssist = await assist.gameplay.previewScorerEventGroupMutation(assist.run.runId, owner, { scorerEventGroupId: "explicit:preview-assist", expectedHistoryRevision: shot.eventHistoryRevision, events: draftEvents(assistGroup), action: { kind: "ASSIST", playerId: null } }); expect(factsOf(noAssist.normalizedGroup, "TWO_POINT").scorerEventTerminal).toEqual({ reason: "NATURAL", decisions: { assist: "NONE" } });
+
+        const steal = fixture(); await steal.gameplay.initialize(steal.run.runId, owner); const turnover = await steal.gameplay.append(steal.run.runId, owner, { type: "TURNOVER", team: "HOME", playerId: "home-1", scorerEventId: "preview-steal", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "STEALER" } }); const stealGroup = await steal.gameplay.scorerEventGroup(steal.run.runId, owner, "explicit:preview-steal");
+        const stolen = await steal.gameplay.previewScorerEventGroupMutation(steal.run.runId, owner, { scorerEventGroupId: "explicit:preview-steal", expectedHistoryRevision: turnover.eventHistoryRevision, events: draftEvents(stealGroup), action: { kind: "STEALER", playerId: "away-1" } }); expect(factsOf(stolen.normalizedGroup, "STEAL")).toMatchObject({ playerId: "away-1", scorerEventTerminal: { reason: "NATURAL" } });
+        const noSteal = await steal.gameplay.previewScorerEventGroupMutation(steal.run.runId, owner, { scorerEventGroupId: "explicit:preview-steal", expectedHistoryRevision: turnover.eventHistoryRevision, events: draftEvents(stealGroup), action: { kind: "STEALER", playerId: null } }); expect(factsOf(noSteal.normalizedGroup, "TURNOVER").scorerEventTerminal).toEqual({ reason: "NATURAL", decisions: { steal: "NONE" } });
+
+        const rebound = fixture(); await rebound.gameplay.initialize(rebound.run.runId, owner); const miss = await rebound.gameplay.append(rebound.run.runId, owner, { type: "TWO_POINT_MISSED", team: "HOME", playerId: "home-1", scorerEventId: "preview-rebound", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "REBOUNDER" } }); const reboundGroup = await rebound.gameplay.scorerEventGroup(rebound.run.runId, owner, "explicit:preview-rebound");
+        const player = await rebound.gameplay.previewScorerEventGroupMutation(rebound.run.runId, owner, { scorerEventGroupId: "explicit:preview-rebound", expectedHistoryRevision: miss.eventHistoryRevision, events: draftEvents(reboundGroup), action: { kind: "REBOUNDER", team: "AWAY", playerId: "away-1", teamRebound: false } }); const playerRebound = factsOf(player.normalizedGroup, "REBOUND"); expect(playerRebound).toMatchObject({ playerId: "away-1", offensive: false }); expect(playerRebound).not.toHaveProperty("teamRebound");
+        const team = await rebound.gameplay.previewScorerEventGroupMutation(rebound.run.runId, owner, { scorerEventGroupId: "explicit:preview-rebound", expectedHistoryRevision: miss.eventHistoryRevision, events: draftEvents(reboundGroup), action: { kind: "REBOUNDER", team: "HOME", teamRebound: true } }); expect(factsOf(team.normalizedGroup, "REBOUND")).toMatchObject({ team: "HOME", teamRebound: true, offensive: true, scorerEventTerminal: { reason: "NATURAL" } });
+    });
+
+    it("rejects stale, invalid-candidate, and later-replay-invalid previews with zero durable writes", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); const shot = await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1", scorerEventId: "preview-errors", scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "ASSIST" } }); const groupId = "explicit:preview-errors"; const group = await f.gameplay.scorerEventGroup(f.run.runId, owner, groupId); const beforeRows = f.localDatabase.readLocalMatchEvents(f.run.runId); const beforeSnapshot = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId);
+        await expect(f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: shot.eventHistoryRevision - 1, events: draftEvents(group) })).rejects.toMatchObject({ code: "GAMEPLAY_CONFLICT" });
+        await expect(f.gameplay.previewScorerEventGroupMutation(f.run.runId, owner, { scorerEventGroupId: groupId, expectedHistoryRevision: shot.eventHistoryRevision, events: draftEvents(group), action: { kind: "ASSIST", playerId: "home-1" } })).rejects.toMatchObject({ code: "GAMEPLAY_EVENT_REJECTED" });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(beforeRows); expect(f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId)).toEqual(beforeSnapshot);
+
+        const replay = fixture(); await replay.gameplay.initialize(replay.run.runId, owner); const foul = await replay.gameplay.append(replay.run.runId, owner, { type: "DISQUALIFYING_FOUL", team: "HOME", stoppageId: "preview-replay", offender: { kind: "PLAYER", playerId: "home-1" }, context: { kind: "NON_SHOOTING" }, fouledPlayerId: "away-1", scorerEventId: "preview-replay" }); const foulId = foul.eventIds.at(-1); const penaltyId = `penalty:${foulId}`; const ended = await replay.gameplay.append(replay.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId, scorerEventId: "preview-replay", scorerEventTerminal: { reason: "NATURAL" } }); await replay.gameplay.append(replay.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-2", scorerEventId: "later-home2", scorerEventTerminal: { reason: "NATURAL" } });
+        const replayGroup = await replay.gameplay.scorerEventGroup(replay.run.runId, owner, "explicit:preview-replay"); const replayRows = replay.localDatabase.readLocalMatchEvents(replay.run.runId); const replaySnapshot = replay.localDatabase.readLocalMatchEngineSnapshot(replay.run.runId); const changed = draftEvents(replayGroup).map((event) => event.eventId === foulId ? { ...event, facts: { ...event.facts, offender: { kind: "PLAYER", playerId: "home-2" } } } : event);
+        await expect(replay.gameplay.previewScorerEventGroupMutation(replay.run.runId, owner, { scorerEventGroupId: "explicit:preview-replay", expectedHistoryRevision: ended.eventHistoryRevision + 1, events: changed })).rejects.toMatchObject({ code: "GAMEPLAY_EVENT_REJECTED" });
+        expect(replay.localDatabase.readLocalMatchEvents(replay.run.runId)).toEqual(replayRows); expect(replay.localDatabase.readLocalMatchEngineSnapshot(replay.run.runId)).toEqual(replaySnapshot);
+    });
+
+    it("keeps the 1000-event live hot path append-only without durable history replay", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        const originalRead = f.localDatabase.readLocalMatchEvents.bind(f.localDatabase);
+        const originalRewrite = f.localDatabase.rewriteLocalMatchEventHistory.bind(f.localDatabase);
+        let historyReads = 0; let historyRewrites = 0;
+        f.localDatabase.readLocalMatchEvents = (...args) => { historyReads += 1; return originalRead(...args); };
+        f.localDatabase.rewriteLocalMatchEventHistory = (...args) => { historyRewrites += 1; return originalRewrite(...args); };
+        const samples = []; const reports = {};
+        const percentile = (values, ratio) => [...values].sort((left, right) => left - right)[Math.floor((values.length - 1) * ratio)];
+        for (let index = 1; index <= 1000; index += 1) {
+            const startedAt = performance.now();
+            await f.gameplay.append(f.run.runId, owner, { type: index % 2 === 1 ? "CLOCK_START" : "CLOCK_STOP" });
+            samples.push(performance.now() - startedAt);
+            if ([100, 250, 500, 1000].includes(index)) reports[index] = { p50: percentile(samples, 0.5), p95: percentile(samples, 0.95) };
+        }
+        console.info("KC5B10 LIVE_EVENT_HOT_PATH", JSON.stringify(reports));
+        expect(historyReads).toBe(0);
+        expect(historyRewrites).toBe(0);
+        expect(f.localDatabase.readLocalGameRun(f.run.runId).lastAcceptedSequence).toBe(1001);
+        expect(reports[1000].p95).toBeLessThan(250);
+    }, 30_000);
 });

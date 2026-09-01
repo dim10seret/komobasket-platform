@@ -4,6 +4,7 @@ import { PeriodEngine } from "./period-engine";
 import { resolveResultPolicy } from "./rules-engine";
 import { createPlayer } from "../models/player";
 import { EventType } from "../types/event-type";
+import { dependentEventIds } from "../../shared/match-engine/engine/event-dependencies";
 import {
   MATCH_EVENT_SCHEMA_VERSION,
   type MatchEvent,
@@ -125,6 +126,133 @@ function closeAndStartPeriod(
 }
 
 describe("MatchEngine behavioral regression", () => {
+  it("keeps a valid scoring event independent from stopped and zero clock states", () => {
+    const stopped = createStartedEngine();
+    expect(stopped.getState()).toMatchObject({ clock: 600, clockRunning: false });
+    expect(stopped.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }))).toMatchObject({ accepted: true });
+
+    const zero = createStartedEngine();
+    expect(zero.process(matchEvent({ type: EventType.CLOCK_SET, remainingSeconds: 0, sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(zero.getState()).toMatchObject({ clock: 0, clockRunning: false });
+    expect(zero.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.HOME, playerId: "home-1", sequence: 5 }))).toMatchObject({ accepted: true });
+  });
+
+  it("allocates shared half timeout pools and resets every overtime deterministically", () => {
+    const { engine, initialState } = createEngineFixture();
+    expect(engine.getState()).toMatchObject({ home: { timeouts: 2, timeoutAllowance: 2 }, away: { timeouts: 2, timeoutAllowance: 2 } });
+
+    expect(engine.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home).toMatchObject({ timeouts: 1, timeoutAllowance: 2 });
+    let sequence = closeAndStartPeriod(engine, regulationPeriod(1), regulationPeriod(2), 5);
+    expect(engine.getState().home).toMatchObject({ timeouts: 1, timeoutAllowance: 2 });
+    expect(engine.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence: sequence++ }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home).toMatchObject({ timeouts: 0, timeoutAllowance: 2 });
+    expect(engine.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence }))).toMatchObject({ accepted: false, reason: "NO_TIMEOUTS_REMAINING" });
+
+    sequence = closeAndStartPeriod(engine, regulationPeriod(2), regulationPeriod(3), sequence);
+    expect(engine.getState()).toMatchObject({ home: { timeouts: 3, timeoutAllowance: 3 }, away: { timeouts: 3, timeoutAllowance: 3 } });
+    expect(engine.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence: sequence++ }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home).toMatchObject({ timeouts: 2, timeoutAllowance: 3 });
+    sequence = closeAndStartPeriod(engine, regulationPeriod(3), regulationPeriod(4), sequence);
+    expect(engine.getState().home).toMatchObject({ timeouts: 2, timeoutAllowance: 3 });
+    expect(engine.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence: sequence++ }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home).toMatchObject({ timeouts: 1, timeoutAllowance: 3 });
+
+    sequence = closeAndStartPeriod(engine, regulationPeriod(4), overtimePeriod(1), sequence);
+    expect(engine.getState()).toMatchObject({ home: { timeouts: 1, timeoutAllowance: 1 }, away: { timeouts: 1, timeoutAllowance: 1 } });
+    expect(engine.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence: sequence++ }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home).toMatchObject({ timeouts: 0, timeoutAllowance: 1 });
+    sequence = closeAndStartPeriod(engine, overtimePeriod(1), overtimePeriod(2), sequence);
+    expect(engine.getState()).toMatchObject({ home: { timeouts: 1, timeoutAllowance: 1 }, away: { timeouts: 1, timeoutAllowance: 1 } });
+
+    const replayed = MatchEngine.fromInitialState(initialState);
+    for (const event of engine.getEvents()) expect(replayed.process(event).accepted).toBe(true);
+    expect(replayed.getState()).toEqual(engine.getState());
+  });
+
+  it("preserves the legacy global timeout pool for snapshots without an allowance marker", () => {
+    const current = createStartedEngine().getState();
+    const home = { ...current.home, timeouts: 5 };
+    const away = { ...current.away, timeouts: 5 };
+    delete home.timeoutAllowance;
+    delete away.timeoutAllowance;
+    const legacy = MatchEngine.fromInitialState({ ...current, home, away });
+    expect(legacy.process(matchEvent({ type: EventType.TIMEOUT, team: TeamSide.HOME, sequence: 4 }))).toMatchObject({ accepted: true });
+    let sequence = closeAndStartPeriod(legacy, regulationPeriod(1), regulationPeriod(2), 5);
+    sequence = closeAndStartPeriod(legacy, regulationPeriod(2), regulationPeriod(3), sequence);
+    expect(legacy.getState().home).toMatchObject({ timeouts: 4 });
+    expect(legacy.getState().home.timeoutAllowance).toBeUndefined();
+  });
+
+  it("aligns possession from factual scoring identity when current possession is stale or unset", () => {
+    const staleHome = createStartedEngine();
+    expect(staleHome.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(staleHome.getState().possession).toBe(TeamSide.HOME);
+
+    const staleAway = createStartedEngine();
+    expect(staleAway.process(matchEvent({ type: EventType.JUMP_BALL, possession: TeamSide.AWAY, sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(staleAway.process(matchEvent({ type: EventType.THREE_POINT, team: TeamSide.HOME, playerId: "home-1", sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(staleAway.getState().possession).toBe(TeamSide.AWAY);
+
+    const unresolvedHomeState = createStartedEngine().getState();
+    const unresolvedHome = MatchEngine.fromInitialState({ ...unresolvedHomeState, possession: null });
+    expect(unresolvedHome.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(unresolvedHome.getState()).toMatchObject({ possession: TeamSide.AWAY, home: { score: 2 }, away: { score: 0 } });
+
+    const unresolvedAwayState = createStartedEngine().getState();
+    const unresolvedAway = MatchEngine.fromInitialState({ ...unresolvedAwayState, possession: null });
+    expect(unresolvedAway.process(matchEvent({ type: EventType.THREE_POINT, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(unresolvedAway.getState()).toMatchObject({ possession: TeamSide.HOME, home: { score: 0 }, away: { score: 3 } });
+
+    const unresolvedMissedState = createStartedEngine().getState();
+    const unresolvedMissed = MatchEngine.fromInitialState({ ...unresolvedMissedState, possession: null });
+    expect(unresolvedMissed.process(matchEvent({ type: EventType.TWO_POINT_MISSED, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(unresolvedMissed.getState().possession).toBe(TeamSide.HOME);
+
+    const turnoverStaleHome = createStartedEngine();
+    expect(turnoverStaleHome.process(matchEvent({ type: EventType.TURNOVER, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(turnoverStaleHome.getState().possession).toBe(TeamSide.HOME);
+
+    const turnoverStaleAway = MatchEngine.fromInitialState({ ...createStartedEngine().getState(), possession: TeamSide.AWAY });
+    expect(turnoverStaleAway.process(matchEvent({ type: EventType.TURNOVER, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(turnoverStaleAway.getState().possession).toBe(TeamSide.AWAY);
+
+    const turnoverUnresolvedHome = MatchEngine.fromInitialState({ ...createStartedEngine().getState(), possession: null });
+    expect(turnoverUnresolvedHome.process(matchEvent({ type: EventType.TURNOVER, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(turnoverUnresolvedHome.getState().possession).toBe(TeamSide.AWAY);
+
+    const turnoverUnresolvedAway = MatchEngine.fromInitialState({ ...createStartedEngine().getState(), possession: null });
+    expect(turnoverUnresolvedAway.process(matchEvent({ type: EventType.TURNOVER, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(turnoverUnresolvedAway.getState().possession).toBe(TeamSide.HOME);
+  });
+
+  it("records a paired opposing steal without a second possession transition", () => {
+    const { engine, initialState } = createEngineFixture();
+    expect(engine.process(matchEvent({ type: EventType.TURNOVER, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().possession).toBe(TeamSide.AWAY);
+    expect(engine.process(matchEvent({ type: EventType.STEAL, team: TeamSide.AWAY, playerId: "away-1", sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().possession).toBe(TeamSide.AWAY);
+    expect(engine.getState().home.players.find((player) => player.playerId === "home-1")?.statistics.turnovers).toBe(1);
+    expect(engine.getState().away.players.find((player) => player.playerId === "away-1")?.statistics.steals).toBe(1);
+    const events = engine.getEvents();
+    expect(dependentEventIds(events, events[events.length - 2]!.id)).toEqual([events[events.length - 1]!.id]);
+    const restored = MatchEngine.fromInitialState(initialState);
+    for (const event of events) expect(restored.process(event).accepted).toBe(true);
+    expect(restored.getState()).toEqual(engine.getState());
+
+    const standalone = createStartedEngine();
+    expect(standalone.process(matchEvent({ type: EventType.STEAL, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(standalone.getState().possession).toBe(TeamSide.AWAY);
+
+    const staleStandalone = MatchEngine.fromInitialState({ ...createStartedEngine().getState(), possession: TeamSide.AWAY });
+    expect(staleStandalone.process(matchEvent({ type: EventType.STEAL, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(staleStandalone.getState().possession).toBe(TeamSide.AWAY);
+
+    const staleBlock = MatchEngine.fromInitialState({ ...createStartedEngine().getState(), possession: TeamSide.AWAY });
+    expect(staleBlock.process(matchEvent({ type: EventType.BLOCK, team: TeamSide.AWAY, playerId: "away-1", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(staleBlock.getState().possession).toBe(TeamSide.AWAY);
+  });
+
   it("updates score and possession after a made two-point shot", () => {
     const engine = createStartedEngine();
     const result = engine.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.HOME, playerId: "home-1", sequence: 4 }));
@@ -178,6 +306,51 @@ describe("MatchEngine behavioral regression", () => {
     expect(state.home.players[0].statistics.threePointAttempts).toBe(1);
     expect(state.away.players[0].statistics.defensiveRebounds).toBe(1);
     expect(state.possession).toBe(TeamSide.AWAY);
+  });
+
+  it("accepts factual player and TEAM rebounds after every missed-shot context", () => {
+    const possessions: Array<TeamSide | null> = [TeamSide.HOME, TeamSide.AWAY, null];
+    const clocks = ["stopped", "running", "zero"] as const;
+    const reboundOutcomes = [
+      { side: TeamSide.HOME, teamRebound: false },
+      { side: TeamSide.AWAY, teamRebound: false },
+      { side: TeamSide.HOME, teamRebound: true },
+      { side: TeamSide.AWAY, teamRebound: true },
+    ] as const;
+
+    for (const shotSide of [TeamSide.HOME, TeamSide.AWAY]) {
+      for (const blocked of [false, true]) {
+        for (const possession of possessions) {
+          for (const clock of clocks) {
+            for (const outcome of reboundOutcomes) {
+              const initial = { ...createStartedEngine().getState(), possession };
+              const engine = MatchEngine.fromInitialState(initial);
+              let sequence = 4;
+              if (clock === "running") expect(engine.process(matchEvent({ type: EventType.CLOCK_START, sequence: sequence++ })).accepted).toBe(true);
+              if (clock === "zero") expect(engine.process(matchEvent({ type: EventType.CLOCK_SET, remainingSeconds: 0, sequence: sequence++ })).accepted).toBe(true);
+
+              const shooterId = shotSide === TeamSide.HOME ? "home-1" : "away-1";
+              expect(engine.process(matchEvent({ type: EventType.TWO_POINT_MISSED, team: shotSide, playerId: shooterId, sequence: sequence++ })).accepted).toBe(true);
+              if (blocked) {
+                const blockerSide = shotSide === TeamSide.HOME ? TeamSide.AWAY : TeamSide.HOME;
+                expect(engine.process(matchEvent({ type: EventType.BLOCK, team: blockerSide, playerId: blockerSide === TeamSide.HOME ? "home-1" : "away-1", sequence: sequence++ })).accepted).toBe(true);
+              }
+
+              const offensive = outcome.side === shotSide;
+              const rebound = outcome.teamRebound
+                ? engine.process(matchEvent({ type: EventType.REBOUND, team: outcome.side, offensive, teamRebound: true, sequence }))
+                : engine.process(matchEvent({ type: EventType.REBOUND, team: outcome.side, playerId: outcome.side === TeamSide.HOME ? "home-1" : "away-1", offensive, sequence }));
+              expect(rebound.accepted).toBe(true);
+              expect(engine.getState().possession).toBe(outcome.side);
+
+              const replay = MatchEngine.fromInitialState({ ...createStartedEngine().getState(), possession });
+              for (const event of engine.getEvents()) expect(replay.process(event).accepted).toBe(true);
+              expect(replay.getState()).toEqual(engine.getState());
+            }
+          }
+        }
+      }
+    }
   });
 
   it("replays a corrected scoring event from the original snapshot", () => {
@@ -324,6 +497,91 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
     expect(engine.getState().away.teamFouls).toBe(2);
   });
 
+  it.each([TechnicalFoulCategory.CATEGORY_1, TechnicalFoulCategory.CATEGORY_2])("ends a %s technical penalty without recording a free throw", (category) => {
+    const engine = createStartedEngine();
+    expect(engine.process(matchEvent({
+      type: EventType.TECHNICAL_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      category,
+      context: { kind: FoulContextKind.NON_CONTACT },
+      stoppageId: `technical-early-end-${category}`,
+      sequence: 4,
+    }))).toMatchObject({ accepted: true });
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({
+      home: { score: 0, statistics: { freeThrowAttempts: 0, freeThrowMade: 0 } },
+      penaltyResolution: { freeThrowQueue: [], finalRestart: { kind: PenaltyRestartKind.RESUME_INTERRUPTED, possession: TeamSide.HOME } },
+      possession: TeamSide.HOME,
+    });
+  });
+
+  it("ends a LIVE_BALL bonus penalty before FT1 without fabricating a possession outcome", () => {
+    const { engine, initialState } = createEngineFixture();
+    for (const [sequence, playerId] of [[4, "away-1"], [5, "away-2"], [6, "away-3"], [7, "away-4"]] as const) {
+      expect(engine.process(matchEvent({
+        type: EventType.PERSONAL_FOUL,
+        team: TeamSide.AWAY,
+        offender: { kind: FoulOffenderKind.PLAYER, playerId },
+        context: { kind: FoulContextKind.NON_SHOOTING, teamControlFoul: false },
+        fouledPlayerId: "home-1",
+        stoppageId: `bonus-prior-${sequence}`,
+        sequence,
+      }))).toMatchObject({ accepted: true });
+    }
+    expect(engine.process(matchEvent({
+      type: EventType.PERSONAL_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-5" },
+      context: { kind: FoulContextKind.NON_SHOOTING, teamControlFoul: false },
+      fouledPlayerId: "home-1",
+      stoppageId: "bonus-early-end",
+      sequence: 8,
+    }))).toMatchObject({ accepted: true });
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    const possessionBeforeEnd = engine.getState().possession;
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 9 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({
+      possession: possessionBeforeEnd,
+      home: { statistics: { freeThrowAttempts: 0, freeThrowMade: 0 } },
+      penaltyResolution: { freeThrowQueue: [] },
+    });
+    expect(engine.getEvents().filter((event) => event.type === EventType.FREE_THROW || event.type === EventType.REBOUND)).toHaveLength(0);
+    const restored = MatchEngine.fromInitialState(initialState);
+    for (const event of engine.getEvents()) expect(restored.process(event).accepted).toBe(true);
+    expect(restored.getState()).toEqual(engine.getState());
+  });
+
+  it("ends a LIVE_BALL shooting penalty after a factual FT without inventing later facts", () => {
+    const { engine, initialState } = createEngineFixture();
+    expect(engine.process(matchEvent({ type: EventType.THREE_POINT_MISSED, team: TeamSide.HOME, playerId: "home-1", stoppageId: "shooting-early-end", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({
+      type: EventType.PERSONAL_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.SHOOTING },
+      fouledPlayerId: "home-1",
+      relatedShotEventId: "event-4",
+      stoppageId: "shooting-early-end",
+      sequence: 5,
+    }))).toMatchObject({ accepted: true });
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    expect(engine.process(matchEvent({ type: EventType.FREE_THROW, team: TeamSide.HOME, playerId: "home-1", penaltyId, attemptIndex: 1, made: true, sequence: 6 }))).toMatchObject({ accepted: true });
+    const possessionBeforeEnd = engine.getState().possession;
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 7 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({
+      possession: possessionBeforeEnd,
+      home: { statistics: { freeThrowAttempts: 1, freeThrowMade: 1 } },
+      penaltyResolution: { freeThrowQueue: [] },
+    });
+    expect(engine.getEvents().filter((event) => event.type === EventType.FREE_THROW)).toHaveLength(1);
+    expect(engine.getEvents().filter((event) => event.type === EventType.REBOUND)).toHaveLength(0);
+    const restored = MatchEngine.fromInitialState(initialState);
+    for (const event of engine.getEvents()) expect(restored.process(event).accepted).toBe(true);
+    expect(restored.getState()).toEqual(engine.getState());
+  });
+
   it("records a verified bench technical without incrementing team fouls", () => {
     const engine = createStartedEngine();
     const result = engine.process(matchEvent({
@@ -383,6 +641,102 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
     });
   });
 
+  it.each([
+    [EventType.TWO_POINT, 1],
+    [EventType.TWO_POINT_MISSED, 2],
+    [EventType.THREE_POINT_MISSED, 3],
+  ] as const)("awards DISRUPTIVE shooting foul %s the required %i frontcourt free throws", (shotType, attempts) => {
+    const engine = createStartedEngine();
+    const shot = matchEvent({ type: shotType, team: TeamSide.HOME, playerId: "home-1", stoppageId: "shooting-disruptive", sequence: 4 });
+    expect(engine.process(shot).accepted).toBe(true);
+    const result = engine.process(matchEvent({
+      type: EventType.DISRUPTIVE_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.SHOOTING },
+      fouledPlayerId: "home-1",
+      relatedShotEventId: shot.id,
+      stoppageId: "shooting-disruptive",
+      sequence: 5,
+    }));
+    expect(result).toMatchObject({ accepted: true, state: { penaltyResolution: { freeThrowQueue: [{ attempts, designatedPlayerId: "home-1", restart: { kind: PenaltyRestartKind.FRONTCOURT_THROW_IN, team: TeamSide.HOME } }] } } });
+  });
+
+  it("ends a DISRUPTIVE penalty without fabricating remaining free throws", () => {
+    const engine = createStartedEngine();
+    expect(engine.process(matchEvent({
+      type: EventType.DISRUPTIVE_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.NON_SHOOTING, teamControlFoul: false },
+      fouledPlayerId: "home-1",
+      stoppageId: "early-disruptive",
+      sequence: 4,
+    })).accepted).toBe(true);
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({
+      home: { score: 0, statistics: { freeThrowAttempts: 0, freeThrowMade: 0 } },
+      penaltyResolution: { freeThrowQueue: [], finalRestart: { kind: PenaltyRestartKind.FRONTCOURT_THROW_IN, team: TeamSide.HOME } },
+      possession: TeamSide.HOME,
+    });
+  });
+
+  it("ends an active flagrant penalty without inventing remaining free throws", () => {
+    const { engine, initialState } = createEngineFixture();
+    expect(engine.process(matchEvent({
+      type: EventType.FLAGRANT_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.NON_SHOOTING, teamControlFoul: false },
+      fouledPlayerId: "home-1",
+      stoppageId: "early-flagrant",
+      sequence: 4,
+    })).accepted).toBe(true);
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({
+      home: { score: 0, statistics: { freeThrowAttempts: 0, freeThrowMade: 0 } },
+      penaltyResolution: { freeThrowQueue: [], finalRestart: { kind: PenaltyRestartKind.FRONTCOURT_THROW_IN, team: TeamSide.HOME } },
+      possession: TeamSide.HOME,
+    });
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 6 }))).toMatchObject({ accepted: false, reason: "NO_ACTIVE_PENALTY" });
+    const events = engine.getEvents();
+    expect(dependentEventIds(events, events[3]!.id)).toEqual([events[4]!.id]);
+    const restored = MatchEngine.fromInitialState(initialState);
+    for (const event of events) expect(restored.process(event).accepted).toBe(true);
+    expect(restored.getState()).toEqual(engine.getState());
+  });
+
+  it.each([
+    [true, 1, 1],
+    [false, 0, 0],
+  ])("ends the remaining flagrant administration after FT1 %s", (made, expectedScore, expectedMade) => {
+    const { engine, initialState } = createEngineFixture();
+    expect(engine.process(matchEvent({
+      type: EventType.FLAGRANT_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.NON_SHOOTING, teamControlFoul: false },
+      fouledPlayerId: "home-1",
+      stoppageId: "early-flagrant-after-ft1",
+      sequence: 4,
+    })).accepted).toBe(true);
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    expect(engine.process(matchEvent({ type: EventType.FREE_THROW, team: TeamSide.HOME, playerId: "home-1", penaltyId, attemptIndex: 1, made, sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: 6 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({
+      home: { score: expectedScore, statistics: { freeThrowAttempts: 1, freeThrowMade: expectedMade } },
+      penaltyResolution: { freeThrowQueue: [], finalRestart: { kind: PenaltyRestartKind.FRONTCOURT_THROW_IN, team: TeamSide.HOME } },
+      possession: TeamSide.HOME,
+    });
+    const events = engine.getEvents();
+    expect(dependentEventIds(events, events[3]!.id)).toEqual([events[4]!.id, events[5]!.id]);
+    const restored = MatchEngine.fromInitialState(initialState);
+    for (const event of events) expect(restored.process(event).accepted).toBe(true);
+    expect(restored.getState()).toEqual(engine.getState());
+  });
+
   it("projects direct player disqualification and an any-opponent penalty", () => {
     const engine = createStartedEngine();
     const result = engine.process(matchEvent({
@@ -396,7 +750,7 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
 
     expect(result.accepted).toBe(true);
     expect(result.state.home.players[0]).toMatchObject({
-      onCourt: false,
+      onCourt: true,
       foulState: {
         total: 1,
         directDisqualification: true,
@@ -408,6 +762,12 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
       attempts: 2,
       shooterPolicy: ShooterPolicy.ANY_OPPONENT,
     });
+    expect(result.state.home.players.filter((player) => player.onCourt)).toHaveLength(5);
+    expect(engine.process(matchEvent({ type: EventType.SUBSTITUTION, team: TeamSide.HOME, playerOutId: "home-1", playerInId: "home-6", sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home.players.filter((player) => player.onCourt)).toHaveLength(5);
+    expect(engine.getState().home.players.find((player) => player.playerId === "home-1")?.onCourt).toBe(false);
+    expect(engine.getState().home.players.find((player) => player.playerId === "home-6")?.onCourt).toBe(true);
+    expect(engine.getState().penaltyResolution?.freeThrowQueue).toHaveLength(1);
   });
 
   it("excludes a player on five fouls without classifying the exclusion as disqualification", () => {
@@ -425,13 +785,17 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
     }
 
     expect(engine.getState().home.players[0]).toMatchObject({
-      onCourt: false,
+      onCourt: true,
       foulState: {
         total: 5,
         status: PlayerFoulStatus.EXCLUDED,
         statusReason: PlayerFoulStatusReason.FIVE_FOULS,
       },
     });
+    expect(engine.getState().home.players.filter((player) => player.onCourt)).toHaveLength(5);
+    expect(engine.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.HOME, playerId: "home-1", sequence: 9 }))).toMatchObject({ accepted: false });
+    expect(engine.process(matchEvent({ type: EventType.SUBSTITUTION, team: TeamSide.HOME, playerOutId: "home-1", playerInId: "home-6", sequence: 9 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home.players.filter((player) => player.onCourt)).toHaveLength(5);
   });
 
   it("applies only the verified Category 1/flagrant disqualification combinations", () => {
@@ -461,6 +825,7 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
       status: PlayerFoulStatus.DISQUALIFIED,
       statusReason: PlayerFoulStatusReason.TWO_CATEGORY_1_TECHNICALS,
     });
+    expect(categoryEngine.getState().home.players[0].onCourt).toBe(true);
 
     const mixedEngine = createStartedEngine();
     expect(mixedEngine.process(matchEvent({
@@ -495,6 +860,14 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
       status: PlayerFoulStatus.DISQUALIFIED,
       statusReason: PlayerFoulStatusReason.MIXED_CATEGORY_1_TECHNICAL_AND_FLAGRANT,
     });
+    expect(mixedEngine.getState().home.players[0].onCourt).toBe(true);
+
+    const reverseMixedEngine = createStartedEngine();
+    expect(reverseMixedEngine.process(matchEvent({ type: EventType.FLAGRANT_FOUL, team: TeamSide.HOME, offender: { kind: FoulOffenderKind.PLAYER, playerId: "home-1" }, context: { kind: FoulContextKind.NON_SHOOTING, teamControlFoul: false }, fouledPlayerId: "away-1", stoppageId: "reverse-mixed-flagrant", sequence: 4 }))).toMatchObject({ accepted: true });
+    const reversePenaltyId = reverseMixedEngine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    expect(reverseMixedEngine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId: reversePenaltyId, sequence: 5 }))).toMatchObject({ accepted: true });
+    expect(reverseMixedEngine.process(matchEvent({ type: EventType.TECHNICAL_FOUL, team: TeamSide.HOME, offender: { kind: FoulOffenderKind.PLAYER, playerId: "home-1" }, category: TechnicalFoulCategory.CATEGORY_1, context: { kind: FoulContextKind.NON_CONTACT }, stoppageId: "reverse-mixed-technical", sequence: 6 }))).toMatchObject({ accepted: true });
+    expect(reverseMixedEngine.getState().home.players[0]).toMatchObject({ onCourt: true, foulState: { status: PlayerFoulStatus.DISQUALIFIED, statusReason: PlayerFoulStatusReason.MIXED_CATEGORY_1_TECHNICAL_AND_FLAGRANT } });
   });
 
   it("disqualifies a player after two flagrant fouls", () => {
@@ -534,6 +907,7 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
       status: PlayerFoulStatus.DISQUALIFIED,
       statusReason: PlayerFoulStatusReason.TWO_FLAGRANT_FOULS,
     });
+    expect(engine.getState().home.players[0].onCourt).toBe(true);
   });
 
   it.each([
@@ -630,6 +1004,18 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
       sequence: 8,
     })).accepted).toBe(true);
     expect(engine.getState().possession).toBe(TeamSide.AWAY);
+  });
+
+  it("accepts an eligible beneficiary teammate as the durable replacement free-throw shooter", () => {
+    const engine = createStartedEngine();
+    expect(engine.process(matchEvent({ type: EventType.TWO_POINT_MISSED, team: TeamSide.HOME, playerId: "home-1", stoppageId: "replacement-ft", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({ type: EventType.PERSONAL_FOUL, team: TeamSide.AWAY, offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" }, context: { kind: FoulContextKind.SHOOTING }, fouledPlayerId: "home-1", relatedShotEventId: "event-4", stoppageId: "replacement-ft", sequence: 5 }))).toMatchObject({ accepted: true });
+    const penaltyId = penaltyIdFor("event-5");
+    expect(engine.process(matchEvent({ type: EventType.FREE_THROW, team: TeamSide.HOME, playerId: "home-2", penaltyId, attemptIndex: 1, made: true, sequence: 6 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().home.score).toBe(1);
+    expect(engine.process(matchEvent({ type: EventType.FREE_THROW, team: TeamSide.HOME, playerId: "home-2", penaltyId, attemptIndex: 2, made: false, sequence: 7 }))).toMatchObject({ accepted: true });
+    expect(engine.getEvents().filter((event) => event.type === EventType.FREE_THROW).map((event) => event.playerId)).toEqual(["home-2", "home-2"]);
+    expect(engine.process(matchEvent({ type: EventType.FREE_THROW, team: TeamSide.AWAY, playerId: "away-1", penaltyId, attemptIndex: 3, made: true, sequence: 8 }))).toMatchObject({ accepted: false, reason: "NO_ACTIVE_PENALTY" });
   });
 
   it("allows substitution during an active causal penalty without changing its authority", () => {
@@ -1363,7 +1749,7 @@ describe("Gate 1B2B special situations and dependency-safe corrections", () => {
       },
     });
 
-    const blocked = createStartedEngine();
+    const { engine: blocked, initialState: blockedInitialState } = createEngineFixture();
     for (const [sequence, team, offenderId, fouledPlayerId] of [
       [4, TeamSide.HOME, "home-1", "away-1"],
       [5, TeamSide.AWAY, "away-1", "home-1"],
@@ -1384,12 +1770,139 @@ describe("Gate 1B2B special situations and dependency-safe corrections", () => {
       playerId: "home-1",
       sequence: 6,
     })).accepted).toBe(true);
-    const before = blocked.getState();
-    expect(blocked.removeEvent("event-5")).toMatchObject({
-      accepted: false,
-      reason: "INVALID_SCORING_TEAM",
-      blockingEventId: "event-6",
-    });
-    expect(blocked.getState()).toEqual(before);
+    const removed = blocked.removeEvent("event-5");
+    expect(removed).toMatchObject({ accepted: true });
+    expect(blocked.getEvents().map((event) => event.id)).toEqual(["event-1", "event-2", "event-3", "event-4", "event-6"]);
+    expect(new Set(blocked.getEvents().map((event) => event.id)).size).toBe(blocked.getEvents().length);
+    expect(blocked.getState()).toMatchObject({ possession: TeamSide.AWAY, home: { score: 2 }, away: { score: 0 } });
+    const replayed = MatchEngine.fromInitialState(blockedInitialState);
+    for (const event of blocked.getEvents()) expect(replayed.process(event).accepted).toBe(true);
+    expect(replayed.getState()).toEqual(blocked.getState());
+  });
+
+  it("rejects a new shooting shot while an earlier shooting-foul penalty remains unresolved", () => {
+    const engine = createStartedEngine();
+    expect(engine.process(matchEvent({
+      type: EventType.TWO_POINT_MISSED,
+      team: TeamSide.HOME,
+      playerId: "home-1",
+      stoppageId: "pending-shooting-foul",
+      sequence: 4,
+    }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({
+      type: EventType.PERSONAL_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.SHOOTING },
+      fouledPlayerId: "home-1",
+      relatedShotEventId: "event-4",
+      stoppageId: "pending-shooting-foul",
+      sequence: 5,
+    }))).toMatchObject({ accepted: true });
+
+    expect(engine.process(matchEvent({
+      type: EventType.TWO_POINT,
+      team: TeamSide.AWAY,
+      playerId: "away-1",
+      sequence: 6,
+    }))).toMatchObject({ accepted: false, reason: "PENALTY_IN_PROGRESS" });
+  });
+
+  it("keeps clock controls orthogonal to an active free-throw penalty", () => {
+    const engine = createStartedEngine();
+    expect(engine.process(matchEvent({
+      type: EventType.TWO_POINT_MISSED,
+      team: TeamSide.HOME,
+      playerId: "home-1",
+      stoppageId: "clock-penalty",
+      sequence: 4,
+    }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({
+      type: EventType.PERSONAL_FOUL,
+      team: TeamSide.AWAY,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" },
+      context: { kind: FoulContextKind.SHOOTING },
+      fouledPlayerId: "home-1",
+      relatedShotEventId: "event-4",
+      stoppageId: "clock-penalty",
+      sequence: 5,
+    }))).toMatchObject({ accepted: true });
+    const penaltyBefore = engine.getState().penaltyResolution;
+
+    expect(engine.process(matchEvent({ type: EventType.CLOCK_START, sequence: 6 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().penaltyResolution).toEqual(penaltyBefore);
+    expect(engine.process(matchEvent({ type: EventType.CLOCK_SET, remainingSeconds: 27, sequence: 7 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({ clock: 27, clockRunning: true, penaltyResolution: penaltyBefore });
+    expect(engine.process(matchEvent({ type: EventType.CLOCK_STOP, sequence: 8 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({ clock: 27, clockRunning: false, penaltyResolution: penaltyBefore });
+    expect(engine.process(matchEvent({ type: EventType.CLOCK_SET, remainingSeconds: 0, sequence: 9 }))).toMatchObject({ accepted: true });
+    expect(engine.getState()).toMatchObject({ clock: 0, clockRunning: false, penaltyResolution: penaltyBefore });
+
+    expect(engine.process(matchEvent({ type: EventType.CLOCK_START, sequence: 10 }))).toMatchObject({ accepted: false, reason: "INVALID_CLOCK_VALUE" });
+    expect(engine.process(matchEvent({ type: EventType.CLOCK_SET, remainingSeconds: 601, sequence: 10 }))).toMatchObject({ accepted: false, reason: "INVALID_CLOCK_VALUE" });
+    expect(engine.process(matchEvent({ type: EventType.TWO_POINT, team: TeamSide.AWAY, playerId: "away-1", sequence: 10 }))).toMatchObject({ accepted: false, reason: "PENALTY_IN_PROGRESS" });
+    expect(engine.getState().penaltyResolution).toEqual(penaltyBefore);
+  });
+
+  it.each([
+    [TeamSide.HOME, TeamSide.AWAY, 2, false, 2],
+    [TeamSide.AWAY, TeamSide.HOME, 2, false, 2],
+    [TeamSide.HOME, TeamSide.AWAY, 2, true, 1],
+    [TeamSide.AWAY, TeamSide.HOME, 2, true, 1],
+    [TeamSide.HOME, TeamSide.AWAY, 3, false, 3],
+    [TeamSide.AWAY, TeamSide.HOME, 3, false, 3],
+    [TeamSide.HOME, TeamSide.AWAY, 3, true, 1],
+    [TeamSide.AWAY, TeamSide.HOME, 3, true, 1],
+  ] as const)("derives the correct shooting-foul penalty for %s foul against %s %sPT made=%s", (foulingTeam, shootingTeam, points, made, attempts) => {
+    const engine = createStartedEngine();
+    const shooterId = shootingTeam === TeamSide.HOME ? "home-1" : "away-1";
+    const foulerId = foulingTeam === TeamSide.HOME ? "home-1" : "away-1";
+    const shotType = points === 2 ? (made ? EventType.TWO_POINT : EventType.TWO_POINT_MISSED) : (made ? EventType.THREE_POINT : EventType.THREE_POINT_MISSED);
+    expect(engine.process(matchEvent({ type: shotType, team: shootingTeam, playerId: shooterId, stoppageId: `shooting-${foulingTeam}-${shootingTeam}-${points}-${made}`, sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({
+      type: EventType.PERSONAL_FOUL,
+      team: foulingTeam,
+      offender: { kind: FoulOffenderKind.PLAYER, playerId: foulerId },
+      context: { kind: FoulContextKind.SHOOTING },
+      fouledPlayerId: shooterId,
+      relatedShotEventId: "event-4",
+      stoppageId: `shooting-${foulingTeam}-${shootingTeam}-${points}-${made}`,
+      sequence: 5,
+    }))).toMatchObject({ accepted: true });
+
+    expect(engine.getState()[shootingTeam === TeamSide.HOME ? "home" : "away"].score).toBe(made ? points : 0);
+    expect(engine.getState().penaltyResolution?.freeThrowQueue[0]).toMatchObject({ beneficiaryTeam: shootingTeam, attempts, designatedPlayerId: shooterId });
+    expect(engine.getEvents().filter((event) => event.type === EventType.TWO_POINT || event.type === EventType.THREE_POINT || event.type === EventType.TWO_POINT_MISSED || event.type === EventType.THREE_POINT_MISSED)).toHaveLength(1);
+  });
+
+  it("keeps TEAM final-free-throw rebound as a possession outcome with no rebound statistics", () => {
+    const engine = createStartedEngine();
+    expect(engine.process(matchEvent({ type: EventType.TWO_POINT_MISSED, team: TeamSide.HOME, playerId: "home-1", stoppageId: "team-final-ft", sequence: 4 }))).toMatchObject({ accepted: true });
+    expect(engine.process(matchEvent({ type: EventType.PERSONAL_FOUL, team: TeamSide.AWAY, offender: { kind: FoulOffenderKind.PLAYER, playerId: "away-1" }, context: { kind: FoulContextKind.SHOOTING }, fouledPlayerId: "home-1", relatedShotEventId: "event-4", stoppageId: "team-final-ft", sequence: 5 }))).toMatchObject({ accepted: true });
+    const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+    for (const attemptIndex of [1, 2]) expect(engine.process(matchEvent({ type: EventType.FREE_THROW, team: TeamSide.HOME, playerId: "home-1", penaltyId, attemptIndex, made: false, sequence: attemptIndex + 5 }))).toMatchObject({ accepted: true });
+    const teamStatisticsBefore = JSON.parse(JSON.stringify(engine.getState().home.statistics));
+    const opposingTeamStatisticsBefore = JSON.parse(JSON.stringify(engine.getState().away.statistics));
+    expect(engine.process(matchEvent({ type: EventType.REBOUND, team: TeamSide.AWAY, offensive: false, teamRebound: true, sequence: 8 }))).toMatchObject({ accepted: true });
+    expect(engine.getState().possession).toBe(TeamSide.AWAY);
+    expect(engine.getState().home.statistics).toEqual(teamStatisticsBefore);
+    expect(engine.getState().away.statistics).toEqual(opposingTeamStatisticsBefore);
+  });
+
+  it("records a TEAM rebound as possession only without rebound statistics", () => {
+    const engine = createStartedEngine();
+    const playersBefore = engine.getState().home.players.map((item) => item.statistics);
+    const teamStatisticsBefore = JSON.parse(JSON.stringify(engine.getState().home.statistics));
+    expect(engine.process(matchEvent({
+      type: EventType.REBOUND,
+      team: TeamSide.HOME,
+      offensive: true,
+      teamRebound: true,
+      sequence: 4,
+    })).accepted).toBe(true);
+    expect(engine.getState().possession).toBe(TeamSide.HOME);
+    expect(engine.getState().home.players.map((item) => item.statistics)).toEqual(playersBefore);
+    expect(engine.getState().home.statistics).toEqual(teamStatisticsBefore);
+    expect(engine.getEvents().at(-1)).toMatchObject({ type: EventType.REBOUND, teamRebound: true });
   });
 });

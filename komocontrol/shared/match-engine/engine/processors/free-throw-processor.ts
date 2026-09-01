@@ -36,4 +36,20 @@ export class FreeThrowProcessor {
       made: event.made,
     });
   }
+
+  endAdministration(
+    state: MatchState,
+    event: Extract<MatchEvent, { type: typeof EventType.PENALTY_ADMINISTRATION_ENDED }>,
+  ): void {
+    const resolution = state.penaltyResolution;
+    const penalty = resolution?.freeThrowQueue[0];
+    if (!resolution || !penalty || penalty.penaltyId !== event.penaltyId) {
+      throw new Error("Validated penalty administration completion was not found.");
+    }
+
+    resolution.administrationStarted = true;
+    resolution.freeThrowQueue = resolution.freeThrowQueue.slice(1);
+    if (resolution.freeThrowQueue.length > 0) return;
+    resolution.finalRestart = applyResolvedRestart(state, resolution.finalRestart);
+  }
 }

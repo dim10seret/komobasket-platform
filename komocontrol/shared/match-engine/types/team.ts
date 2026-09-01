@@ -9,6 +9,7 @@ export interface Team {
   side: TeamSide;
   score: number;
   timeouts: number;
+  timeoutAllowance?: number;
   teamFouls: number;
   discipline: TeamDisciplineState;
   players: Player[];

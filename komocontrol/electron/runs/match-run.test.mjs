@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AuthCoordinator } from "../../dist-electron/auth/auth-coordinator.cjs";
 import { MatchSetupManager } from "../../dist-electron/games/match-setup.cjs";
 import { LocalDatabase } from "../../dist-electron/persistence/local-database.cjs";
-import { MatchRunManager } from "../../dist-electron/runs/match-run.cjs";
+import { MatchRunManager, projectMyGamesRunState, selectAuthoritativeMyGamesRuns } from "../../dist-electron/runs/match-run.cjs";
+import { deterministicJson, sha256JsonBytes } from "../../dist-electron/runs/match-engine-bootstrap.cjs";
 
 const roots = []; const databases = [];
 const gameId = "game-run-1"; const deviceId = "11111111-1111-4111-8111-111111111111";
@@ -20,6 +21,28 @@ function readRows(databasePath) { const db = new DatabaseSync(databasePath, { re
 afterEach(() => { for (const database of databases.splice(0)) database.close(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
 describe("KC-5B8 durable local Game Run", () => {
+    it("projects My Games completion only from exact finalized ACK and verified final score", () => {
+        const run = { runId: "run-final", gameId, status: "finalized", lastAcceptedSequence: 466, updatedAtUtc: "2026-09-01T13:43:39.000Z", createdAtUtc: "2026-09-01T10:00:00.000Z" };
+        const snapshot = { eventHistoryRevision: 926 };
+        const finalStateJson = deterministicJson({ away: { score: 103 }, finished: true, home: { score: 105 }, id: run.runId, lastProcessedSequence: 466 });
+        const finalStateHash = sha256JsonBytes(finalStateJson); const finalizedHistoryHash = "a".repeat(64); const finalizedAtUtc = "2026-09-01T13:43:39.000Z";
+        const finalizationJson = deterministicJson({ schemaVersion: 1, runId: run.runId, finalizedHistoryRevision: 926, finalizedHistoryHash, finalStateHash, finalizedAtUtc });
+        const finalization = { finalizedHistoryRevision: 926, finalizedHistoryHash, finalStateJson, finalStateHash, finalizationJson, finalizationHash: sha256JsonBytes(finalizationJson), finalizedAtUtc };
+        const synced = { lastAcknowledgedHistoryRevision: 926, lastAcknowledgedHistoryHash: finalizedHistoryHash, lastAcknowledgedFinalizationHash: finalization.finalizationHash, lastErrorCode: null, consecutiveFailures: 0, nextRetryAtUtc: null };
+        expect(projectMyGamesRunState(run, snapshot, synced, finalization)).toMatchObject({ syncStatus: "completed", homeScore: 105, awayScore: 103 });
+        expect(projectMyGamesRunState(run, snapshot, { ...synced, lastAcknowledgedFinalizationHash: null }, finalization)).toMatchObject({ syncStatus: "pending", homeScore: null, awayScore: null });
+        expect(projectMyGamesRunState(run, snapshot, { ...synced, lastAcknowledgedHistoryRevision: 925 }, finalization)).toMatchObject({ syncStatus: "pending", homeScore: null, awayScore: null });
+        expect(projectMyGamesRunState(run, snapshot, { ...synced, lastErrorCode: "SYNC_NETWORK_UNAVAILABLE", consecutiveFailures: 1 }, finalization)).toMatchObject({ syncStatus: "retry-needed" });
+        expect(projectMyGamesRunState(run, snapshot, { ...synced, lastErrorCode: "SYNC_RUN_CONFLICT", consecutiveFailures: 1 }, finalization)).toMatchObject({ syncStatus: "conflict" });
+    });
+    it("selects an active Run over finalized history and otherwise the newest finalized Run", () => {
+        const base = { gameId, createdAtUtc: "2026-09-01T10:00:00.000Z" };
+        const oldFinal = { ...base, runId: "run-final-old", status: "finalized", updatedAtUtc: "2026-09-01T11:00:00.000Z" };
+        const newFinal = { ...base, runId: "run-final-new", status: "finalized", updatedAtUtc: "2026-09-01T12:00:00.000Z" };
+        expect(selectAuthoritativeMyGamesRuns([oldFinal, newFinal])).toMatchObject([{ runId: "run-final-new" }]);
+        const active = { ...base, runId: "run-active", status: "active", updatedAtUtc: "2026-09-01T09:00:00.000Z" };
+        expect(selectAuthoritativeMyGamesRuns([newFinal, active])).toMatchObject([{ runId: "run-active" }]);
+    });
     it("migrates a 0002 database through 0004 while preserving Package, device, and Run", () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "komocontrol-run-migration-")); roots.push(root);
         const migrationsDirectory = path.join(root, "migrations"); fs.mkdirSync(migrationsDirectory);
@@ -38,8 +61,10 @@ describe("KC-5B8 durable local Game Run", () => {
         fs.copyFileSync(path.resolve("electron/migrations/0004_game_run_configuration.sql"), path.join(migrationsDirectory, "0004_game_run_configuration.sql"));
         fs.copyFileSync(path.resolve("electron/migrations/0005_match_gameplay.sql"), path.join(migrationsDirectory, "0005_match_gameplay.sql"));
         fs.copyFileSync(path.resolve("electron/migrations/0006_gameplay_sync.sql"), path.join(migrationsDirectory, "0006_gameplay_sync.sql"));
+        fs.copyFileSync(path.resolve("electron/migrations/0007_live_pre_game_corrections.sql"), path.join(migrationsDirectory, "0007_live_pre_game_corrections.sql"));
+        fs.copyFileSync(path.resolve("electron/migrations/0008_resumable_live_flows.sql"), path.join(migrationsDirectory, "0008_resumable_live_flows.sql"));
         const reopened = new LocalDatabase({ databasePath, migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(reopened);
-        expect(reopened.initialize()).toMatchObject({ schemaVersion: "0006_gameplay_sync.sql", deviceIdentity: { deviceId } });
+        expect(reopened.initialize()).toMatchObject({ schemaVersion: "0008_resumable_live_flows.sql", deviceIdentity: { deviceId } });
         expect(reopened.getCurrentGamePackageStatus(gameId)).toMatchObject({ availableOffline: true, currentVersion: 2 });
         expect(reopened.getActiveLocalGameRun(gameId)).toMatchObject({ runId: preservedRunId, packageId: input.packageId, scorerId: owner.scorerId, deviceId, status: "active", startedAtUtc: null, lastAcceptedSequence: 0 });
         expect(reopened.runIntegrityCheck()).toEqual({ quickCheck: "ok", foreignKeyExceptions: 0 });

@@ -60,6 +60,11 @@ describe("Run-scoped gameplay synchronization", () => {
         await expect(first).resolves.toMatchObject({ runId: "run-a" }); await expect(duplicate).resolves.toMatchObject({ runId: "run-a" }); await expect(independentB).resolves.toMatchObject({ runId: "run-b" }); await expect(independentC).resolves.toMatchObject({ runId: "run-c" });
         expect(database.acknowledgeGameplaySync).toHaveBeenCalledTimes(3);
     });
+    it("notifies the renderer after attempt and exact acknowledgement without entering the append path", async () => {
+        const database = databaseFixture(["run-a"]); const onStateChange = vi.fn(); const client = { syncGameplay: vi.fn(async (_token, input) => response(input)) };
+        const worker = new GameplaySyncWorker(database, client, undefined, onStateChange); await worker.retry("run-a", "token", { scorerId: "scorer-1", organizationId: "organization-1" });
+        expect(onStateChange).toHaveBeenNthCalledWith(1, "run-a"); expect(onStateChange).toHaveBeenLastCalledWith("run-a"); expect(database.acknowledgeGameplaySync).toHaveBeenCalledOnce();
+    });
 
     it("hashes exact deterministic event bytes in sequence order", () => {
         const events = [event("run-a", 1), event("run-a", 2)];
@@ -205,6 +210,31 @@ describe("Run-scoped gameplay synchronization", () => {
             await vi.advanceTimersByTimeAsync(1);
             await vi.waitFor(() => expect(database.acknowledgeGameplaySync).toHaveBeenCalledOnce());
             expect(fetcher).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("coalesces rapid same-Run queue requests without blocking another Run", async () => {
+        vi.useFakeTimers();
+        try {
+            const database = databaseFixture(["run-a", "run-b"]);
+            database.listPendingGameplaySyncRunIds = () => ["run-a", "run-b"].filter((runId) => database.readLocalGameplaySyncState(runId).lastAcknowledgedHistoryRevision < 1);
+            const client = { syncGameplay: vi.fn(async (_token, input) => response(input)) };
+            const worker = new GameplaySyncWorker(database, client);
+            const owner = { scorerId: "scorer-1", organizationId: "organization-1" };
+            worker.queue("run-a", "token", owner);
+            worker.queue("run-a", "token", owner);
+            worker.queue("run-a", "token", owner);
+            worker.queue("run-b", "token", owner);
+            expect(client.syncGameplay).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(299);
+            expect(client.syncGameplay).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            await Promise.resolve();
+            await Promise.resolve();
+            expect(client.syncGameplay).toHaveBeenCalledTimes(2);
+            expect(client.syncGameplay.mock.calls.map((call) => call[1].runId).sort()).toEqual(["run-a", "run-b"]);
         } finally {
             vi.useRealTimers();
         }

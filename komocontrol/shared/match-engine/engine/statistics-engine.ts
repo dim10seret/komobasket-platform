@@ -84,6 +84,11 @@ export class StatisticsEngine {
     player.statistics.defensiveRebounds += 1;
   }
 
+  recordTeamRebound(team: Team, offensive: boolean): void {
+    if (offensive) team.statistics.offensiveRebounds += 1;
+    else team.statistics.defensiveRebounds += 1;
+  }
+
   recordAssist(team: Team, player: Player): void {
     team.statistics.assists += 1;
     player.statistics.assists += 1;
