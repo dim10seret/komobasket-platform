@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { canCompleteLiveFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, isScorerFacingGameplayEvent, liveClockSeconds, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, liveStatusPlayerStatistics, nextLivePeriod, periodScoreLabel, periodScoreValue, periodText, presentationTeams, teamReboundIntent } from "./LiveControl";
+import { canCompleteLiveFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockSeconds, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, liveStatusPlayerStatistics, nextLivePeriod, periodScoreLabel, periodScoreValue, periodText, presentationTeams, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents } from "./LiveControl";
 
 const gameplay = {
     runId: "run", lifecycle: "live", eventHistoryRevision: 1, lastAcceptedSequence: 1, score: { home: 50, away: 45 }, period: { kind: "REGULATION", index: 4 }, periodScores: [{ period: { kind: "REGULATION", index: 1 }, home: 12, away: 8 }, { period: { kind: "REGULATION", index: 2 }, home: 11, away: 10 }, { period: { kind: "REGULATION", index: 3 }, home: 14, away: 12 }, { period: { kind: "REGULATION", index: 4 }, home: 13, away: 15 }], clockSeconds: 300, clockRunning: false, clockStartedAtMs: null, possession: "HOME", alternatingPossession: "AWAY", finished: false, latestEvent: null,
@@ -15,6 +15,47 @@ const gameplay = {
 } as KomoControlSafeMatchGameplay;
 
 describe("Full Stats Live Control presentation contract", () => {
+    it("builds an atomic terminalized TIMEOUT with an independent CLOCK_STOP only while running", () => {
+        const running = timeoutGameplayIntents("HOME", "timeout-group", true);
+        expect(running).toEqual([
+            { kind: "timeout", team: "HOME", scorerEventId: "timeout-group", scorerEventTerminal: { reason: "NATURAL" } },
+            { kind: "clock-stop" },
+        ]);
+        expect(running[1]).not.toHaveProperty("scorerEventId");
+        expect(timeoutGameplayIntents("AWAY", "stopped-timeout", false)).toEqual([
+            { kind: "timeout", team: "AWAY", scorerEventId: "stopped-timeout", scorerEventTerminal: { reason: "NATURAL" } },
+        ]);
+    });
+
+    it("keeps the timeout countdown renderer-only, starts at 01:00, and clamps at 00:00", () => {
+        expect(timeoutCountdownSeconds(1_000, 1_000)).toBe(60);
+        expect(timeoutCountdownSeconds(1_000, 1_001)).toBe(60);
+        expect(timeoutCountdownSeconds(1_000, 2_000)).toBe(59);
+        expect(timeoutCountdownSeconds(1_000, 61_000)).toBe(0);
+        expect(timeoutCountdownSeconds(1_000, 90_000)).toBe(0);
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('setActiveTimeoutCountdown({ scorerEventGroupId: `explicit:${scorerEventId}`');
+        expect(source).toContain('if (next) {');
+        expect(source).toContain('role="timer"');
+        expect(source).not.toContain('saveResumableLiveFlow(gameplay.runId, activeTimeoutCountdown');
+    });
+
+    it("recovers only the latest timeout after the latest CLOCK_START", () => {
+        const item = (sequence: number, type: string, scorerEventId?: string): KomoControlGameplayHistoryItem => ({ eventId: `event-${sequence}`, sequence, occurredAt: sequence, type, ...(type === "TIMEOUT" ? { team: "HOME" as const } : {}), ...(scorerEventId ? { scorerEventId } : {}), scorerEventGroupId: scorerEventId ? `explicit:${scorerEventId}` : `atomic:event-${sequence}`, scorerEventGroupOrdinal: sequence, scorerEventGroupingSource: scorerEventId ? "EXPLICIT" : "LEGACY_ATOMIC", scorerEventGroupSafeForReconstruction: Boolean(scorerEventId), period: { kind: "REGULATION", index: 1 }, clockSeconds: 500, intent: null });
+        const timeoutA = item(2, "TIMEOUT", "timeout-a");
+        const clockStart = item(3, "CLOCK_START");
+        const timeoutB = item(4, "TIMEOUT", "timeout-b");
+        expect(latestOpenTimeout([timeoutB, clockStart, timeoutA])).toBe(timeoutB);
+        expect(latestOpenTimeout([clockStart, timeoutA])).toBeNull();
+    });
+
+    it("clears countdown only after successful clock start or deletion of its own group", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('const next = await appendIntent({ kind: "clock-start" });');
+        expect(source).toContain('if (activeTimeoutCountdown?.scorerEventGroupId === scorerEventGroupId)');
+        expect(source).toContain('const next = flow.action === "TIME_OUT" ? await appendTimeout');
+        expect(source.indexOf('const next = applyResult(result);')).toBeLessThan(source.indexOf('if (activeTimeoutCountdown?.scorerEventGroupId === scorerEventGroupId)'));
+    });
     it("derives final submission UX only from authoritative finalized sync and authentication state", () => {
         const context = { scorerId: "scorer", username: "scorer", organizationId: "organization", organizationName: "Organization", expiresAt: "2026-09-01T20:00:00.000Z" };
         const authenticated: Extract<KomoControlAuthState, { kind: "authenticated" }> = { kind: "authenticated", connection: "online", deviceIdSuffix: "123456", context };

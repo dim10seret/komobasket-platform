@@ -44,6 +44,8 @@ export type PublicGame = {
   venue: PublicVenue | null;
   homeScore: number | null;
   awayScore: number | null;
+  publicStatus: "scheduled" | "live" | "completed";
+  liveAvailable: boolean;
   videoUrl: string | null;
   homeTeam: PublicGameTeam;
   awayTeam: PublicGameTeam;
@@ -177,6 +179,7 @@ type PublicGameRow = {
   away_score: number | null;
   status: string | null;
   result_source: string | null;
+  gameplay_lifecycle: string | null;
   series_matchup_id: string | null;
   video_url: string | null;
   home_team_id: string;
@@ -286,6 +289,11 @@ function normalizePublicGame(row: PublicGameRow, format: PublicPhase["format"], 
     : row.round_number;
   if (typeof roundNumber !== "number" || !Number.isInteger(roundNumber) || roundNumber < 1) return null;
   const venueName = row.venue_name?.trim() || row.game_venue?.trim() || null;
+  const publicStatus = row.gameplay_lifecycle === "live"
+    ? "live" as const
+    : row.status === "completed" && row.home_score !== null && row.away_score !== null
+      ? "completed" as const
+      : "scheduled" as const;
   return {
     id: row.id,
     roundNumber,
@@ -296,6 +304,8 @@ function normalizePublicGame(row: PublicGameRow, format: PublicPhase["format"], 
     venue: venueName ? { id: row.venue_id, name: venueName, address: row.venue_address?.trim() || null, mapUrl: row.venue_map_url?.trim() || null } : null,
     homeScore: row.home_score === null ? null : Number(row.home_score),
     awayScore: row.away_score === null ? null : Number(row.away_score),
+    publicStatus,
+    liveAvailable: publicStatus === "live",
     videoUrl: row.video_url?.trim() || null,
     homeTeam: {
       id: row.home_team_id,
@@ -520,10 +530,12 @@ export async function getPublicCompetitionContext(input: {
     db.prepare(`
     SELECT g.id, g.competition_id, g.phase_id, g.schedule_id, g.cycle_number, g.round_number, g.series_round_number, g.game_order, g.round_label,
            g.scheduled_date, g.scheduled_time, g.venue AS game_venue, v.id AS venue_id, v.name AS venue_name, v.address AS venue_address, v.map_url AS venue_map_url,
-           g.home_score, g.away_score, g.status, g.result_source, g.series_matchup_id, g.video_url,
+           g.home_score, g.away_score, g.status, g.result_source, gameplay_head.lifecycle AS gameplay_lifecycle, g.series_matchup_id, g.video_url,
            home.id AS home_team_id, COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, COALESCE(home_st.logo_url, home.logo_url) AS home_team_logo_url,
            away.id AS away_team_id, COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, COALESCE(away_st.logo_url, away.logo_url) AS away_team_logo_url
       FROM league_games g
+      LEFT JOIN league_komocontrol_gameplay_game_claims gameplay_claim ON gameplay_claim.game_id=g.id
+      LEFT JOIN league_komocontrol_gameplay_heads gameplay_head ON gameplay_head.run_id=gameplay_claim.run_id
       LEFT JOIN league_competition_venues v ON v.competition_id=g.competition_id AND v.name=g.venue
       JOIN league_competition_teams home_ct ON home_ct.competition_id=g.competition_id AND home_ct.status='active'
       JOIN league_season_teams home_st ON home_st.id=home_ct.season_team_id AND home_st.team_id=g.home_team_id

@@ -669,6 +669,20 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         expect(ended.eventHistoryRevision).toBeLessThan(deleted.eventHistoryRevision);
     });
 
+    it("allows delete-only compatibility for an explicit single-event zero-terminal TIMEOUT", async () => {
+        const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START" });
+        const timeout = await f.gameplay.append(f.run.runId, owner, { type: "TIMEOUT", team: "HOME", scorerEventId: "legacy-explicit-timeout" }); const timeoutId = timeout.eventIds.at(-1);
+        const stopped = await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_STOP" }); const stopId = stopped.eventIds.at(-1);
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START", scorerEventId: "later-clock", scorerEventTerminal: { reason: "NATURAL" } });
+        const unsafe = await f.gameplay.append(f.run.runId, owner, { type: "ALTERNATING_POSSESSION", scorerEventId: "unrelated-zero-terminal" });
+        expect(await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:legacy-explicit-timeout")).toMatchObject({ group: { safeForReconstruction: true, canonicalEventIds: [timeoutId] }, editCapabilities: { safeForEdit: false, canResume: false, canDeleteGroup: true, targets: [] } });
+        expect(await f.gameplay.scorerEventEditContext(f.run.runId, owner, "explicit:unrelated-zero-terminal")).toMatchObject({ group: { safeForReconstruction: false }, editCapabilities: { safeForEdit: false, canResume: false, canDeleteGroup: false } });
+        const deleted = await f.gameplay.mutateScorerEventGroup(f.run.runId, owner, { kind: "DELETE_GROUP", scorerEventGroupId: "explicit:legacy-explicit-timeout", expectedHistoryRevision: unsafe.eventHistoryRevision });
+        expect(deleted.eventIds).not.toContain(timeoutId); expect(deleted.eventIds).toContain(stopId); expect(deleted.state.home.timeouts).toBe(2); expect(deleted.state.clockRunning).toBe(true);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => row.sequence)).toEqual(Array.from({ length: deleted.lastAcceptedSequence }, (_, index) => index + 1));
+    });
+
     it("rejects unsafe, finalized, and replay-invalid group mutations without partial durable changes", async () => {
         const unsafe = fixture(); await unsafe.gameplay.initialize(unsafe.run.runId, owner);
         const legacy = await unsafe.gameplay.append(unsafe.run.runId, owner, { type: "TIMEOUT", team: "HOME" }); const legacyId = legacy.eventIds.at(-1); const unsafeRows = unsafe.localDatabase.readLocalMatchEvents(unsafe.run.runId);

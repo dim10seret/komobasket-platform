@@ -47,6 +47,20 @@ export function liveClockSeconds(gameplay: Pick<KomoControlSafeMatchGameplay, "c
     return Math.max(0, gameplay.clockSeconds - Math.floor(Math.max(0, nowMs - gameplay.clockStartedAtMs) / 1000));
 }
 
+export function timeoutGameplayIntents(team: Side, scorerEventId: string, clockRunning: boolean): KomoControlGameplayIntent[] {
+    const timeout: KomoControlGameplayIntent = { kind: "timeout", team, scorerEventId, scorerEventTerminal: { reason: "NATURAL" } };
+    return clockRunning ? [timeout, { kind: "clock-stop" }] : [timeout];
+}
+
+export function timeoutCountdownSeconds(startedAtMs: number, nowMs: number): number {
+    return Math.max(0, Math.ceil((60_000 - Math.max(0, nowMs - startedAtMs)) / 1000));
+}
+
+export function latestOpenTimeout(history: KomoControlGameplayHistoryItem[]): KomoControlGameplayHistoryItem | null {
+    const latestClockStartSequence = history.reduce((latest, item) => item.type === "CLOCK_START" ? Math.max(latest, item.sequence) : latest, 0);
+    return history.reduce<KomoControlGameplayHistoryItem | null>((latest, item) => item.type === "TIMEOUT" && item.team && item.scorerEventId && item.sequence > latestClockStartSequence && (!latest || item.sequence > latest.sequence) ? item : latest, null);
+}
+
 export function periodText(period: KomoControlSafeMatchGameplay["period"]): string {
     return period.kind === "REGULATION" ? `${period.index}η ΠΕΡΙΟΔΟΣ` : `OT${period.index}`;
 }
@@ -356,6 +370,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const [finalSubmissionBusy, setFinalSubmissionBusy] = useState(false);
     const [finalSubmissionError, setFinalSubmissionError] = useState<string | null>(null);
     const [history, setHistory] = useState<KomoControlGameplayHistoryItem[]>([]);
+    const [historyLoaded, setHistoryLoaded] = useState(false);
     const [historyCursor, setHistoryCursor] = useState<number | null>(null);
     const [historyTotal, setHistoryTotal] = useState(0);
     const [periodFilter, setPeriodFilter] = useState<KomoControlSafeMatchGameplay["period"] | null>(null);
@@ -371,7 +386,9 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const [clockEditing, setClockEditing] = useState(false);
     const [clockInput, setClockInput] = useState(formatLiveClock(gameplay.clockSeconds));
     const [nowMs, setNowMs] = useState(Date.now());
+    const [activeTimeoutCountdown, setActiveTimeoutCountdown] = useState<{ scorerEventGroupId: string; scorerEventId: string; team: Side; startedAtMs: number } | null>(null);
     const autoStopRef = useRef(false);
+    const timeoutRecoveryRunRef = useRef<string | null>(null);
 
     const [leftTeam, rightTeam] = presentationTeams(gameplay);
     const displayedClock = liveClockSeconds(gameplay, nowMs);
@@ -390,6 +407,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         onAuthStateChange(result.state);
         if (!result.ok) { setError(`Το Game Log δεν είναι διαθέσιμο (${result.errorCode}).`); return; }
         setHistory((current) => append ? [...current, ...result.history.items] : result.history.items);
+        if (!append) setHistoryLoaded(true);
         setHistoryCursor(result.history.nextBeforeSequence);
         setHistoryTotal(result.history.total);
     }, [bridge, gameplay.runId, onAuthStateChange, periodFilter]);
@@ -433,6 +451,20 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
 
     useEffect(() => { void loadHistory(false); }, [loadHistory, gameplay.eventHistoryRevision]);
     useEffect(() => {
+        setActiveTimeoutCountdown(null);
+        setHistoryLoaded(false);
+        timeoutRecoveryRunRef.current = null;
+    }, [gameplay.runId]);
+    useEffect(() => {
+        if (!historyLoaded || activeTimeoutCountdown || timeoutRecoveryRunRef.current === gameplay.runId) return;
+        timeoutRecoveryRunRef.current = gameplay.runId;
+        const recovered = latestOpenTimeout(history);
+        if (!recovered?.team || !recovered.scorerEventId) return;
+        const startedAtMs = Date.now();
+        setNowMs(startedAtMs);
+        setActiveTimeoutCountdown({ scorerEventGroupId: recovered.scorerEventGroupId, scorerEventId: recovered.scorerEventId, team: recovered.team, startedAtMs });
+    }, [activeTimeoutCountdown, gameplay.runId, history, historyLoaded]);
+    useEffect(() => {
         if (!bridge) return;
         return bridge.onGameplaySyncStateChanged((runId) => {
             if (runId !== gameplay.runId) return;
@@ -450,10 +482,10 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         });
     }, [bridge, gameplay.eventHistoryRevision, gameplay.runId, onAuthStateChange]);
     useEffect(() => {
-        if (!gameplay.clockRunning) return;
+        if (!gameplay.clockRunning && !activeTimeoutCountdown) return;
         const timer = window.setInterval(() => setNowMs(Date.now()), 250);
         return () => window.clearInterval(timer);
-    }, [gameplay.clockRunning]);
+    }, [activeTimeoutCountdown, gameplay.clockRunning]);
 
     const applyResult = useCallback((result: KomoControlMatchGameplayResult): KomoControlSafeMatchGameplay | null => {
         onAuthStateChange(result.state);
@@ -581,10 +613,14 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
             const result = await bridge.mutateScorerEventGroup(gameplay.runId, { kind: "DELETE_GROUP", scorerEventGroupId, expectedHistoryRevision: context.expectedHistoryRevision });
             const next = applyResult(result);
             if (!next) { if (historyEdit) setHistoryEdit((current) => current ? { ...current, error: result.ok ? "Η διαγραφή δεν ολοκληρώθηκε." : `Η διαγραφή απορρίφθηκε (${result.errorCode}).` } : current); return; }
+            if (activeTimeoutCountdown?.scorerEventGroupId === scorerEventGroupId) {
+                timeoutRecoveryRunRef.current = gameplay.runId;
+                setActiveTimeoutCountdown(null);
+            }
             closeHistoricalWorkspace(); await loadHistory(false);
         } catch { if (historyEdit) setHistoryEdit((current) => current ? { ...current, error: "Η ιστορική διαγραφή δεν ολοκληρώθηκε." } : current); else setError("Η ιστορική διαγραφή δεν ολοκληρώθηκε."); }
         finally { setBusy(false); }
-    }, [applyResult, bridge, busy, closeHistoricalWorkspace, gameplay.runId, historyEdit, historyPreview, historyPreviewContext, loadHistory]);
+    }, [activeTimeoutCountdown, applyResult, bridge, busy, closeHistoricalWorkspace, gameplay.runId, historyEdit, historyPreview, historyPreviewContext, loadHistory]);
 
     const withScorerEvent = useCallback((intent: KomoControlGameplayIntent): KomoControlGameplayIntent => flow?.scorerEventId && !intent.scorerEventId ? { ...intent, scorerEventId: flow.scorerEventId } : intent, [flow]);
     const appendIntent = useCallback(async (intent: KomoControlGameplayIntent): Promise<KomoControlSafeMatchGameplay | null> => {
@@ -620,6 +656,22 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         catch { setError("Η σύνθετη τοπική καταχώριση δεν ολοκληρώθηκε."); return null; }
         finally { setBusy(false); }
     }, [applyResult, bridge, busy, gameplay.runId, withScorerEvent]);
+
+    const appendTimeout = useCallback(async (side: Side, scorerEventId: string): Promise<KomoControlSafeMatchGameplay | null> => {
+        if (!bridge || busy) return null;
+        setBusy(true);
+        try {
+            const next = applyResult(await bridge.appendGameplayIntents(gameplay.runId, timeoutGameplayIntents(side, scorerEventId, gameplay.clockRunning)));
+            if (next) {
+                const startedAtMs = Date.now();
+                timeoutRecoveryRunRef.current = gameplay.runId;
+                setNowMs(startedAtMs);
+                setActiveTimeoutCountdown({ scorerEventGroupId: `explicit:${scorerEventId}`, scorerEventId, team: side, startedAtMs });
+            }
+            return next;
+        } catch { setError("Η σύνθετη τοπική καταχώριση δεν ολοκληρώθηκε."); return null; }
+        finally { setBusy(false); }
+    }, [applyResult, bridge, busy, gameplay.clockRunning, gameplay.runId]);
 
     const correctSpecific = useCallback(async (eventId: string, intent: KomoControlGameplayIntent): Promise<KomoControlSafeMatchGameplay | null> => {
         if (!bridge || busy) return null;
@@ -869,7 +921,14 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
 
     const toggleClock = useCallback(async () => {
         if (clockEditing || busy || gameplay.lifecycle !== "live") return;
-        if (!gameplay.clockRunning) { await appendIntent({ kind: "clock-start" }); return; }
+        if (!gameplay.clockRunning) {
+            const next = await appendIntent({ kind: "clock-start" });
+            if (next) {
+                timeoutRecoveryRunRef.current = gameplay.runId;
+                setActiveTimeoutCountdown(null);
+            }
+            return;
+        }
         const current = liveClockSeconds(gameplay, Date.now());
         await appendIntents(current === gameplay.clockSeconds ? [{ kind: "clock-stop" }] : [{ kind: "clock-set", remainingSeconds: current }, { kind: "clock-stop" }]);
     }, [appendIntent, appendIntents, busy, clockEditing, gameplay]);
@@ -1270,7 +1329,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const renderFlow = () => {
         if (!flow) return <div className="live-workspace-idle"><strong>Επιλέξτε ενέργεια</strong><span>SPACE · ρολόι &nbsp; ENTER · ολοκλήρωση &nbsp; ESC · ακύρωση</span></div>;
         if ((flow.action === "TIME_OUT" || flow.action === "JUMP_BALL") && flow.step === "team-target") return <><h3>{flow.action === "TIME_OUT" ? "TIMEOUT" : "JUMP BALL"}</h3><ChoiceGrid><Choice onClick={() => setFlow({ ...flow, side: "HOME", step: "commit-team" })}>HOME · {team("HOME").teamName}</Choice><Choice onClick={() => setFlow({ ...flow, side: "AWAY", step: "commit-team" })}>AWAY · {team("AWAY").teamName}</Choice></ChoiceGrid></>;
-        if (flow.step === "commit-team" && flow.side) return <><h3>{flow.action === "TIME_OUT" ? "TIMEOUT" : "JUMP BALL"}</h3><ChoiceGrid><Choice onClick={async () => { const next = await appendIntent(flow.action === "TIME_OUT" ? { kind: "timeout", team: flow.side! } : { kind: "jump-ball", possession: flow.side! }); if (next) closeFlow(); }}>ΚΑΤΑΧΩΡΙΣΗ</Choice></ChoiceGrid></>;
+        if (flow.step === "commit-team" && flow.side) return <><h3>{flow.action === "TIME_OUT" ? "TIMEOUT" : "JUMP BALL"}</h3><ChoiceGrid><Choice onClick={async () => { const next = flow.action === "TIME_OUT" ? await appendTimeout(flow.side!, flow.scorerEventId!) : await appendIntent({ kind: "jump-ball", possession: flow.side! }); if (next) closeFlow(); }}>ΚΑΤΑΧΩΡΙΣΗ</Choice></ChoiceGrid></>;
         if (flow.action === "SHOOT") {
             if (flow.step === "shooter") return <><h3>SHOOTER</h3><p className="live-player-prompt">Επιλέξτε αριθμό από τα rails</p><button type="button" className="live-context-exception" onClick={() => selectShotPoints(3)}>3PT</button></>;
             if (flow.step === "shot-result") return <><h3>MADE / MISS</h3><ChoiceGrid stacked><Choice active={flow.made === true} onClick={() => void finishShot(true)}>MADE</Choice><Choice active={flow.made === false} onClick={() => void finishShot(false)}>MISS</Choice></ChoiceGrid></>;
@@ -1454,7 +1513,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
                 {renderRail(leftTeam)}
                 <section className="live-control-main">
                     <div className="live-primary-grid">{livePrimaryActions.map((action) => <button key={action.id} type="button" disabled={busy || Boolean(historyPreview) || Boolean(historyEdit) || Boolean(localCurrentCorrection) || Boolean(subsModal) || (hasPendingPenalty && action.id !== "SUBS") || gameplay.lifecycle !== "live" || !livePrimaryActionAvailable(action.id, flow?.action ?? null)} onClick={() => startAction(action.id)}><span>{action.glyph}</span><strong>{action.label}</strong></button>)}</div>
-                    <section className={`live-event-workspace${historyPreview || historyEdit ? " is-history-preview" : ""}${historyEdit ? " is-history-edit" : ""}`}><div className="live-workspace-heading"><div><small>{historyEdit ? historyEdit.mode === "CURRENT" ? historyEdit.preview.title : "ΕΠΕΞΕΡΓΑΣΙΑ ΣΥΜΒΑΝΤΟΣ" : historyPreview ? "ΠΡΟΒΟΛΗ ΣΥΜΒΑΝΤΟΣ" : correctionTarget ? `ΔΙΟΡΘΩΣΗ #${correctionTarget.sequence}` : flow ? flow.foulType === "DISQUALIFYING_FOUL" ? "DISQUALIFYING" : flow.action === "PENALTY" && flow.sourceFoulEventId ? "SHOOTING FOUL" : flow.action.replaceAll("_", " ") : "ΝΕΟ ΣΥΜΒΑΝ"}</small></div>{historyEdit ? <span className="live-key-hint">{historyEdit.mode === "CURRENT" ? "ENTER · ολοκλήρωση   ESC · ακύρωση" : "ENTER · αποθήκευση   ESC · ακύρωση"}</span> : historyPreview ? <span className="live-key-hint">ESC · κλείσιμο</span> : flow ? <span className="live-key-hint">ENTER · προαιρετικό &nbsp; ESC · ακύρωση</span> : null}</div>{historyEdit ? renderHistoryEdit() : historyPreview ? renderHistoryPreview() : <>{renderFlowTrail()}{renderFlow()}</>}</section>
+                    <section className={`live-event-workspace${historyPreview || historyEdit ? " is-history-preview" : ""}${historyEdit ? " is-history-edit" : ""}`}><div className="live-workspace-heading"><div><small>{historyEdit ? historyEdit.mode === "CURRENT" ? historyEdit.preview.title : "ΕΠΕΞΕΡΓΑΣΙΑ ΣΥΜΒΑΝΤΟΣ" : historyPreview ? "ΠΡΟΒΟΛΗ ΣΥΜΒΑΝΤΟΣ" : correctionTarget ? `ΔΙΟΡΘΩΣΗ #${correctionTarget.sequence}` : flow ? flow.foulType === "DISQUALIFYING_FOUL" ? "DISQUALIFYING" : flow.action === "PENALTY" && flow.sourceFoulEventId ? "SHOOTING FOUL" : flow.action.replaceAll("_", " ") : "ΝΕΟ ΣΥΜΒΑΝ"}</small></div>{historyEdit ? <span className="live-key-hint">{historyEdit.mode === "CURRENT" ? "ENTER · ολοκλήρωση   ESC · ακύρωση" : "ENTER · αποθήκευση   ESC · ακύρωση"}</span> : historyPreview ? <span className="live-key-hint">ESC · κλείσιμο</span> : flow ? <span className="live-key-hint">ENTER · προαιρετικό &nbsp; ESC · ακύρωση</span> : null}</div>{historyEdit ? renderHistoryEdit() : historyPreview ? renderHistoryPreview() : <>{activeTimeoutCountdown ? <div className="live-timeout-countdown" role="timer" aria-label={`TIME OUT ${team(activeTimeoutCountdown.team).teamName}`}><small>TIME OUT — {team(activeTimeoutCountdown.team).teamName}</small><strong>{formatLiveClock(timeoutCountdownSeconds(activeTimeoutCountdown.startedAtMs, nowMs))}</strong></div> : null}{renderFlowTrail()}{renderFlow()}</>}</section>
                     {error ? <div className="live-error" role="alert">{error}</div> : null}
                 </section>
                 {renderRail(rightTeam)}

@@ -358,7 +358,8 @@ function scorerEventHistoryProjection(records: MatchGameplayHistoryFactRecord[])
             const offender = record(item.facts.offender);
             return item.type === "TECHNICAL_FOUL" && item.facts.category === "CATEGORY_1" && offender?.kind === "BENCH" && offender.role === "HEAD_COACH" && !item.scorerEventContext?.technicalStaffSource;
         });
-        return { scorerEventGroupId, items, groupingSource, terminalConflict, scorerEventTerminal, anchor, safeForReconstruction: groupingSource === "EXPLICIT" && terminals.length === 1 && !missingTechnicalStaffSource };
+        const legacyTimeoutDeleteCompatible = groupingSource === "EXPLICIT" && items.length === 1 && items[0]?.type === "TIMEOUT" && terminals.length === 0 && !terminalConflict;
+        return { scorerEventGroupId, items, groupingSource, terminalConflict, scorerEventTerminal, anchor, safeForReconstruction: groupingSource === "EXPLICIT" && (terminals.length === 1 || legacyTimeoutDeleteCompatible) && !missingTechnicalStaffSource };
     }).sort((left, right) => left.items[0]!.sequence - right.items[0]!.sequence || left.scorerEventGroupId.localeCompare(right.scorerEventGroupId));
     const groupByEventId = new Map<string, { scorerEventGroupId: string; scorerEventGroupOrdinal: number; scorerEventGroupingSource: MatchGameplayScorerEventGroupingSource; scorerEventGroupSafeForReconstruction: boolean }>();
     definitions.forEach((definition, scorerEventGroupOrdinal) => definition.items.forEach((item) => groupByEventId.set(item.eventId, { scorerEventGroupId: definition.scorerEventGroupId, scorerEventGroupOrdinal, scorerEventGroupingSource: definition.groupingSource, scorerEventGroupSafeForReconstruction: definition.safeForReconstruction })));
