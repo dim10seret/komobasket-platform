@@ -7,6 +7,7 @@ import type { MatchSetupOperationResult } from "./games/match-setup.cjs";
 import type { LocalRunCatalogueResult, MatchRunOperationResult, MyGamesRunStateCatalogueResult } from "./runs/match-run.cjs";
 import type { PreGameConfigurationOperationResult, PreGameConfigurationSaveDraftInput } from "./runs/pre-game-configuration.cjs";
 import type { GameplayHistoryOperationResult, GameplayHistoryQueryInput, GameplayIntent, GameplayScorerEventEditContextOperationResult, GameplayScorerEventEditModeInput, GameplayScorerEventMutationInput, GameplayScorerEventMutationPreviewInput, GameplayScorerEventMutationPreviewOperationResult, GameplayScorerEventGroupOperationResult, MatchGameplayOperationResult, ResumableLiveFlowInput, ResumableLiveFlowOperationResult } from "./runs/gameplay-runtime.cjs";
+import type { MatchGameplayFinalizationInput } from "./runs/match-gameplay.cjs";
 
 interface AppInfo {
     version: string;
@@ -50,7 +51,7 @@ const bridge = Object.freeze({
     mutateScorerEventGroup: (runId: string, mutation: GameplayScorerEventMutationInput): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:mutate-scorer-event-group", { runId, mutation }) as Promise<MatchGameplayOperationResult>,
     removeGameplayEvent: (runId: string, eventId: string, cascadeDependencies = false): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:remove-event", { runId, eventId, cascadeDependencies }) as Promise<MatchGameplayOperationResult>,
     correctGameplayEvent: (runId: string, eventId: string, intent: GameplayIntent, cascadeDependencies = false): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:correct-event", { runId, eventId, intent, cascadeDependencies }) as Promise<MatchGameplayOperationResult>,
-    finalizeMatch: (runId: string): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:finalize", runId) as Promise<MatchGameplayOperationResult>,
+    finalizeMatch: (runId: string, input: MatchGameplayFinalizationInput): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:finalize", { runId, input }) as Promise<MatchGameplayOperationResult>,
     retryGameplaySync: (runId: string): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:retry-sync", runId) as Promise<MatchGameplayOperationResult>,
     reconnectGameplaySync: (runId: string, credentials: LoginInput): Promise<MatchGameplayOperationResult> => ipcRenderer.invoke("gameplay:reconnect-sync", { runId, credentials }) as Promise<MatchGameplayOperationResult>,
     onGameplaySyncStateChanged: (callback: (runId: string) => void): (() => void) => {

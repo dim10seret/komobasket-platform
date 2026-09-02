@@ -1452,6 +1452,10 @@ export class LocalDatabase {
         const finalState = parsedObject(input.finalStateJson, "local_match_finalizations");
         if (finalState.id !== input.runId || finalState.finished !== true || finalState.lastProcessedSequence !== input.lastAcceptedSequence) throw new Error("Finalized Match state is invalid.");
         const manifest = parsedObject(input.finalizationJson, "local_match_finalizations");
+        if (Object.prototype.hasOwnProperty.call(manifest, "incidentReport")) {
+            const report = manifest.incidentReport;
+            if (!(report === null || (typeof report === "string" && report.length > 0 && report.length <= 20_000 && report === report.replace(/\r\n?/g, "\n").trim()))) throw new Error("Finalization incident report is invalid.");
+        }
         if (manifest.schemaVersion !== 1 || manifest.runId !== input.runId
             || manifest.finalizedHistoryRevision !== input.expectedHistoryRevision + 1
             || manifest.finalizedHistoryHash !== input.finalizedHistoryHash

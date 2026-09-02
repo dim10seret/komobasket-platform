@@ -10,7 +10,7 @@ import { LocalDatabase } from "./persistence/local-database.cjs";
 import { GamePackageDownloadManager } from "./games/game-package-download.cjs";
 import { MatchSetupManager } from "./games/match-setup.cjs";
 import { MatchRunManager } from "./runs/match-run.cjs";
-import { MatchGameplayManager } from "./runs/match-gameplay.cjs";
+import { MatchGameplayManager, type MatchGameplayFinalizationInput } from "./runs/match-gameplay.cjs";
 import { parseGameplayHistoryQuery, parseGameplayIntent, parseGameplayIntents, parseGameplayScorerEventEditModeInput, parseGameplayScorerEventMutationInput, parseGameplayScorerEventMutationPreviewInput, parseResumableLiveFlowInput } from "./runs/gameplay-runtime.cjs";
 import { GameplaySyncWorker } from "./sync/gameplay-sync.cjs";
 import { EXTRA_BENCH_ROLES, PreGameConfigurationManager, type ExtraBenchEntryV1, type ExtraBenchRole, type PreGameConfigurationPlayerDraft, type PreGameConfigurationPresentationDraft, type PreGameConfigurationSaveDraftInput, type PreGameConfigurationStaffDraft, type PreGameConfigurationTeamDraft } from "./runs/pre-game-configuration.cjs";
@@ -82,6 +82,14 @@ function gameplayObject(value: unknown): Record<string, unknown> {
 function gameplayId(value: unknown): string {
     if (typeof value !== "string" || !value.trim() || value.length > 200) throw new Error("Invalid gameplay identity.");
     return value;
+}
+
+function matchGameplayFinalizationInput(value: unknown): MatchGameplayFinalizationInput {
+    const input = gameplayObject(value);
+    if (!(input.incidentReport === null || typeof input.incidentReport === "string")) throw new Error("Invalid Match finalization input.");
+    const incidentReport = input.incidentReport === null ? null : input.incidentReport.replace(/\r\n?/g, "\n").trim() || null;
+    if (incidentReport !== null && incidentReport.length > 20_000) throw new Error("Invalid Match finalization input.");
+    return { incidentReport };
 }
 
 function preGameConfigurationPlayerDraft(value: unknown): PreGameConfigurationPlayerDraft {
@@ -255,7 +263,7 @@ ipcMain.handle("gameplay:correct-event", async (event, value: unknown) => {
     requireTrustedSender(event); const input = gameplayObject(value);
     return requireAuthCoordinator().correctGameplayEvent(gameplayId(input.runId), gameplayId(input.eventId), parseGameplayIntent(input.intent), input.cascadeDependencies === true);
 });
-ipcMain.handle("gameplay:finalize", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().finalizeMatch(gameplayId(value)); });
+ipcMain.handle("gameplay:finalize", async (event, value: unknown) => { requireTrustedSender(event); const request = gameplayObject(value); return requireAuthCoordinator().finalizeMatch(gameplayId(request.runId), matchGameplayFinalizationInput(request.input)); });
 ipcMain.handle("gameplay:retry-sync", async (event, value: unknown) => { requireTrustedSender(event); return requireAuthCoordinator().retryGameplaySync(gameplayId(value)); });
 ipcMain.handle("gameplay:reconnect-sync", async (event, value: unknown) => {
     requireTrustedSender(event); const input = gameplayObject(value);

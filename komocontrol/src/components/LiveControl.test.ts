@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { canCompleteLiveFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockSeconds, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, liveStatusPlayerStatistics, nextLivePeriod, periodScoreLabel, periodScoreValue, periodText, presentationTeams, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents } from "./LiveControl";
+import { canCompleteLiveFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, INCIDENT_REPORT_MAX_LENGTH, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockCorrectionMaximumSeconds, liveClockSeconds, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, liveStatusPlayerStatistics, nextLivePeriod, normalizeIncidentReport, periodScoreLabel, periodScoreValue, periodText, presentationTeams, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents, validateIncidentReport, validateLiveClockCorrection } from "./LiveControl";
 
 const gameplay = {
     runId: "run", lifecycle: "live", eventHistoryRevision: 1, lastAcceptedSequence: 1, score: { home: 50, away: 45 }, period: { kind: "REGULATION", index: 4 }, periodScores: [{ period: { kind: "REGULATION", index: 1 }, home: 12, away: 8 }, { period: { kind: "REGULATION", index: 2 }, home: 11, away: 10 }, { period: { kind: "REGULATION", index: 3 }, home: 14, away: 12 }, { period: { kind: "REGULATION", index: 4 }, home: 13, away: 15 }], clockSeconds: 300, clockRunning: false, clockStartedAtMs: null, possession: "HOME", alternatingPossession: "AWAY", finished: false, latestEvent: null,
@@ -75,8 +75,8 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
         expect(source).toContain('const result = await bridge.retryGameplaySync(gameplay.runId);');
-        expect(source).toContain('else { setBusy(true); try { applyResult(await bridge.finalizeMatch(gameplay.runId)); } finally { setBusy(false); } }');
-        expect(source.match(/bridge\.finalizeMatch\(gameplay\.runId\)/g)).toHaveLength(1);
+        expect(source).toContain('bridge.finalizeMatch(gameplay.runId, { incidentReport: validation.incidentReport })');
+        expect(source.match(/bridge\.finalizeMatch\(gameplay\.runId/g)).toHaveLength(1);
         expect(source).toContain('Η ΑΠΟΣΤΟΛΗ ΟΛΟΚΛΗΡΩΘΗΚΕ');
         expect(source).toContain('Η ΑΠΟΣΤΟΛΗ ΔΕΝ ΟΛΟΚΛΗΡΩΘΗΚΕ');
         expect(source).toContain('Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.');
@@ -84,6 +84,29 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(source).toContain('finalSubmission === "auth-required" ? <button');
         expect(source).not.toContain('finalSubmission === "conflict" ? <button type="button" className="is-primary"');
         expect(styles).toContain('.live-final-submission');
+    });
+    it("normalizes incident reports deterministically and rejects oversized normalized text", () => {
+        expect(normalizeIncidentReport("  Ελληνική αναφορά\r\nδεύτερη γραμμή\rτρίτη  ")).toBe("Ελληνική αναφορά\nδεύτερη γραμμή\nτρίτη");
+        expect(normalizeIncidentReport("  \r\n \t ")).toBeNull();
+        expect(validateIncidentReport("Συμβάν 🏀\nΓραμμή")).toEqual({ incidentReport: "Συμβάν 🏀\nΓραμμή", error: null });
+        expect(validateIncidentReport("x".repeat(INCIDENT_REPORT_MAX_LENGTH + 1))).toMatchObject({ incidentReport: null, error: expect.any(String) });
+    });
+    it("keeps the finalization choice and report editor local until an explicit final click", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const finalizationUi = source.slice(source.indexOf('{finalizationEntry ? <div className="live-modal-backdrop'), source.indexOf('{clockEditing ? <div className="live-modal-backdrop'));
+        const advancePeriod = source.slice(source.indexOf("const advancePeriod = useCallback"), source.indexOf("const useArrow", source.indexOf("const advancePeriod = useCallback")));
+        expect(finalizationUi.match(/>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ<\/button>/g)).toHaveLength(1);
+        expect(finalizationUi.match(/>ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ<\/button>/g)).toHaveLength(1);
+        expect(finalizationUi).toContain('<textarea autoFocus maxLength={INCIDENT_REPORT_MAX_LENGTH}');
+        expect(finalizationUi).toContain('>ΠΙΣΩ</button>');
+        expect(finalizationUi).toContain('>ΟΡΙΣΤΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</button>');
+        expect(finalizationUi).toContain('else { event.stopPropagation(); }');
+        expect(finalizationUi).not.toContain("cancelFlow");
+        expect(advancePeriod).not.toContain('window.confirm("Οριστική τοπική ολοκλήρωση του αγώνα;")');
+        expect(advancePeriod.indexOf('setFinalizationEntry("CHOICE")')).toBeLessThan(advancePeriod.indexOf('appendIntent({ kind: "period-end"'));
+        const backButton = finalizationUi.slice(finalizationUi.indexOf('>ΠΙΣΩ</button>') - 180, finalizationUi.indexOf('>ΠΙΣΩ</button>') + 20);
+        expect(backButton).not.toContain("appendIntent");
+        expect(backButton).not.toContain("finalizeMatch");
     });
     it("treats same-value factual corrections as renderer-only no-ops", () => {
         const target = (
@@ -130,6 +153,41 @@ describe("Full Stats Live Control presentation contract", () => {
     });
     it("formats and derives a running clock without persistence ticks", () => {
         expect(formatLiveClock(295)).toBe("04:55"); expect(liveClockSeconds({ clockSeconds: 300, clockRunning: true, clockStartedAtMs: 1_000 }, 6_400)).toBe(295);
+    });
+    it("validates clock corrections locally against MM:SS and the authoritative period limit", () => {
+        expect(liveClockCorrectionMaximumSeconds(gameplay)).toBe(600);
+        expect(liveClockCorrectionMaximumSeconds({ ...gameplay, period: { kind: "OVERTIME", index: 2 } })).toBe(300);
+        expect(validateLiveClockCorrection("9:36", 600)).toEqual({ remainingSeconds: 576, error: null });
+        expect(validateLiveClockCorrection("09:60", 600)).toEqual({ remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." });
+        expect(validateLiveClockCorrection("9:3", 600)).toEqual({ remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." });
+        expect(validateLiveClockCorrection("10:01", 600)).toEqual({ remainingSeconds: null, error: "Το ρολόι δεν μπορεί να υπερβαίνει τα 10:00." });
+    });
+    it("exposes one stopped-only correction entry point for touch and right-click", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const openCorrection = source.slice(source.indexOf("const openClockCorrection = useCallback"), source.indexOf("    useEffect(() =>", source.indexOf("const openClockCorrection = useCallback")));
+        const clockArea = source.slice(source.indexOf('<header className="live-scoreboard">'), source.indexOf('<div className="live-primary-grid">'));
+        expect(clockArea).toContain('className="live-clock-correction"');
+        expect(clockArea).toContain('onClick={openClockCorrection}>ΔΙΟΡΘΩΣΗ</button>');
+        expect(clockArea).toContain('onContextMenu={(event) => { event.preventDefault(); openClockCorrection(); }}');
+        expect(openCorrection).toContain("if (gameplay.clockRunning)");
+        expect(openCorrection).toContain('setError("Σταματήστε πρώτα το ρολόι.")');
+        expect(openCorrection).not.toContain('kind: "clock-stop"');
+        expect(openCorrection).not.toContain('kind: "clock-set"');
+        expect(clockArea).toContain('onClick={() => void toggleClock()}');
+    });
+    it("isolates clock-editor ENTER, ESC, cancellation, and pending submission from the scorer flow", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const keyboard = source.slice(source.indexOf("const handler = (event: KeyboardEvent)"), source.indexOf('window.addEventListener("keydown"', source.indexOf("const handler = (event: KeyboardEvent)")));
+        const editor = source.slice(source.indexOf('{clockEditing ? <div className="live-modal-backdrop">'), source.indexOf("{statusTeam ?", source.indexOf('{clockEditing ? <div className="live-modal-backdrop">')));
+        expect(keyboard).toContain("if (clockEditing)");
+        expect(keyboard).toContain('if (event.key === "Escape")');
+        expect(keyboard.indexOf("if (clockEditing)")).toBeLessThan(keyboard.indexOf("cancelFlow()"));
+        expect(editor).toContain("event.stopPropagation()");
+        expect(editor).not.toContain("cancelFlow");
+        expect(editor).toContain("clockEditSubmittingRef.current || busy");
+        expect(editor).toContain('appendIntent({ kind: "clock-set", remainingSeconds: validation.remainingSeconds })');
+        expect(editor).toContain('disabled={clockEditSubmitting}');
+        expect(editor).toContain('setClockEditError("Η διόρθωση ρολογιού απορρίφθηκε.")');
     });
     it("persists natural clock expiration once with CLOCK_SET zero only", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");

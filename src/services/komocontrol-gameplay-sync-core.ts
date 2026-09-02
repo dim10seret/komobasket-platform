@@ -184,6 +184,11 @@ function optionalFinalization(value: unknown, historyRevision: number, historyHa
     throw new GameplaySyncValidationError("SYNC_INVALID");
   }
   const manifest = object(deterministicJson(finalizationJson));
+  if (Object.prototype.hasOwnProperty.call(manifest, "incidentReport")) {
+    const report = manifest.incidentReport;
+    if (!(report === null || (typeof report === "string" && report.length > 0 && report.length <= 20_000
+      && report === report.replace(/\r\n?/g, "\n").trim()))) throw new GameplaySyncValidationError("SYNC_INVALID");
+  }
   if (manifest.schemaVersion !== 1 || manifest.runId === undefined
     || manifest.finalizedHistoryRevision !== historyRevision || manifest.finalizedHistoryHash !== historyHash
     || manifest.finalStateHash !== finalStateHash || manifest.finalizedAtUtc !== finalizedAtUtc) {

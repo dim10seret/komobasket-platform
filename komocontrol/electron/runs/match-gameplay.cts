@@ -22,6 +22,16 @@ import {
 } from "./match-engine-bootstrap.cjs";
 
 export interface MatchGameplayOwner { scorerId: string; organizationId: string; }
+export interface MatchGameplayFinalizationInput { incidentReport: string | null; }
+
+const INCIDENT_REPORT_MAX_LENGTH = 20_000;
+
+function normalizedIncidentReport(value: string | null): string | null {
+    if (value === null) return null;
+    const normalized = value.replace(/\r\n?/g, "\n").trim();
+    if (normalized.length > INCIDENT_REPORT_MAX_LENGTH) throw new MatchGameplayFlowError("GAMEPLAY_EVENT_REJECTED");
+    return normalized || null;
+}
 export type MatchGameplayScorerEventContext = { technicalStaffSource?: "COACH" | "BENCH" };
 export interface MatchEventFacts {
     type: string;
@@ -1129,11 +1139,12 @@ export class MatchGameplayManager {
         return this.persistMutation({ ...current, engine: candidate }, owner, current.run.lastAcceptedSequence, this.now().getTime(), true);
     }
 
-    async finalize(runId: string, owner: MatchGameplayOwner | null): Promise<MatchGameplayRecovery> {
-        return this.withRunLock(runId, () => this.finalizeUnlocked(runId, owner));
+    async finalize(runId: string, owner: MatchGameplayOwner | null, input: MatchGameplayFinalizationInput = { incidentReport: null }): Promise<MatchGameplayRecovery> {
+        const incidentReport = normalizedIncidentReport(input.incidentReport);
+        return this.withRunLock(runId, () => this.finalizeUnlocked(runId, owner, incidentReport));
     }
 
-    private async finalizeUnlocked(runId: string, owner: MatchGameplayOwner | null): Promise<MatchGameplayRecovery> {
+    private async finalizeUnlocked(runId: string, owner: MatchGameplayOwner | null, incidentReport: string | null): Promise<MatchGameplayRecovery> {
         const current = await this.loadMutation(runId, owner);
         const candidate = current.engine.fork();
         const occurredAt = this.now().getTime();
@@ -1154,6 +1165,7 @@ export class MatchGameplayManager {
             finalizedHistoryHash,
             finalStateHash,
             finalizedAtUtc,
+            incidentReport,
         });
         const finalizationHash = sha256JsonBytes(finalizationJson);
         try {

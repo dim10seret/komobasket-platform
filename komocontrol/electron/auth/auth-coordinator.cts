@@ -25,6 +25,7 @@ import {
 import {
     MatchGameplayFlowError,
     type MatchGameplayManager,
+    type MatchGameplayFinalizationInput,
     type MatchGameplayHistoryQuery,
     type MatchGameplayRecovery,
 } from "../runs/match-gameplay.cjs";
@@ -329,12 +330,12 @@ export class AuthCoordinator {
         }
     }
 
-    async finalizeMatch(runId: string): Promise<MatchGameplayOperationResult> {
+    async finalizeMatch(runId: string, input: MatchGameplayFinalizationInput = { incidentReport: null }): Promise<MatchGameplayOperationResult> {
         await this.initialize();
         const owner = this.gameplayOwner(runId);
         if (!this.matchGameplayManager || !owner) return { ok: false, errorCode: "SESSION_INVALID", state: this.state };
         try {
-            const result = this.gameplaySuccess(await this.matchGameplayManager.finalize(runId, owner));
+            const result = this.gameplaySuccess(await this.matchGameplayManager.finalize(runId, owner, input));
             this.wakeSync();
             return result;
         } catch (error) {

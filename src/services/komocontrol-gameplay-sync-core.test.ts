@@ -177,6 +177,26 @@ describe("KomoControl gameplay sync replay and revision policy", () => {
       eventHistoryRevision: 4,
       finalization: { finalizedHistoryRevision: 4, finalizedHistoryHash: historyHash, finalStateHash },
     });
+    const legacyHash = finalized.finalization.finalizationHash;
+    expect(sha256(finalized.finalization.finalizationJson)).toBe(legacyHash);
+
+    const withReport = (incidentReport: string | null) => {
+      const nextFinalizationJson = stableGameplaySyncJson({
+        schemaVersion: 1,
+        runId: live.runId,
+        finalizedHistoryRevision: 4,
+        finalizedHistoryHash: historyHash,
+        finalStateHash,
+        finalizedAtUtc,
+        incidentReport,
+      });
+      return { ...finalized, finalization: { ...finalized.finalization, finalizationJson: nextFinalizationJson, finalizationHash: sha256(nextFinalizationJson) } };
+    };
+    expect(validateGameplaySync(withReport(null), live.runId).finalization?.finalizationHash).not.toBe(legacyHash);
+    expect(JSON.parse(validateGameplaySync(withReport("Ελληνική αναφορά 🏀\nδεύτερη γραμμή"), live.runId).finalization!.finalizationJson).incidentReport).toBe("Ελληνική αναφορά 🏀\nδεύτερη γραμμή");
+    expect(() => validateGameplaySync(withReport("x".repeat(20_001)), live.runId)).toThrow(GameplaySyncValidationError);
+    expect(() => validateGameplaySync(withReport(" μη κανονικοποιημένη "), live.runId)).toThrow(GameplaySyncValidationError);
+    expect(finalized.finalization.finalizationHash).toBe(legacyHash);
   });
 
   it("accepts an exact deterministic full-history revision after MatchEngine replay", () => {

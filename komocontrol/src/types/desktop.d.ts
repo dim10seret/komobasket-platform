@@ -29,6 +29,7 @@ type KomoControlMatchRunResult = { ok: true; outcome: "created" | "existing" | "
 type KomoControlLocalRunCatalogueResult = { ok: true; runs: KomoControlSafeLocalRunSummary[]; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 type KomoControlMyGamesRunSyncStatus = "active" | "pending" | "retry-needed" | "conflict" | "completed";
 interface KomoControlMyGamesRunState { gameId: string; runId: string; lifecycle: "active" | "finalized"; historyRevision: number; acknowledgedHistoryRevision: number; finalizationHash: string | null; acknowledgedFinalizationHash: string | null; syncStatus: KomoControlMyGamesRunSyncStatus; homeScore: number | null; awayScore: number | null; }
+interface KomoControlMatchFinalizationInput { incidentReport: string | null; }
 type KomoControlMyGamesRunStateCatalogueResult = { ok: true; runs: KomoControlMyGamesRunState[]; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 type KomoControlPreGameConfigurationErrorCode = "CONFIGURATION_UNAVAILABLE" | "CONFIGURATION_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_OWNERSHIP_CONFLICT";
 type KomoControlTeamSide = "HOME" | "AWAY";
@@ -117,7 +118,7 @@ interface KomoControlDesktopBridge {
     mutateScorerEventGroup(runId: string, mutation: KomoControlScorerEventMutationInput): Promise<KomoControlMatchGameplayResult>;
     removeGameplayEvent(runId: string, eventId: string, cascadeDependencies?: boolean): Promise<KomoControlMatchGameplayResult>;
     correctGameplayEvent(runId: string, eventId: string, intent: KomoControlGameplayIntent, cascadeDependencies?: boolean): Promise<KomoControlMatchGameplayResult>;
-    finalizeMatch(runId: string): Promise<KomoControlMatchGameplayResult>;
+    finalizeMatch(runId: string, input: KomoControlMatchFinalizationInput): Promise<KomoControlMatchGameplayResult>;
     retryGameplaySync(runId: string): Promise<KomoControlMatchGameplayResult>;
     reconnectGameplaySync(runId: string, credentials: { username: string; password: string }): Promise<KomoControlMatchGameplayResult>;
     onGameplaySyncStateChanged(callback: (runId: string) => void): () => void;

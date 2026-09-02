@@ -161,7 +161,7 @@ describe("Run-scoped gameplay synchronization", () => {
         const originalRun = database.readLocalGameRun("run-a");
         database.readLocalGameRun = () => ({ ...originalRun, status: lifecycle === "finalized" ? "finalized" : "active" });
         if (lifecycle === "finalized") {
-            database.readLocalMatchFinalization = () => ({ runId: "run-a", finalizationSchemaVersion: 1, finalizedHistoryRevision: 1, finalizedHistoryHash: "f".repeat(64), finalStateJson: "{}", finalStateHash: "a".repeat(64), finalizationJson: "{}", finalizationHash: "9".repeat(64), finalizedAtUtc: "2026-08-26T12:10:00.000Z" });
+            database.readLocalMatchFinalization = () => ({ runId: "run-a", finalizationSchemaVersion: 1, finalizedHistoryRevision: 1, finalizedHistoryHash: "f".repeat(64), finalStateJson: "{}", finalStateHash: "a".repeat(64), finalizationJson: '{"incidentReport":"Ελληνική αναφορά\\nδεύτερη γραμμή"}', finalizationHash: "9".repeat(64), finalizedAtUtc: "2026-08-26T12:10:00.000Z" });
         }
         database.listPendingGameplaySyncRunIds = () => database.readLocalGameplaySyncState("run-a").lastAcknowledgedHistoryRevision < 1 ? ["run-a"] : [];
         const localEventsBefore = database.readLocalMatchEvents("run-a");
@@ -184,6 +184,10 @@ describe("Run-scoped gameplay synchronization", () => {
         worker.wake("fresh-token", owner, true);
         await vi.waitFor(() => expect(database.acknowledgeGameplaySync).toHaveBeenCalledOnce());
         expect(client.syncGameplay).toHaveBeenCalledTimes(2);
+        if (lifecycle === "finalized") {
+            expect(client.syncGameplay.mock.calls[1][1].finalization).toEqual(client.syncGameplay.mock.calls[0][1].finalization);
+            expect(client.syncGameplay.mock.calls[1][1].finalization.finalizationJson).toBe('{"incidentReport":"Ελληνική αναφορά\\nδεύτερη γραμμή"}');
+        }
         expect(database.readLocalGameplaySyncState("run-a")).toMatchObject({ lastAcknowledgedHistoryRevision: 1, lastErrorCode: null, consecutiveFailures: 0, nextRetryAtUtc: null });
         expect(database.readLocalMatchEvents("run-a")).toEqual(localEventsBefore);
     });

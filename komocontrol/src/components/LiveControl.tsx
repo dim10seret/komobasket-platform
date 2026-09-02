@@ -42,6 +42,34 @@ export function formatLiveClock(seconds: number): string {
     return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 }
 
+export function liveClockCorrectionMaximumSeconds(gameplay: KomoControlSafeMatchGameplay): number {
+    return gameplay.period.kind === "OVERTIME" ? gameplay.rules.overtimeSeconds : gameplay.rules.regulationPeriodSeconds;
+}
+
+export function validateLiveClockCorrection(value: string, maximumSeconds: number): { remainingSeconds: number; error: null } | { remainingSeconds: null; error: string } {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(value);
+    if (!match || Number(match[2]) > 59) return { remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." };
+    const remainingSeconds = Number(match[1]) * 60 + Number(match[2]);
+    if (!Number.isInteger(remainingSeconds) || remainingSeconds < 0) return { remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." };
+    if (remainingSeconds > maximumSeconds) return { remainingSeconds: null, error: `Το ρολόι δεν μπορεί να υπερβαίνει τα ${formatLiveClock(maximumSeconds)}.` };
+    return { remainingSeconds, error: null };
+}
+
+export const INCIDENT_REPORT_MAX_LENGTH = 20_000;
+
+export function normalizeIncidentReport(value: string): string | null {
+    const normalized = value.replace(/\r\n?/g, "\n").trim();
+    return normalized || null;
+}
+
+export function validateIncidentReport(value: string): { incidentReport: string | null; error: null } | { incidentReport: null; error: string } {
+    const incidentReport = normalizeIncidentReport(value);
+    if (incidentReport !== null && incidentReport.length > INCIDENT_REPORT_MAX_LENGTH) {
+        return { incidentReport: null, error: `Η αναφορά δεν μπορεί να υπερβαίνει τους ${INCIDENT_REPORT_MAX_LENGTH.toLocaleString("el-GR")} χαρακτήρες.` };
+    }
+    return { incidentReport, error: null };
+}
+
 export function liveClockSeconds(gameplay: Pick<KomoControlSafeMatchGameplay, "clockSeconds" | "clockRunning" | "clockStartedAtMs">, nowMs: number): number {
     if (!gameplay.clockRunning || gameplay.clockStartedAtMs === null) return gameplay.clockSeconds;
     return Math.max(0, gameplay.clockSeconds - Math.floor(Math.max(0, nowMs - gameplay.clockStartedAtMs) / 1000));
@@ -385,6 +413,13 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const [statusTeam, setStatusTeam] = useState<Side | null>(null);
     const [clockEditing, setClockEditing] = useState(false);
     const [clockInput, setClockInput] = useState(formatLiveClock(gameplay.clockSeconds));
+    const [clockEditError, setClockEditError] = useState<string | null>(null);
+    const [clockEditSubmitting, setClockEditSubmitting] = useState(false);
+    const clockEditSubmittingRef = useRef(false);
+    const [finalizationEntry, setFinalizationEntry] = useState<"CHOICE" | "REPORT" | null>(null);
+    const [incidentReportDraft, setIncidentReportDraft] = useState("");
+    const [finalizationEntryError, setFinalizationEntryError] = useState<string | null>(null);
+    const finalizationSubmittingRef = useRef(false);
     const [nowMs, setNowMs] = useState(Date.now());
     const [activeTimeoutCountdown, setActiveTimeoutCountdown] = useState<{ scorerEventGroupId: string; scorerEventId: string; team: Side; startedAtMs: number } | null>(null);
     const autoStopRef = useRef(false);
@@ -392,6 +427,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
 
     const [leftTeam, rightTeam] = presentationTeams(gameplay);
     const displayedClock = liveClockSeconds(gameplay, nowMs);
+    const maximumClockSeconds = liveClockCorrectionMaximumSeconds(gameplay);
     const syncFooter = liveSyncFooterPresentation(gameplay, authState);
     const finalSubmission = finalSubmissionPhase(gameplay, authState, finalSubmissionBusy);
     const team = useCallback((side: Side) => gameplay.teams.find((candidate) => candidate.side === side)!, [gameplay]);
@@ -933,6 +969,18 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         await appendIntents(current === gameplay.clockSeconds ? [{ kind: "clock-stop" }] : [{ kind: "clock-set", remainingSeconds: current }, { kind: "clock-stop" }]);
     }, [appendIntent, appendIntents, busy, clockEditing, gameplay]);
 
+    const openClockCorrection = useCallback(() => {
+        if (historyPreview || busy) return;
+        if (gameplay.clockRunning) {
+            setError("Σταματήστε πρώτα το ρολόι.");
+            return;
+        }
+        setError(null);
+        setClockEditError(null);
+        setClockInput(formatLiveClock(displayedClock));
+        setClockEditing(true);
+    }, [busy, displayedClock, gameplay.clockRunning, historyPreview]);
+
     useEffect(() => {
         if (!gameplay.clockRunning || displayedClock > 0 || autoStopRef.current) return;
         autoStopRef.current = true;
@@ -971,6 +1019,24 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     }, [appendAndResolveResumableFlow, appendIntent, closeFlow, finishAssistEarly, finishMissWithoutRebound, finishReboundEarly, finishTurnoverEarly, flow, gameplay.penalty?.activePenaltyIds, gameplay.penalty?.entitlements]);
     useEffect(() => {
         const handler = (event: KeyboardEvent) => {
+            if (clockEditing) {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setClockEditError(null);
+                    setClockEditing(false);
+                }
+                return;
+            }
+            if (finalizationEntry) {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setFinalizationEntryError(null);
+                    setFinalizationEntry(finalizationEntry === "REPORT" ? "CHOICE" : null);
+                }
+                return;
+            }
             const element = event.target as HTMLElement | null;
             const formTarget = Boolean(element?.closest("input,select,textarea,[contenteditable='true']"));
             if (historyEdit) {
@@ -1017,7 +1083,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
                 }
                 return;
             }
-            const command = liveKeyboardCommand(event.key, formTarget, clockEditing);
+            const command = liveKeyboardCommand(event.key, formTarget, false);
             if (!command) return;
             event.preventDefault();
             if (command === "cancel") { setSelectedLogEvent(null); setStatusTeam(null); setClockEditing(false); cancelFlow(); }
@@ -1025,17 +1091,43 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
             else enterAction();
         };
         window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler);
-    }, [cancelFlow, clockEditing, closeHistoricalWorkspace, enterAction, historyDeleteConfirm, historyEdit, historyPreview, localCurrentCorrection, saveHistoricalEdit, subsModal, toggleClock]);
+    }, [cancelFlow, clockEditing, closeHistoricalWorkspace, enterAction, finalizationEntry, historyDeleteConfirm, historyEdit, historyPreview, localCurrentCorrection, saveHistoricalEdit, subsModal, toggleClock]);
+
+    const finalizeCurrentMatch = useCallback(async (reportDraft: string | null) => {
+        if (!bridge || finalizationSubmittingRef.current) return;
+        const validation = validateIncidentReport(reportDraft ?? "");
+        if (validation.error) { setFinalizationEntryError(validation.error); return; }
+        finalizationSubmittingRef.current = true;
+        setFinalizationEntryError(null);
+        try {
+            const periodAlreadyEnded = gameplay.latestEvent?.type === "PERIOD_END";
+            if (!periodAlreadyEnded) {
+                const ended = await appendIntent({ kind: "period-end", period: gameplay.period });
+                if (!ended) { setFinalizationEntryError("Η λήξη της περιόδου δεν αποθηκεύτηκε."); return; }
+            }
+            setBusy(true);
+            try {
+                const result = await bridge.finalizeMatch(gameplay.runId, { incidentReport: validation.incidentReport });
+                const applied = applyResult(result);
+                if (result.ok) {
+                    if (applied) setFinalizationEntry(null);
+                } else {
+                    setFinalizationEntryError(`Η ολοκλήρωση απορρίφθηκε (${result.errorCode}).`);
+                }
+            } finally { setBusy(false); }
+        } catch {
+            setFinalizationEntryError("Η τοπική ολοκλήρωση απέτυχε. Ο αγώνας παραμένει ασφαλής.");
+        } finally { finalizationSubmittingRef.current = false; }
+    }, [appendIntent, applyResult, bridge, gameplay.latestEvent?.type, gameplay.period, gameplay.runId]);
 
     const advancePeriod = useCallback(async () => {
         if (displayedClock !== 0 || gameplay.clockRunning) { setError("Η περίοδος αλλάζει μόνο με σταματημένο ρολόι στο 00:00."); return; }
         const next = nextLivePeriod(gameplay);
-        const question = next ? `Μετάβαση σε ${periodText(next)};` : "Οριστική τοπική ολοκλήρωση του αγώνα;";
-        if (!window.confirm(question)) return;
+        if (!next) { setFinalizationEntryError(null); setFinalizationEntry("CHOICE"); return; }
+        if (!window.confirm(`Μετάβαση σε ${periodText(next)};`)) return;
         const ended = await appendIntent({ kind: "period-end", period: gameplay.period });
         if (!ended || !bridge) return;
-        if (next) await appendIntent({ kind: "period-start", period: next });
-        else { setBusy(true); try { applyResult(await bridge.finalizeMatch(gameplay.runId)); } finally { setBusy(false); } }
+        await appendIntent({ kind: "period-start", period: next });
     }, [appendIntent, applyResult, bridge, displayedClock, gameplay]);
 
     const useArrow = useCallback(async () => { await appendIntent({ kind: "alternating-possession", scorerEventId: crypto.randomUUID(), scorerEventTerminal: { reason: "NATURAL" } }); }, [appendIntent]);
@@ -1507,7 +1599,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
             return <button type="button" key={item.eventId} className={gameLogGroupClass(item.scorerEventGroupOrdinal)} onDoubleClick={() => void openHistoryPreview(item)} title="Διπλό κλικ για προβολή ή επεξεργασία συμβάντος"><time>{formatLiveClock(item.clockSeconds)}</time><strong>{gameplayEventLabel(item, gameplay)}{teamPresentation ? <> · <span className="live-log-team-name" style={teamPresentation.gameColor ? { color: teamPresentation.gameColor } : undefined}>{teamPresentation.teamName}</span></> : null}{resumableFlow && item.eventId === resumableFlow.sourceFoulEventId ? " · Σε εξέλιξη" : ""}</strong><span>{periodText(item.period)}</span></button>;
         })}</div>{historyCursor ? <button className="live-load-older" type="button" onClick={() => void loadHistory(true, historyCursor)}>Παλαιότερα</button> : null}</section>
         <section className="live-control-pane">
-            <header className="live-scoreboard">{renderScoreTeam(leftTeam)}<div className="live-clock-stack"><button type="button" disabled={Boolean(historyPreview)} className={`live-period${gameplay.clockRunning ? " is-running" : ""}`} onClick={() => void advancePeriod()}>{periodText(gameplay.period)}</button><button type="button" disabled={Boolean(historyPreview)} className={`live-clock ${gameplay.clockRunning ? "is-running" : "is-stopped"}`} onClick={() => void toggleClock()} onContextMenu={(event) => { event.preventDefault(); if (!historyPreview) { setClockInput(formatLiveClock(displayedClock)); setClockEditing(true); } }}><span className="live-clock-time">{formatLiveClock(displayedClock)}</span></button><div className="live-possession"><button type="button" disabled={Boolean(historyPreview)} className={gameplay.alternatingPossession === "HOME" ? "is-home" : "is-away"} onClick={() => void useArrow()}>ΚΑΤΟΧΗ · {team(gameplay.alternatingPossession).teamName}</button></div></div>{renderScoreTeam(rightTeam, true)}</header>
+            <header className="live-scoreboard">{renderScoreTeam(leftTeam)}<div className="live-clock-stack"><div className="live-clock-toolbar"><button type="button" disabled={Boolean(historyPreview)} className={`live-period${gameplay.clockRunning ? " is-running" : ""}`} onClick={() => void advancePeriod()}>{periodText(gameplay.period)}</button><button type="button" className="live-clock-correction" disabled={Boolean(historyPreview) || busy} onClick={openClockCorrection}>ΔΙΟΡΘΩΣΗ</button></div><button type="button" disabled={Boolean(historyPreview)} className={`live-clock ${gameplay.clockRunning ? "is-running" : "is-stopped"}`} onClick={() => void toggleClock()} onContextMenu={(event) => { event.preventDefault(); openClockCorrection(); }}><span className="live-clock-time">{formatLiveClock(displayedClock)}</span></button><div className="live-possession"><button type="button" disabled={Boolean(historyPreview)} className={gameplay.alternatingPossession === "HOME" ? "is-home" : "is-away"} onClick={() => void useArrow()}>ΚΑΤΟΧΗ · {team(gameplay.alternatingPossession).teamName}</button></div></div>{renderScoreTeam(rightTeam, true)}</header>
             <div className="live-side-strip"><button type="button" disabled={Boolean(historyPreview)} style={teamColorStyle(leftTeam)}><small>{leftTeam.presentationSide}</small><strong>{leftTeam.side}</strong></button><div className="live-period-score-strip" aria-label="Σκορ ανά περίοδο">{gameplay.periodScores.map((score) => <span key={`${score.period.kind}-${score.period.index}`} className={score.period.kind === gameplay.period.kind && score.period.index === gameplay.period.index ? "is-current" : undefined}><b>{periodScoreLabel(score.period)}:</b><strong>{periodScoreValue(score)}</strong></span>)}</div><button type="button" disabled={Boolean(historyPreview)} style={teamColorStyle(rightTeam)}><small>{rightTeam.presentationSide}</small><strong>{rightTeam.side}</strong></button></div>
             <div className="live-control-body">
                 {renderRail(leftTeam)}
@@ -1523,7 +1615,8 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         {reconnectOpen ? <form className="live-reconnect-panel" onSubmit={(event) => { event.preventDefault(); void reconnect(); }} onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Escape") { event.preventDefault(); setReconnectOpen(false); setReconnectError(null); } }}><header><div><small>ONLINE SYNC</small><strong>Επανασύνδεση scorer</strong></div><button type="button" onClick={() => { setReconnectOpen(false); setReconnectError(null); }}>×</button></header><label>Όνομα χρήστη<input autoFocus autoComplete="username" value={reconnectUsername} onChange={(event) => setReconnectUsername(event.target.value)} /></label><label>Κωδικός<input type="password" autoComplete="current-password" value={reconnectPassword} onChange={(event) => setReconnectPassword(event.target.value)} /></label><p>{gameplay.lifecycle === "finalized" ? "Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά." : "Ο αγώνας παραμένει ενεργός και αποθηκεύεται τοπικά."}</p>{reconnectError ? <div className="live-reconnect-error" role="alert">{reconnectError}</div> : null}<div><button type="button" onClick={() => { setReconnectOpen(false); setReconnectError(null); }}>Ακύρωση</button><button type="submit" disabled={reconnectBusy || !reconnectUsername.trim() || !reconnectPassword}>{reconnectBusy ? "Σύνδεση…" : "ΕΠΑΝΑΣΥΝΔΕΣΗ"}</button></div></form> : null}
         {finalSubmission ? <div className="live-modal-backdrop live-final-submission-backdrop"><section className={`live-final-submission is-${finalSubmission}`} role="dialog" aria-modal="true" aria-live="polite"><small>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</small>{finalSubmission === "sending" ? <><span className="live-final-submission-mark" aria-hidden="true">↥</span><h2>ΑΠΟΣΤΟΛΗ ΑΓΩΝΑ...</h2><p>Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.</p></> : finalSubmission === "success" ? <><span className="live-final-submission-mark" aria-hidden="true">✓</span><h2>Η ΑΠΟΣΤΟΛΗ ΟΛΟΚΛΗΡΩΘΗΚΕ</h2><p>Ο αγώνας συγχρονίστηκε επιτυχώς με τον server.</p></> : finalSubmission === "conflict" ? <><span className="live-final-submission-mark" aria-hidden="true">!</span><h2>ΣΥΓΚΡΟΥΣΗ ΣΥΓΧΡΟΝΙΣΜΟΥ</h2><p>Ο αγώνας παραμένει αποθηκευμένος τοπικά. Δεν θα γίνει αυτόματη αντικατάσταση των απομακρυσμένων δεδομένων.</p></> : <><span className="live-final-submission-mark" aria-hidden="true">!</span><h2>Η ΑΠΟΣΤΟΛΗ ΔΕΝ ΟΛΟΚΛΗΡΩΘΗΚΕ</h2><p>Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.</p>{finalSubmission === "auth-required" ? <p>Απαιτείται επανασύνδεση scorer πριν από τη νέα προσπάθεια.</p> : null}</>}{finalSubmissionError ? <div className="live-final-submission-error" role="alert">{finalSubmissionError}</div> : null}<div className="live-final-submission-actions">{finalSubmission === "failure" ? <button type="button" className="is-primary" disabled={finalSubmissionBusy} onClick={() => void retryFinalizedSync()}>{finalSubmissionBusy ? "ΑΠΟΣΤΟΛΗ..." : "ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ"}</button> : null}{finalSubmission === "auth-required" ? <button type="button" className="is-primary" onClick={openReconnect}>ΕΠΑΝΑΣΥΝΔΕΣΗ</button> : null}<button type="button" onClick={onBack}>ΟΙ ΑΓΩΝΕΣ ΜΟΥ</button></div><span className="live-final-submission-revision">REV {gameplay.eventHistoryRevision} · ACK {gameplay.sync.acknowledgedRevision}</span></section></div> : null}
         {subsModal ? <div className="live-modal-backdrop" role="presentation"><section className="live-subs-modal" role="dialog" aria-modal="true" aria-label="SUBS" onKeyDown={(event) => { if (event.key === "Escape" || event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (event.key === "Escape" && subsModal.mode === "ORDINARY") setSubsModal(null); } }}><header><div><small>SUBS</small><h2>{subsModal.mode === "MANDATORY" ? "ΥΠΟΧΡΕΩΤΙΚΗ ΑΛΛΑΓΗ" : "ΑΛΛΑΓΕΣ"}</h2></div><span>{subsModal.mode === "MANDATORY" ? "Επιλέξτε αντικαταστάτη" : "ESC · ακύρωση"}</span></header><div className="live-subs-modal-grid">{renderSubsTeam("HOME")}<div className="live-subs-modal-actions"><button type="button" className="live-apply" disabled={busy} onClick={() => void commitSubs()}>OK</button>{subsModal.mode === "ORDINARY" ? <button type="button" className="live-subs-cancel" disabled={busy} onClick={() => setSubsModal(null)}>CANCEL</button> : null}{subsModal.error ? <p className="live-subs-error">{subsModal.error}</p> : null}</div>{renderSubsTeam("AWAY")}</div></section></div> : null}
-        {clockEditing ? <div className="live-modal-backdrop"><form className="live-modal" onSubmit={async (event) => { event.preventDefault(); const match = /^(\d{1,2}):(\d{2})$/.exec(clockInput); if (!match || Number(match[2]) > 59) { setError("Χρησιμοποιήστε μορφή ΛΛ:ΔΔ."); return; } const seconds = Number(match[1]) * 60 + Number(match[2]); const next = await appendIntent({ kind: "clock-set", remainingSeconds: seconds }); if (next) setClockEditing(false); }}><h2>Διόρθωση ρολογιού</h2><input autoFocus value={clockInput} onChange={(event) => setClockInput(event.target.value)} aria-label="Χρόνος ΛΛ:ΔΔ" /><div><button type="button" onClick={() => setClockEditing(false)}>Ακύρωση</button><button type="submit">Εφαρμογή</button></div></form></div> : null}
+        {finalizationEntry ? <div className="live-modal-backdrop live-finalization-entry-backdrop" role="presentation"><section className={`live-finalization-entry${finalizationEntry === "REPORT" ? " is-report" : ""}`} role="dialog" aria-modal="true" aria-label={finalizationEntry === "REPORT" ? "ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ" : "ΟΛΟΚΛΗΡΩΣΗ ΑΓΩΝΑ"} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setFinalizationEntryError(null); setFinalizationEntry(finalizationEntry === "REPORT" ? "CHOICE" : null); } }}><small>ΤΕΛΟΣ ΑΓΩΝΑ</small>{finalizationEntry === "CHOICE" ? <><h2>ΟΛΟΚΛΗΡΩΣΗ ΑΓΩΝΑ</h2><p>Επιλέξτε αν ο αγώνας θα ολοκληρωθεί χωρίς ή με αναφορά συμβάντων.</p><div className="live-finalization-entry-actions"><button type="button" className="is-primary" disabled={busy} onClick={() => void finalizeCurrentMatch(null)}>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</button><button type="button" disabled={busy} onClick={() => { setFinalizationEntryError(null); setFinalizationEntry("REPORT"); }}>ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</button></div></> : <><h2>ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</h2><p>Η αναφορά θα συνοδεύει τον οριστικά ολοκληρωμένο αγώνα.</p><textarea autoFocus maxLength={INCIDENT_REPORT_MAX_LENGTH} value={incidentReportDraft} onChange={(event) => { setIncidentReportDraft(event.target.value); setFinalizationEntryError(null); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setFinalizationEntryError(null); setFinalizationEntry("CHOICE"); } else { event.stopPropagation(); } }} aria-label="Κείμενο αναφοράς συμβάντων" /><span className="live-incident-report-count">{incidentReportDraft.length.toLocaleString("el-GR")} / {INCIDENT_REPORT_MAX_LENGTH.toLocaleString("el-GR")}</span><div className="live-finalization-entry-actions"><button type="button" disabled={busy} onClick={() => { setFinalizationEntryError(null); setFinalizationEntry("CHOICE"); }}>ΠΙΣΩ</button><button type="button" className="is-primary" disabled={busy} onClick={() => void finalizeCurrentMatch(incidentReportDraft)}>ΟΡΙΣΤΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</button></div></>}{finalizationEntryError ? <div className="live-finalization-entry-error" role="alert">{finalizationEntryError}</div> : null}</section></div> : null}
+        {clockEditing ? <div className="live-modal-backdrop"><form className="live-modal live-clock-editor" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setClockEditError(null); setClockEditing(false); } }} onSubmit={async (event) => { event.preventDefault(); if (clockEditSubmittingRef.current || busy) return; const validation = validateLiveClockCorrection(clockInput, maximumClockSeconds); if (validation.error) { setClockEditError(validation.error); return; } clockEditSubmittingRef.current = true; setClockEditSubmitting(true); setClockEditError(null); try { const next = await appendIntent({ kind: "clock-set", remainingSeconds: validation.remainingSeconds }); if (next) setClockEditing(false); else setClockEditError("Η διόρθωση ρολογιού απορρίφθηκε."); } finally { clockEditSubmittingRef.current = false; setClockEditSubmitting(false); } }}><h2>Διόρθωση ρολογιού</h2><input autoFocus value={clockInput} onChange={(event) => { setClockInput(event.target.value); setClockEditError(null); }} aria-label="Χρόνος ΛΛ:ΔΔ" />{clockEditError ? <p className="live-clock-edit-error" role="alert">{clockEditError}</p> : null}<div><button type="button" disabled={clockEditSubmitting} onClick={() => { setClockEditError(null); setClockEditing(false); }}>Ακύρωση</button><button type="submit" disabled={clockEditSubmitting}>{clockEditSubmitting ? "ΕΦΑΡΜΟΓΗ..." : "ΕΦΑΡΜΟΓΗ"}</button></div></form></div> : null}
         {statusTeam ? <div className="live-modal-backdrop"><section className="live-status-overlay" style={teamColorStyle(team(statusTeam))}><header><div><small>{statusTeam}</small><h2>{team(statusTeam).teamName}</h2><p>COACH · {team(statusTeam).discipline.headCoachCategory1TechnicalCount}T{team(statusTeam).discipline.headCoachDisqualified ? " · DQ" : ""} &nbsp; BENCH · {team(statusTeam).discipline.benchCategory1TechnicalCount}T{team(statusTeam).discipline.disqualifiedBenchCount ? ` · ${team(statusTeam).discipline.disqualifiedBenchCount} DQ` : ""}</p></div><button type="button" onClick={() => setStatusTeam(null)}>Κλείσιμο</button></header><div className="live-status-table"><div className="is-head"><span>#</span><span>Παίκτης</span><span>Κατάσταση</span><span>PTS</span><span>2PTS</span><span>3PTS</span><span>1PTS</span><span>REB</span><span>AST</span><span>STL</span><span>BLK</span><span>TO</span><span>F</span><span>EFF</span></div>{team(statusTeam).players.map((player) => {
             const statistics = liveStatusPlayerStatistics(player.statistics);
             return <div key={player.playerId}><b>{player.shirtNumber}</b><strong>{player.displayName}</strong><span>{player.onCourt ? "Στο παρκέ" : player.fouls.status === "ELIGIBLE" ? "Πάγκος" : player.fouls.status}</span><span>{statistics.points}</span><span>{statistics.twoPoints}</span><span>{statistics.threePoints}</span><span>{statistics.freeThrows}</span><span>{statistics.rebounds}</span><span>{statistics.assists}</span><span>{statistics.steals}</span><span>{statistics.blocks}</span><span>{statistics.turnovers}</span><span>{player.fouls.total}</span><span>{statistics.efficiency}</span></div>;

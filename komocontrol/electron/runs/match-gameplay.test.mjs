@@ -326,12 +326,30 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         expect(f.localDatabase.readLocalGameplaySyncState(f.run.runId)).toMatchObject({ runId: f.run.runId, lastAcknowledgedHistoryRevision: 0, consecutiveFailures: 0 });
         await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 });
         await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } });
-        const finalized = await f.gameplay.finalize(f.run.runId, owner);
+        const finalized = await f.gameplay.finalize(f.run.runId, owner, { incidentReport: "  Ελληνική αναφορά 🏀\r\nδεύτερη γραμμή  " });
         expect(finalized.lifecycle).toBe("finalized");
         expect(finalized.state.finished).toBe(true);
         expect(f.localDatabase.readLocalGameRun(f.run.runId)).toMatchObject({ status: "finalized", lastAcceptedSequence: 4 });
-        expect(f.localDatabase.readLocalMatchFinalization(f.run.runId)).toMatchObject({ runId: f.run.runId, finalizedHistoryRevision: finalized.eventHistoryRevision });
+        const storedFinalization = f.localDatabase.readLocalMatchFinalization(f.run.runId);
+        expect(storedFinalization).toMatchObject({ runId: f.run.runId, finalizedHistoryRevision: finalized.eventHistoryRevision });
+        const manifest = JSON.parse(storedFinalization.finalizationJson);
+        expect(manifest.incidentReport).toBe("Ελληνική αναφορά 🏀\nδεύτερη γραμμή");
+        expect(storedFinalization.finalizationHash).toBe(sha256JsonBytes(storedFinalization.finalizationJson));
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => JSON.parse(row.eventJson).type)).not.toContain("INCIDENT_REPORT");
+        expect(sha256JsonBytes(deterministicJson(manifest))).toBe(storedFinalization.finalizationHash);
+        expect(sha256JsonBytes(deterministicJson({ ...manifest, incidentReport: "Διαφορετική αναφορά" }))).not.toBe(storedFinalization.finalizationHash);
         expect(f.localDatabase.listPendingGameplaySyncRunIds(owner.organizationId, owner.scorerId)).toEqual([f.run.runId]);
+
+        const rejected = fixture({ tie_allowed: true, winner_required: false, regulation_periods: 1 });
+        await rejected.gameplay.initialize(rejected.run.runId, owner);
+        await rejected.gameplay.append(rejected.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 });
+        await rejected.gameplay.append(rejected.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } });
+        const before = { run: rejected.localDatabase.readLocalGameRun(rejected.run.runId), snapshot: rejected.localDatabase.readLocalMatchEngineSnapshot(rejected.run.runId), events: rejected.localDatabase.readLocalMatchEvents(rejected.run.runId) };
+        await expect(rejected.gameplay.finalize(rejected.run.runId, owner, { incidentReport: "x".repeat(20_001) })).rejects.toThrow(/GAMEPLAY_EVENT_REJECTED/);
+        expect(rejected.localDatabase.readLocalGameRun(rejected.run.runId)).toEqual(before.run);
+        expect(rejected.localDatabase.readLocalMatchEngineSnapshot(rejected.run.runId)).toEqual(before.snapshot);
+        expect(rejected.localDatabase.readLocalMatchEvents(rejected.run.runId)).toEqual(before.events);
+        expect(rejected.localDatabase.readLocalMatchFinalization(rejected.run.runId)).toBeNull();
     });
 
     it("persists LIVE roster amendments as factual events while keeping the initial snapshot immutable", async () => {
