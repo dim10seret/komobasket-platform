@@ -1,0 +1,50 @@
+import { describe, expect, it } from "vitest";
+
+import type { PlatformMatchReportStatisticsLine } from "./platform-match-report";
+import { buildPublicCompetitionStatistics, PUBLIC_LEADER_CATEGORIES, publicLeaderValue, type PublicCompetitionStatisticsSourceGame } from "./public-competition-statistics";
+
+const line = (overrides: Partial<PlatformMatchReportStatisticsLine> = {}): PlatformMatchReportStatisticsLine => ({ points: 0, twoPointMade: 0, twoPointAttempts: 0, threePointMade: 0, threePointAttempts: 0, freeThrowMade: 0, freeThrowAttempts: 0, offensiveRebounds: 0, defensiveRebounds: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0, turnovers: 0, fouls: 0, efficiency: 0, ...overrides });
+const player = (id: string, name: string, statistics: PlatformMatchReportStatisticsLine, shirtNumber = "4") => ({ canonicalPlayerId: id, displayName: name, shirtNumber, statistics });
+const game = (id: string, roundNumber: number, homePlayers: ReturnType<typeof player>[], awayPlayers: ReturnType<typeof player>[] = []): PublicCompetitionStatisticsSourceGame => ({ gameId: id, roundNumber, scheduledDate: `2026-09-0${roundNumber}`, scheduledTime: "18:00", homeTeamId: "home", homeTeamName: "ΛΕΚΑΒΕΞ", awayTeamId: "away", awayTeamName: "JUGOPIASTIKA", homeScore: 14, awayScore: 7, homePlayers, awayPlayers });
+const games = [game("g1", 1, [player("p1", "ΘΕΟΔΟΣΗΣ", line({ points: 10, twoPointMade: 3, twoPointAttempts: 4, threePointMade: 1, threePointAttempts: 2, freeThrowMade: 1, freeThrowAttempts: 2, offensiveRebounds: 1, defensiveRebounds: 4, rebounds: 5, assists: 3, steals: 2, blocks: 1, efficiency: 18 }))], [player("p2", "ΑΠΟΣΤΟΛΟΣ", line({ points: 7, threePointMade: 2, threePointAttempts: 4, rebounds: 2, assists: 1, efficiency: 8 }), "7")]), game("g2", 2, [player("p1", "ΘΕΟΔΟΣΗΣ", line({ points: 8, twoPointMade: 2, twoPointAttempts: 3, threePointMade: 1, threePointAttempts: 3, freeThrowMade: 1, freeThrowAttempts: 1, offensiveRebounds: 2, defensiveRebounds: 3, rebounds: 5, assists: 4, steals: 1, blocks: 0, efficiency: 16 }), "9")], [player("p3", "ΒΑΣΙΛΗΣ", line({ points: 12, threePointMade: 3, threePointAttempts: 5, rebounds: 7, assists: 2, blocks: 2, efficiency: 20 }), "11")])];
+const result = buildPublicCompetitionStatistics({ games, rounds: [{ roundNumber: 1, label: "1η Αγωνιστική", totalRealGames: 2 }, { roundNumber: 2, label: "2η Αγωνιστική", totalRealGames: 1 }] });
+
+describe("public competition statistics", () => {
+  it("counts only supplied authoritative games", () => expect(result.gamesIncluded).toBe(2));
+  it("aggregates a canonical player across games", () => expect(result.rankings.points[0].statistics.points).toBe(18));
+  it("counts player games rather than team roster membership", () => expect(result.rankings.points[0].gamesPlayed).toBe(2));
+  it("keeps changed shirt numbers under one canonical player", () => expect(result.rankings.points.filter((entry) => entry.displayName === "ΘΕΟΔΟΣΗΣ")).toHaveLength(1));
+  it("selects the points leader", () => expect(result.leaders.points?.displayName).toBe("ΘΕΟΔΟΣΗΣ"));
+  it("ranks 3PT by made threes", () => expect(result.leaders.threePointers?.displayName).toBe("ΒΑΣΙΛΗΣ"));
+  it("selects the rebound leader", () => expect(result.leaders.rebounds?.statistics.rebounds).toBe(10));
+  it("selects the assist leader", () => expect(result.leaders.assists?.statistics.assists).toBe(7));
+  it("selects the efficiency leader using recomputed aggregate EFF", () => expect(result.leaders.efficiency?.statistics.efficiency).toBe(33));
+  it("provides every required ranking category", () => expect(Object.keys(result.rankings)).toEqual(PUBLIC_LEADER_CATEGORIES));
+  it("ranks points", () => expect(publicLeaderValue(result.rankings.points[0], "points")).toBe(18));
+  it("ranks 3PT makes", () => expect(publicLeaderValue(result.rankings.threePointers[0], "threePointers")).toBe(3));
+  it("ranks 2PT makes", () => expect(publicLeaderValue(result.rankings.twoPointers[0], "twoPointers")).toBe(5));
+  it("ranks FT makes", () => expect(publicLeaderValue(result.rankings.freeThrows[0], "freeThrows")).toBe(2));
+  it("ranks REB", () => expect(publicLeaderValue(result.rankings.rebounds[0], "rebounds")).toBe(10));
+  it("ranks OREB", () => expect(publicLeaderValue(result.rankings.offensiveRebounds[0], "offensiveRebounds")).toBe(3));
+  it("ranks DREB", () => expect(publicLeaderValue(result.rankings.defensiveRebounds[0], "defensiveRebounds")).toBe(7));
+  it("ranks AST", () => expect(publicLeaderValue(result.rankings.assists[0], "assists")).toBe(7));
+  it("ranks STL", () => expect(publicLeaderValue(result.rankings.steals[0], "steals")).toBe(3));
+  it("ranks BLK", () => expect(publicLeaderValue(result.rankings.blocks[0], "blocks")).toBe(2));
+  it("ranks recomputed aggregate EFF", () => expect(publicLeaderValue(result.rankings.efficiency[0], "efficiency")).toBe(33));
+  it("caps rankings at twenty", () => { const many = Array.from({ length: 25 }, (_, index) => player(`p${index}`, `P${index}`, line({ points: index }))); expect(buildPublicCompetitionStatistics({ games: [game("many", 1, many)], rounds: [] }).rankings.points).toHaveLength(20); });
+  it("uses stable name order after equal value, games, and recomputed EFF", () => { const tied = buildPublicCompetitionStatistics({ games: [game("tie", 1, [player("a", "Α", line({ points: 10, efficiency: 5 }))], [player("b", "Β", line({ points: 10, efficiency: 8 }))])], rounds: [] }); expect(tied.rankings.points.map((entry) => entry.displayName)).toEqual(["Α", "Β"]); });
+  it("keeps same-name canonical identities separate", () => { const same = buildPublicCompetitionStatistics({ games: [game("same", 1, [player("a", "ΙΔΙΟ", line({ points: 2 }))], [player("b", "ΙΔΙΟ", line({ points: 3 }))])], rounds: [] }); expect(same.rankings.points).toHaveLength(2); });
+  it("rejects one canonical player across two teams", () => expect(() => buildPublicCompetitionStatistics({ games: [game("bad", 1, [player("same", "ΠΑΙΚΤΗΣ", line())], [player("same", "ΠΑΙΚΤΗΣ", line())])], rounds: [] })).toThrow("PUBLIC_COMPETITION_PLAYER_DUPLICATE"));
+  it("projects canonical matchdays", () => expect(result.matchdays.map((entry) => entry.label)).toEqual(["1η Αγωνιστική", "2η Αγωνιστική"]));
+  it("selects highest single-game EFF only for a completed matchday", () => expect(result.matchdays[1].topPerformance?.player.displayName).toBe("ΒΑΣΙΛΗΣ"));
+  it("uses pinned shirt number in completed-matchday Top Performance", () => expect(result.matchdays[1].topPerformance?.player.shirtNumber).toBe("11"));
+  it("shows opponent and score for a completed matchday", () => expect(result.matchdays[1].topPerformance).toMatchObject({ teamName: "JUGOPIASTIKA", opponentName: "ΛΕΚΑΒΕΞ", finalScore: { team: 7, opponent: 14 } }));
+  it("uses EFF, PTS, REB, AST and identity for performance ties", () => { const tied = buildPublicCompetitionStatistics({ games: [game("tie", 1, [player("a", "Α", line({ efficiency: 10, points: 5, rebounds: 2, assists: 1 }))], [player("b", "Β", line({ efficiency: 10, points: 6, rebounds: 1, assists: 1 }))])], rounds: [{ roundNumber: 1, label: "1η", totalRealGames: 1 }] }); expect(tied.matchdays[0].topPerformance?.player.displayName).toBe("Β"); });
+  it("hides performance while a scheduled game remains", () => expect(result.matchdays[0]).toMatchObject({ finalizedEligibleGames: 1, totalRealGames: 2, incomplete: true, topPerformance: null }));
+  it("hides performance while a live game remains", () => { const partial = buildPublicCompetitionStatistics({ games: [games[0]], rounds: [{ roundNumber: 1, label: "1η", totalRealGames: 2 }] }); expect(partial.matchdays[0].topPerformance).toBeNull(); });
+  it("hides performance while a non-authoritative game remains", () => { const partial = buildPublicCompetitionStatistics({ games: [games[1]], rounds: [{ roundNumber: 2, label: "2η", totalRealGames: 2 }] }); expect(partial.matchdays[0]).toMatchObject({ incomplete: true, topPerformance: null }); });
+  it("shows performance when every real matchday game is finalized", () => expect(result.matchdays[1]).toMatchObject({ finalizedEligibleGames: 1, totalRealGames: 1, incomplete: false, topPerformance: { player: { displayName: "ΒΑΣΙΛΗΣ" } } }));
+  it("returns no performance for a matchday without eligible games", () => { const empty = buildPublicCompetitionStatistics({ games: [], rounds: [{ roundNumber: 1, label: "1η", totalRealGames: 2 }] }); expect(empty.matchdays[0].topPerformance).toBeNull(); });
+  it("returns neutral no-data state for a zero-game matchday", () => { const empty = buildPublicCompetitionStatistics({ games: [], rounds: [{ roundNumber: 1, label: "1η", totalRealGames: 0 }] }); expect(empty.matchdays[0]).toMatchObject({ incomplete: false, topPerformance: null }); });
+  it("does not expose canonical identities or internal metadata", () => expect(JSON.stringify(result)).not.toMatch(/canonicalPlayerId|runId|historyHash|finalizationHash|incidentReport|scorerId|deviceId/));
+});

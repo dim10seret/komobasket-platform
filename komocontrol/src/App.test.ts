@@ -10,6 +10,12 @@ const state = (syncStatus: KomoControlMyGamesRunSyncStatus, overrides: Partial<K
 });
 
 describe("My Games completion presentation", () => {
+    it("uses the standardized visible creator signature in the KomoControl footer", () => {
+        const source = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+        expect(source).toContain("Created by: D. Seretidis");
+        expect(source).not.toContain("Creator: D. Seretidis");
+    });
+
     it.each([
         [undefined, "upcoming"], [state("active"), "active"], [state("pending"), "pending"], [state("retry-needed"), "retry-needed"],
         [state("conflict"), "conflict"], [state("completed"), "completed"],

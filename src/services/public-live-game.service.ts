@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 import { projectPublicLiveGame, type PublicLiveEventRow, type PublicLiveGame, type PublicLiveSource } from "./public-live-game-core";
@@ -6,9 +7,6 @@ const PUBLIC_ORGANIZATION_ID = "organization_komobasket";
 
 type PublicLiveGameRow = {
   game_id: string;
-  game_status: string | null;
-  home_score: number | null;
-  away_score: number | null;
   home_logo_url: string | null;
   away_logo_url: string | null;
   run_id: string | null;
@@ -17,9 +15,17 @@ type PublicLiveGameRow = {
   last_accepted_sequence: number | null;
   history_hash: string | null;
   head_updated_at: string | null;
+  initial_state_hash: string | null;
+  configuration_revision: number | null;
+  configuration_hash: string | null;
+};
+
+type PublicLiveProjectionRow = {
   initial_state_json: string | null;
   initial_state_hash: string | null;
   configuration_json: string | null;
+  configuration_revision: number | null;
+  configuration_hash: string | null;
 };
 
 type PublicLiveEventDatabaseRow = {
@@ -42,8 +48,35 @@ export class PublicLiveGameServiceError extends Error {
   }
 }
 
-function etag(row: PublicLiveGameRow): string {
-  return `"live-${row.event_history_revision}-${row.history_hash}"`;
+export type PublicLiveValidatorState = {
+  runId: string;
+  lifecycle: "live" | "finalized";
+  eventHistoryRevision: number;
+  lastAcceptedSequence: number;
+  historyHash: string;
+  headUpdatedAt: string;
+  initialStateHash: string;
+  configurationRevision: number | null;
+  configurationHash: string | null;
+  homeLogoUrl: string | null;
+  awayLogoUrl: string | null;
+};
+
+export function publicLiveEtag(state: PublicLiveValidatorState): string {
+  const digest = createHash("sha256").update(JSON.stringify([
+    state.runId,
+    state.lifecycle,
+    state.eventHistoryRevision,
+    state.lastAcceptedSequence,
+    state.historyHash,
+    state.headUpdatedAt,
+    state.initialStateHash,
+    state.configurationRevision,
+    state.configurationHash,
+    state.homeLogoUrl,
+    state.awayLogoUrl,
+  ])).digest("hex");
+  return `"public-live-${digest}"`;
 }
 
 export async function readPublicLiveGameWithDb(
@@ -52,11 +85,10 @@ export async function readPublicLiveGameWithDb(
   options: { ifNoneMatch?: string | null; nowMs?: number } = {},
 ): Promise<PublicLiveGameReadResult> {
   const row = await database.prepare(`
-    SELECT g.id AS game_id, g.status AS game_status, g.home_score, g.away_score,
-           home.logo_url AS home_logo_url, away.logo_url AS away_logo_url,
+    SELECT g.id AS game_id, home.logo_url AS home_logo_url, away.logo_url AS away_logo_url,
            claim.run_id, head.lifecycle, head.event_history_revision, head.last_accepted_sequence,
            head.history_hash, head.updated_at AS head_updated_at,
-           snapshot.initial_state_json, snapshot.initial_state_hash, configuration.configuration_json
+           snapshot.initial_state_hash, configuration.configuration_revision, configuration.configuration_hash
       FROM league_games g
       JOIN league_competitions competition ON competition.id=g.competition_id
       JOIN league_teams home ON home.id=g.home_team_id
@@ -71,9 +103,33 @@ export async function readPublicLiveGameWithDb(
   if (!row) throw new PublicLiveGameServiceError("PUBLIC_LIVE_NOT_FOUND");
   if (row.lifecycle !== "live" && row.lifecycle !== "finalized") return { kind: "not-live", gameId };
   if (!row.run_id || row.event_history_revision === null || row.last_accepted_sequence === null || !row.history_hash
-    || !row.head_updated_at || !row.initial_state_json || !row.initial_state_hash) throw new PublicLiveGameServiceError("PUBLIC_LIVE_CORRUPTED");
-  const currentEtag = etag(row);
+    || !row.head_updated_at || !row.initial_state_hash) throw new PublicLiveGameServiceError("PUBLIC_LIVE_CORRUPTED");
+  const currentEtag = publicLiveEtag({
+    runId: row.run_id,
+    lifecycle: row.lifecycle,
+    eventHistoryRevision: row.event_history_revision,
+    lastAcceptedSequence: row.last_accepted_sequence,
+    historyHash: row.history_hash,
+    headUpdatedAt: row.head_updated_at,
+    initialStateHash: row.initial_state_hash,
+    configurationRevision: row.configuration_revision,
+    configurationHash: row.configuration_hash,
+    homeLogoUrl: row.home_logo_url,
+    awayLogoUrl: row.away_logo_url,
+  });
   if (options.ifNoneMatch === currentEtag) return { kind: "not-modified", etag: currentEtag };
+
+  const projection = await database.prepare(`
+    SELECT snapshot.initial_state_json, snapshot.initial_state_hash,
+           configuration.configuration_json, configuration.configuration_revision, configuration.configuration_hash
+      FROM league_komocontrol_match_engine_snapshots_v1 snapshot
+      LEFT JOIN league_komocontrol_current_game_configurations_v1 configuration ON configuration.run_id=snapshot.run_id
+     WHERE snapshot.run_id=?
+     LIMIT 1
+  `).bind(row.run_id).first<PublicLiveProjectionRow>();
+  if (!projection?.initial_state_json || projection.initial_state_hash !== row.initial_state_hash
+    || projection.configuration_revision !== row.configuration_revision
+    || projection.configuration_hash !== row.configuration_hash) throw new PublicLiveGameServiceError("PUBLIC_LIVE_CORRUPTED");
 
   const eventResult = await database.prepare(`SELECT event_id, sequence, event_schema_version, event_json, event_hash
       FROM league_komocontrol_match_events_v2 WHERE run_id=? ORDER BY sequence, event_id`)
@@ -85,9 +141,9 @@ export async function readPublicLiveGameWithDb(
     lastAcceptedSequence: row.last_accepted_sequence,
     historyHash: row.history_hash,
     updatedAt: row.head_updated_at,
-    initialStateJson: row.initial_state_json,
-    initialStateHash: row.initial_state_hash,
-    currentConfigurationJson: row.configuration_json,
+    initialStateJson: projection.initial_state_json,
+    initialStateHash: projection.initial_state_hash,
+    currentConfigurationJson: projection.configuration_json,
     homeLogoUrl: row.home_logo_url,
     awayLogoUrl: row.away_logo_url,
   };

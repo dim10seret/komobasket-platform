@@ -4,10 +4,12 @@ import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import { resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
 import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame } from "@/lib/series-progression";
 import { calculateStandings, type StandingsTieBreakerKey } from "@/lib/standings-calculator";
+import { buildPublicTeamStatistics, type PublicTeamStatistics } from "@/lib/public-team-statistics";
+import { listPlatformMatchReportAvailabilityWithDb, readAuthoritativeTeamStatisticalGamesWithDb } from "@/services/platform-match-report.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
 export const PUBLIC_KOMOBASKET_ORGANIZATION_ID = "organization_komobasket";
-const CANONICAL_PUBLIC_SEASON_START = "2026-01-01";
+export const CANONICAL_PUBLIC_SEASON_START = "2026-01-01";
 
 export type PublicStandingsPresentation = {
   directQualification: number[];
@@ -46,6 +48,7 @@ export type PublicGame = {
   awayScore: number | null;
   publicStatus: "scheduled" | "live" | "completed";
   liveAvailable: boolean;
+  finalizedStatisticsAvailable: boolean;
   videoUrl: string | null;
   homeTeam: PublicGameTeam;
   awayTeam: PublicGameTeam;
@@ -105,6 +108,7 @@ export type PublicTeamView = {
   team: PublicGameTeam;
   roster: PublicTeamRosterPlayer[];
   games: PublicTeamGame[];
+  statistics: PublicTeamStatistics;
 };
 
 const PUBLIC_TEAM_GAME_STATUSES = ["scheduled", "completed", "postponed", "cancelled"] as const;
@@ -188,6 +192,7 @@ type PublicGameRow = {
   away_team_id: string;
   away_team_name: string;
   away_team_logo_url: string | null;
+  finalized_statistics_available?: boolean;
 };
 
 type PublicTeamRow = { id: string; name: string; logo_url: string | null };
@@ -306,6 +311,7 @@ function normalizePublicGame(row: PublicGameRow, format: PublicPhase["format"], 
     awayScore: row.away_score === null ? null : Number(row.away_score),
     publicStatus,
     liveAvailable: publicStatus === "live",
+    finalizedStatisticsAvailable: publicStatus === "completed" && row.finalized_statistics_available === true,
     videoUrl: row.video_url?.trim() || null,
     homeTeam: {
       id: row.home_team_id,
@@ -522,7 +528,7 @@ export async function getPublicCompetitionContext(input: {
   const selectedPhaseRow = phaseRows.find((row) => row.id === selectedPhase?.id) ?? null;
   if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition, selectedPhase: null };
 
-  const [teamResult, gameResult] = await Promise.all([
+  const [teamResult, gameResult, matchReportAvailability] = await Promise.all([
     db.prepare(`SELECT t.id, COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) AS name, COALESCE(st.logo_url, t.logo_url) AS logo_url
       FROM league_competition_teams ct JOIN league_season_teams st ON st.id=ct.season_team_id JOIN league_teams t ON t.id=st.team_id
       WHERE ct.competition_id=? AND ct.status='active' AND t.organization_id=? ORDER BY COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) COLLATE NOCASE, t.id`)
@@ -552,9 +558,13 @@ export async function getPublicCompetitionContext(input: {
     PUBLIC_KOMOBASKET_ORGANIZATION_ID,
     selectedPhase.format,
   ).all<PublicGameRow>(),
+    listPlatformMatchReportAvailabilityWithDb(db, PUBLIC_KOMOBASKET_ORGANIZATION_ID),
   ]);
   const teams = teamResult.results ?? [];
-  const canonicalGames = gameResult.results ?? [];
+  const canonicalGames = (gameResult.results ?? []).map((game) => ({
+    ...game,
+    finalized_statistics_available: matchReportAvailability[game.id]?.available === true,
+  }));
   const bracket = buildCompetitionBracketProjection(phaseRows, phases, selectedCompetition.id, canonicalGames, teams);
   const games = canonicalGames.filter((game) => game.phase_id === selectedPhase.id)
     .map((row) => normalizePublicGame(row, selectedPhase.format))
@@ -563,7 +573,7 @@ export async function getPublicCompetitionContext(input: {
   const selectedTeam = input.teamId ? teams.find((team) => team.id === input.teamId) ?? null : null;
   let teamView: PublicTeamView | null = null;
   if (selectedTeam) {
-    const rosterResult = await db.prepare(`
+    const [rosterResult, statisticalGames] = await Promise.all([db.prepare(`
       SELECT p.id, p.display_name AS display_name, r.shirt_number AS shirt_number, p.photo_url AS photo_url
         FROM league_roster_memberships r
         JOIN league_players p ON p.id=r.player_id
@@ -576,7 +586,12 @@ export async function getPublicCompetitionContext(input: {
       display_name: string;
       shirt_number: number | null;
       photo_url: string | null;
-    }>();
+    }>(), readAuthoritativeTeamStatisticalGamesWithDb(
+      db,
+      selectedCompetition.id,
+      selectedTeam.id,
+      PUBLIC_KOMOBASKET_ORGANIZATION_ID,
+    )]);
     const publicPhaseById = new Map(phases.map((phase) => [phase.id, phase]));
     const phaseById = new Map<string, { name: string; format: PublicPhase["format"]; order: number }>();
     for (const row of phaseRows) {
@@ -601,10 +616,12 @@ export async function getPublicCompetitionContext(input: {
       const fallback = left.phaseOrder - right.phaseOrder || (left.game.roundNumber ?? Number.MAX_SAFE_INTEGER) - (right.game.roundNumber ?? Number.MAX_SAFE_INTEGER) || left.game.id.localeCompare(right.game.id);
       return left.status === 'completed' ? date(right).localeCompare(date(left)) || -fallback : date(left).localeCompare(date(right)) || fallback;
     });
+    const roster = (rosterResult.results ?? []).map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: player.shirt_number, photoUrl: player.photo_url?.trim() || null }));
     teamView = {
       team: { id: selectedTeam.id, name: selectedTeam.name, logoUrl: selectedTeam.logo_url?.trim() || null },
-      roster: (rosterResult.results ?? []).map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: player.shirt_number, photoUrl: player.photo_url?.trim() || null })),
+      roster,
       games: normalizedTeamGames,
+      statistics: buildPublicTeamStatistics({ team: { id: selectedTeam.id, name: selectedTeam.name }, roster, games: statisticalGames }),
     };
   }
   let standings: PublicStandingRow[] = [];

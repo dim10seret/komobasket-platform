@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { FormEvent } from "react";
+import type { PlatformMatchReportAvailability } from "@/lib/platform-match-report";
 
 export type Row = Record<string, string | number | null>;
 export type Snapshot = {
@@ -25,6 +26,7 @@ export type Snapshot = {
   seriesPlanningSlots: Row[];
   games: Row[];
   competitionVenues: Row[];
+  matchReports?: Record<string, PlatformMatchReportAvailability>;
   counts: { seasons:number; competitions:number; teams:number; players:number };
 };
 

@@ -21,6 +21,7 @@ import {
   classifySeriesBracketEntry,
   resolveSeriesCarryOver,
 } from "@/lib/series-carry-over";
+import type { PlatformMatchReport, PlatformMatchReportAvailability } from "@/lib/platform-match-report";
 
 type PhaseScheduleRow = Row & {
   id: string;
@@ -93,6 +94,21 @@ type SeriesPlanningSlotRow = Row & {
 
 type SchedulingMode = "keep" | "set" | "clear";
 type ScheduleDisplayMode = "round" | "all";
+
+export function matchReportButtonPresentation(availability?: PlatformMatchReportAvailability) {
+  if (!availability?.available) return {
+    disabled: true, label: "MATCH REPORT", title: "Το αναλυτικό Match Report δεν είναι διαθέσιμο.",
+    className: "border-zinc-300 bg-zinc-100 text-zinc-500",
+  };
+  if (availability.hasIncidentReport) return {
+    disabled: false, label: "⚠ MATCH REPORT", title: "Υπάρχει Αναφορά Συμβάντων που απαιτεί προσοχή.",
+    className: "border-red-700 bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-700",
+  };
+  return {
+    disabled: false, label: "MATCH REPORT", title: "Άνοιγμα αναλυτικού Match Report.",
+    className: "border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:outline-emerald-700",
+  };
+}
 
 type ScheduleEditorState = {
   scheduledDateMode: SchedulingMode;
@@ -504,6 +520,13 @@ export function ProgramGamesSection({
   const [editingResultGameId, setEditingResultGameId] = useState("");
   const [resultHomeScore, setResultHomeScore] = useState("");
   const [resultAwayScore, setResultAwayScore] = useState("");
+  const [matchReportGameId, setMatchReportGameId] = useState("");
+  const [matchReportDetail, setMatchReportDetail] = useState<PlatformMatchReport | null>(null);
+  const [matchReportLoading, setMatchReportLoading] = useState(false);
+  const [matchReportError, setMatchReportError] = useState("");
+  const [statisticsPdfLoading, setStatisticsPdfLoading] = useState(false);
+  const [statisticsPdfError, setStatisticsPdfError] = useState("");
+  const [showIncidentReport, setShowIncidentReport] = useState(false);
   const [selectedGameIdsByScheduleId, setSelectedGameIdsByScheduleId] = useState<Record<string, string[]>>({});
   const [scheduleEditorByScheduleId, setScheduleEditorByScheduleId] = useState<Record<string, ScheduleEditorState>>({});
   const [deleteProgramTarget, setDeleteProgramTarget] = useState<{ phaseId: string; phaseName: string } | null>(null);
@@ -647,6 +670,49 @@ export function ProgramGamesSection({
     setEditingResultGameId("");
     setResultHomeScore("");
     setResultAwayScore("");
+  };
+
+  const closeMatchReport = () => {
+    setMatchReportGameId(""); setMatchReportDetail(null); setMatchReportError("");
+    setMatchReportLoading(false); setShowIncidentReport(false); setStatisticsPdfLoading(false); setStatisticsPdfError("");
+  };
+
+  const downloadStatisticsPdf = async () => {
+    if (!matchReportGameId || !matchReportDetail || statisticsPdfLoading) return;
+    setStatisticsPdfLoading(true); setStatisticsPdfError("");
+    try {
+      const response = await fetch(`/api/admin/match-reports/${encodeURIComponent(matchReportGameId)}/statistics`);
+      if (!response.ok) throw new Error("STATISTICS_PDF_UNAVAILABLE");
+      const blob = await response.blob();
+      if (blob.type !== "application/pdf" || blob.size === 0) throw new Error("STATISTICS_PDF_INVALID");
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+      const filename = encodedName ? decodeURIComponent(encodedName) : "komobasket-statistics.pdf";
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = filename; anchor.style.display = "none";
+      document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+    } catch {
+      setStatisticsPdfError("Το PDF στατιστικών δεν δημιουργήθηκε. Δοκιμάστε ξανά.");
+    } finally {
+      setStatisticsPdfLoading(false);
+    }
+  };
+
+  const openMatchReport = async (gameId: string, availability?: PlatformMatchReportAvailability) => {
+    if (!availability?.available) return;
+    setMatchReportGameId(gameId); setMatchReportDetail(null); setMatchReportError("");
+    setMatchReportLoading(true); setShowIncidentReport(false);
+    try {
+      const response = await fetch(`/api/admin/match-reports/${encodeURIComponent(gameId)}`);
+      const payload = await response.json() as { data?: PlatformMatchReport; error?: string };
+      if (!response.ok || !payload.data) throw new Error(payload.error || "MATCH_REPORT_UNAVAILABLE");
+      setMatchReportDetail(payload.data);
+    } catch {
+      setMatchReportError("Το Match Report δεν είναι διαθέσιμο αυτή τη στιγμή.");
+    } finally {
+      setMatchReportLoading(false);
+    }
   };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
@@ -1150,6 +1216,8 @@ export function ProgramGamesSection({
                                             : planningDateValue ? parseDateForDisplay(planningDateValue) : "—";
                                            const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : planningTimeValue || "—";
                                            const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : planningVenueValue || "—";
+                                           const matchReportAvailability = realGame ? data.matchReports?.[String(realGame.id)] : undefined;
+                                           const matchReportPresentation = matchReportButtonPresentation(matchReportAvailability);
                                            if (isQualified) {
                                              return (
                                                <tr key={gameId} className="border-t border-zinc-100 bg-white">
@@ -1176,18 +1244,15 @@ export function ProgramGamesSection({
                                               <td className="px-3 py-3 align-top">
                                                 <button
                                                   type="button"
-                                                  disabled={!isRealGame || !realGame}
-                                                  aria-disabled={!isRealGame || !realGame}
+                                                  disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
+                                                  aria-disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
+                                                  title={matchReportPresentation.title}
                                                   onClick={() => {
-                                                    if (isRealGame && realGame) openResultForm(realGame);
+                                                    if (isRealGame && realGame) void openMatchReport(String(realGame.id), matchReportAvailability);
                                                   }}
-                                                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-black ${
-                                                    isRealGame
-                                                      ? "border-zinc-300 bg-white text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
-                                                      : "border-zinc-300 bg-zinc-100 text-zinc-500"
-                                                  }`}
+                                                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-black transition focus-visible:outline focus-visible:outline-2 ${matchReportPresentation.className}`}
                                                 >
-                                                  {isTransferred ? "Από μεταφορά" : isRealGame ? "MATCH REPORT" : "—"}
+                                                  {isTransferred ? "Από μεταφορά" : isRealGame ? matchReportPresentation.label : "—"}
                                                 </button>
                                               </td>
                                               <td className="px-3 py-3 align-top">
@@ -1280,7 +1345,9 @@ export function ProgramGamesSection({
                                           const isSelected = selectedGameSet.has(gameId);
                                           const date = String(game.scheduled_date ?? "").trim();
                                           const time = String(game.scheduled_time ?? "").trim();
-                                          const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
+                                           const hasScore = String(game.home_score ?? "").trim() || String(game.away_score ?? "").trim();
+                                           const matchReportAvailability = data.matchReports?.[gameId];
+                                           const matchReportPresentation = matchReportButtonPresentation(matchReportAvailability);
                                           return (
                                             <tr key={gameId} className={`border-t border-zinc-100 ${isSelected ? "bg-orange-50" : "bg-white"}`}>
                                               <td className="px-3 py-3 align-top">
@@ -1294,11 +1361,13 @@ export function ProgramGamesSection({
                                               <td className="px-3 py-3 align-top">
                                                 <button
                                                   type="button"
-                                                  disabled
-                                                  aria-disabled="true"
-                                                  className="inline-flex rounded-full border border-zinc-300 bg-zinc-100 px-3 py-1 text-xs font-black text-zinc-500"
+                                                  disabled={matchReportPresentation.disabled}
+                                                  aria-disabled={matchReportPresentation.disabled}
+                                                  title={matchReportPresentation.title}
+                                                  onClick={() => void openMatchReport(gameId, matchReportAvailability)}
+                                                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-black transition focus-visible:outline focus-visible:outline-2 ${matchReportPresentation.className}`}
                                                 >
-                                                  —
+                                                  {matchReportPresentation.label}
                                                 </button>
                                               </td>
                                               <td className="px-3 py-3 align-top">
@@ -1524,6 +1593,43 @@ export function ProgramGamesSection({
                             </div>
                           </div>
                         ) : null}
+
+                      {matchReportGameId && scheduleGames.some((game) => String(game.id) === matchReportGameId) ? (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="match-report-title">
+                          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="min-w-0">
+                                <h2 id="match-report-title" className="text-xl font-black text-zinc-950">MATCH REPORT</h2>
+                                {matchReportDetail ? <>
+                                  <p className="mt-2 break-words text-lg font-black text-zinc-900">{matchReportDetail.game.homeTeam.name} {matchReportDetail.game.finalScore.home} – {matchReportDetail.game.finalScore.away} {matchReportDetail.game.awayTeam.name}</p>
+                                  <p className="mt-1 text-sm text-zinc-600">{matchReportDetail.game.competition}{matchReportDetail.game.round ? ` · ${matchReportDetail.game.round}` : ""}</p>
+                                </> : null}
+                              </div>
+                              <button type="button" onClick={closeMatchReport} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</button>
+                            </div>
+                            {matchReportLoading ? <p className="mt-6 text-sm font-bold text-zinc-600">Φόρτωση Match Report…</p> : null}
+                            {matchReportError ? <p className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">{matchReportError}</p> : null}
+                            {matchReportDetail ? <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                              <button type="button" disabled={statisticsPdfLoading} onClick={() => void downloadStatisticsPdf()} className="min-h-12 rounded-xl border border-sky-700 bg-sky-600 px-4 py-3 font-black text-white transition hover:bg-sky-700 disabled:cursor-wait disabled:opacity-60">{statisticsPdfLoading ? "ΔΗΜΙΟΥΡΓΙΑ PDF…" : "ΣΤΑΤΙΣΤΙΚΑ PDF"}</button>
+                              <button type="button" disabled className="min-h-12 rounded-xl border border-zinc-300 bg-zinc-100 px-4 py-3 font-black text-zinc-500" title="Σύντομα">ΦΥΛΛΟ ΑΓΩΝΑ PDF · Σύντομα</button>
+                              {statisticsPdfError ? <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800 sm:col-span-2">{statisticsPdfError}</p> : null}
+                              {matchReportDetail.availability.hasIncidentReport && matchReportDetail.incidentReport ? <button type="button" onClick={() => setShowIncidentReport(true)} className="min-h-12 rounded-xl border border-red-800 bg-red-600 px-4 py-3 font-black text-white transition hover:bg-red-700 sm:col-span-2">⚠ ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</button> : null}
+                            </div> : null}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {showIncidentReport && matchReportDetail?.incidentReport && scheduleGames.some((game) => String(game.id) === matchReportGameId) ? (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 p-3 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="incident-report-title">
+                          <div className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-red-200 bg-white p-5 shadow-2xl sm:p-6">
+                            <div className="flex items-start justify-between gap-4">
+                              <h2 id="incident-report-title" className="text-xl font-black text-red-800">ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</h2>
+                              <button type="button" onClick={() => setShowIncidentReport(false)} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</button>
+                            </div>
+                            <p className="mt-5 whitespace-pre-wrap break-words rounded-xl border border-red-200 bg-red-50 p-4 text-sm leading-7 text-zinc-900">{matchReportDetail.incidentReport}</p>
+                          </div>
+                        </div>
+                      ) : null}
 
                         {!!selectedGameIds.length ? (
                           <div className="mt-4 rounded-2xl border border-orange-200 bg-white p-4">

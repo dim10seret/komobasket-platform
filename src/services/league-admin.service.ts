@@ -41,6 +41,7 @@ import {
   generateRoundRobinFixturePlan,
 } from "@/services/round-robin-generator";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
+import { listPlatformMatchReportAvailabilityWithDb } from "@/services/platform-match-report.service";
 
 const HISTORICAL_SEASONS = [
   "2019-20",
@@ -2871,7 +2872,7 @@ export async function getLeagueAdminSnapshot(organizationId: string) {
         normalized_name: normalizePlayerName(player.name), active: 1,
       })),
       participations: [], rosters: [], movements: [], phases: [], phaseSchedules: [],
-      seriesPlanningSlots: [], games: [], competitionVenues: [],
+      seriesPlanningSlots: [], games: [], competitionVenues: [], matchReports: {},
       counts: {
         seasons: HISTORICAL_SEASONS.length,
         competitions: HISTORICAL_SEASONS.length,
@@ -2881,7 +2882,7 @@ export async function getLeagueAdminSnapshot(organizationId: string) {
     };
   }
 
-  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, seriesPlanningSlots, games, competitionVenues] = await Promise.all([
+  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, seriesPlanningSlots, games, competitionVenues, matchReports] = await Promise.all([
     rows(db, "SELECT * FROM league_seasons ORDER BY name DESC"),
     rows(db, `SELECT c.*, s.name AS season_name,
       COALESCE(cp.lifecycle_status,
@@ -2977,6 +2978,7 @@ export async function getLeagueAdminSnapshot(organizationId: string) {
       JOIN league_seasons s ON s.id=c.season_id
       WHERE c.organization_id=?
       ORDER BY c.name, COALESCE(v.sort_order, 0), v.name`, [organizationId]),
+    listPlatformMatchReportAvailabilityWithDb(db, organizationId),
   ]);
   const phases = rawPhases.map((phase) => ({
     ...phase,
@@ -2985,7 +2987,7 @@ export async function getLeagueAdminSnapshot(organizationId: string) {
 
   return {
     mode: "database" as const, seasons, competitions, teams, participations, players, rosters,
-    movements, phases, phaseSchedules, seriesPlanningSlots, games, competitionVenues,
+    movements, phases, phaseSchedules, seriesPlanningSlots, games, competitionVenues, matchReports,
     counts: {
       seasons: seasons.length, competitions: competitions.length,
       teams: teams.length, players: players.length,

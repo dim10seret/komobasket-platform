@@ -1,0 +1,43 @@
+import { describe, expect, it } from "vitest";
+import type { PlatformMatchReportStatisticsLine } from "./platform-match-report";
+import { buildPublicTeamStatistics, type PublicTeamStatisticsSourceGame } from "./public-team-statistics";
+
+const line = (points: number, overrides: Partial<PlatformMatchReportStatisticsLine> = {}): PlatformMatchReportStatisticsLine => ({ points, twoPointMade: 1, twoPointAttempts: 2, threePointMade: 1, threePointAttempts: 3, freeThrowMade: 1, freeThrowAttempts: 2, offensiveRebounds: 1, defensiveRebounds: 2, rebounds: 3, assists: 1, steals: 1, blocks: 1, turnovers: 1, fouls: 2, efficiency: points + 1, ...overrides });
+const games: PublicTeamStatisticsSourceGame[] = [{ gameId: "g2", scheduledDate: "2026-09-02", scheduledTime: "20:00", homeTeamId: "opponent-2", homeTeamName: "NETMEN", awayTeamId: "team", awayTeamName: "ΛΕΚΑΒΕΞ", homeScore: 12, awayScore: 14, homePlayers: [], awayPlayers: [{ canonicalPlayerId: "p1", displayName: "ΘΕΟΔΟΣΗΣ ΤΑΒΛΑΡΙΔΗΣ", shirtNumber: "9", statistics: line(8) }, { canonicalPlayerId: "p3", displayName: "ΙΔΙΟ ΟΝΟΜΑ", shirtNumber: "12", statistics: line(3) }] }, { gameId: "g1", scheduledDate: "2026-08-25", scheduledTime: "18:00", homeTeamId: "team", homeTeamName: "ΛΕΚΑΒΕΞ", awayTeamId: "opponent-1", awayTeamName: "JUGOPIASTIKA", homeScore: 14, awayScore: 7, homePlayers: [{ canonicalPlayerId: "p1", displayName: "ΘΕΟΔΟΣΗΣ ΤΑΒΛΑΡΙΔΗΣ", shirtNumber: "4", statistics: line(6) }, { canonicalPlayerId: "p2", displayName: "ΙΔΙΟ ΟΝΟΜΑ", shirtNumber: "7", statistics: line(4, { offensiveRebounds: 2, defensiveRebounds: 4, rebounds: 6 }) }], awayPlayers: [] }];
+const result = buildPublicTeamStatistics({ team: { id: "team", name: "ΛΕΚΑΒΕΞ" }, roster: [{ id: "p1", displayName: "ΘΕΟΔΟΣΗΣ ΤΑΒΛΑΡΙΔΗΣ", shirtNumber: 10 }, { id: "p2", displayName: "ΙΔΙΟ ΟΝΟΜΑ", shirtNumber: 7 }, { id: "p4", displayName: "ΝΕΟΣ ΠΑΙΚΤΗΣ", shirtNumber: null }], games });
+const p1 = result.total.players.find((player) => player.canonicalPlayerId === "p1")!;
+const p2 = result.total.players.find((player) => player.canonicalPlayerId === "p2")!;
+
+describe("public team statistics aggregation", () => {
+  it("counts only supplied authoritative games", () => expect(result.total.teamGamesPlayed).toBe(2));
+  it("orders games chronologically", () => expect(result.games.map((game) => game.gameId)).toEqual(["g1", "g2"]));
+  it("builds team-perspective option labels", () => expect(result.games.map((game) => game.label)).toEqual(["25/08/2026 · vs JUGOPIASTIKA · 14-7", "02/09/2026 · vs NETMEN · 14-12"]));
+  it("keeps full matchup context", () => expect(result.games[1].matchupLabel).toBe("NETMEN 12-14 ΛΕΚΑΒΕΞ"));
+  it("counts player games from Run roster membership", () => expect(p1.gamesPlayed).toBe(2));
+  it("allows player games to be less than team games", () => expect(p2.gamesPlayed).toBe(1));
+  it("does not count current roster membership as participation", () => expect(result.total.players.find((player) => player.canonicalPlayerId === "p4")?.gamesPlayed).toBe(0));
+  it("aggregates by canonical player identity", () => expect(result.total.players.filter((player) => player.canonicalPlayerId === "p1")).toHaveLength(1));
+  it("does not split a player after a shirt-number change", () => expect(p1.statistics.points).toBe(14));
+  it("prefers current competition roster number in TOTAL", () => expect(p1.shirtNumber).toBe("10"));
+  it("keeps pinned shirt numbers in specific games", () => expect(result.games.map((game) => game.players.find((player) => player.canonicalPlayerId === "p1")?.shirtNumber)).toEqual(["4", "9"]));
+  it("keeps equal display names with different IDs separate", () => expect(result.total.players.filter((player) => player.displayName === "ΙΔΙΟ ΟΝΟΜΑ")).toHaveLength(2));
+  it("retains historical players absent from current roster", () => expect(result.total.players.some((player) => player.canonicalPlayerId === "p3")).toBe(true));
+  it("aggregates PTS", () => expect(p1.statistics.points).toBe(14));
+  it("aggregates 2PT made and attempts", () => expect(p1.statistics).toMatchObject({ twoPointMade: 2, twoPointAttempts: 4 }));
+  it("aggregates 3PT made and attempts", () => expect(p1.statistics).toMatchObject({ threePointMade: 2, threePointAttempts: 6 }));
+  it("aggregates FT made and attempts", () => expect(p1.statistics).toMatchObject({ freeThrowMade: 2, freeThrowAttempts: 4 }));
+  it("aggregates OREB", () => expect(p1.statistics.offensiveRebounds).toBe(2));
+  it("aggregates DREB", () => expect(p1.statistics.defensiveRebounds).toBe(4));
+  it("recomputes REB from OREB and DREB", () => expect(p1.statistics.rebounds).toBe(6));
+  it("aggregates AST", () => expect(p1.statistics.assists).toBe(2));
+  it("aggregates STL", () => expect(p1.statistics.steals).toBe(2));
+  it("aggregates BLK", () => expect(p1.statistics.blocks).toBe(2));
+  it("aggregates TO", () => expect(p1.statistics.turnovers).toBe(2));
+  it("aggregates F", () => expect(p1.statistics.fouls).toBe(4));
+  it("recomputes EFF with the existing semantic", () => expect(p1.statistics.efficiency).toBe(16));
+  it("uses only the selected Run roster in a specific game", () => expect(result.games[0].players.map((player) => player.canonicalPlayerId)).toEqual(["p1", "p2"]));
+  it("marks specific-game roster membership as one game", () => expect(result.games[0].players.every((player) => player.gamesPlayed === 1)).toBe(true));
+  it("keeps zero-game roster players with zero counters", () => expect(result.total.players.find((player) => player.canonicalPlayerId === "p4")?.statistics.points).toBe(0));
+  it("returns zero team games for an empty authoritative set", () => expect(buildPublicTeamStatistics({ team: { id: "team", name: "ΛΕΚΑΒΕΞ" }, roster: [], games: [] }).total.teamGamesPlayed).toBe(0));
+  it("does not expose scorer, device, hash, or sync metadata", () => expect(JSON.stringify(result)).not.toMatch(/scorerId|deviceId|historyHash|finalizationHash|sync/i));
+});

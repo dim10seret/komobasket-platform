@@ -13,7 +13,7 @@ export function interpolatedPublicClock(clock: PublicLiveGame["clock"], nowMs: n
 }
 
 export function publicLivePollDelay(hidden: boolean): number {
-  return hidden ? 10_000 : 2_000;
+  return hidden ? 10_000 : 24_000;
 }
 
 export function mergePolledPublicGame(current: PublicLiveGame, incoming: PublicLiveGame): PublicLiveGame {

@@ -34,11 +34,15 @@ describe("public LIVE presentation", () => {
     expect(componentSource).toContain("Math.max(0");
   });
 
-  it("polls every two seconds while LIVE and visible", () => {
-    expect(publicLivePollDelay(false)).toBe(2_000);
+  it("polls every 24 seconds while LIVE and visible", () => {
+    expect(publicLivePollDelay(false)).toBe(24_000);
   });
 
-  it("slows polling while the tab is hidden", () => {
+  it("does not retain two-second recurring polling", () => {
+    expect(componentSource).not.toContain("2_000");
+  });
+
+  it("preserves the existing hidden-tab polling delay", () => {
     expect(publicLivePollDelay(true)).toBe(10_000);
   });
 

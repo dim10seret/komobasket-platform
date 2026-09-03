@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 function FacebookIcon() {
   return (
@@ -33,14 +34,10 @@ function YouTubeIcon() {
 const navigation = [
   { href: "/", label: "Αρχική" },
   { href: "/competitions", label: "Διοργανώσεις" },
-  { href: "/schedule", label: "Πρόγραμμα" },
-  { href: "/results", label: "Αποτελέσματα" },
-  { href: "/standings", label: "Βαθμολογία" },
-  { href: "/teams", label: "Ομάδες" },
+  { href: "/stats", label: "Στατιστικά & MVP" },
   { href: "/news", label: "Νέα" },
-  { href: "/videos", label: "Βίντεο" },
-  { href: "/gallery", label: "Gallery" },
   { href: "/supporters", label: "Υποστηρικτές" },
+  { href: "/history", label: "Ιστορικό" },
   { href: "/contact", label: "Επικοινωνία" },
 ];
 
@@ -64,6 +61,8 @@ const socialLinks = [
 
 export default function Header() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const pathname = usePathname();
+  const isActive = (href: string) => href === "/" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
 
   return (
     <header className="sticky top-0 z-50 shadow-lg">
@@ -114,7 +113,7 @@ export default function Header() {
       <nav className="hidden bg-zinc-900 text-white lg:block" aria-label="Κύρια πλοήγηση">
         <div className="mx-auto flex max-w-7xl items-center justify-center gap-4 px-6 py-4 text-sm font-semibold xl:gap-6 xl:text-base">
           {navigation.map((item) => (
-            <Link key={item.href} href={item.href} className="whitespace-nowrap transition hover:text-orange-500">
+            <Link key={item.href} href={item.href} aria-current={isActive(item.href) ? "page" : undefined} className={`whitespace-nowrap border-b-2 py-1 transition hover:text-orange-500 ${isActive(item.href) ? "border-orange-500 text-orange-400" : "border-transparent"}`}>
               {item.label}
             </Link>
           ))}
@@ -144,7 +143,8 @@ export default function Header() {
               <Link
                 key={item.href}
                 href={item.href}
-                className="rounded-lg px-4 py-3 font-semibold transition hover:bg-zinc-800 hover:text-orange-500"
+                aria-current={isActive(item.href) ? "page" : undefined}
+                className={`rounded-lg border-l-4 px-4 py-3 font-semibold transition hover:bg-zinc-800 hover:text-orange-500 ${isActive(item.href) ? "border-orange-500 bg-zinc-800 text-orange-400" : "border-transparent"}`}
                 onClick={() => setIsMenuOpen(false)}
               >
                 {item.label}
