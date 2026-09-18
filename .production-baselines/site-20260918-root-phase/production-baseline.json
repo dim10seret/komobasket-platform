@@ -10,7 +10,7 @@
   "d1_migrations_pending": 0,
   "d1_quick_check": "ok",
   "d1_fk_violations": 0,
-  "git_commit": null,
+  "git_commit": "331ca68ecb4686808cb231ad7f560d544985af02",
   "git_tag": "production-site-20260918-root-phase",
   "site_source_manifest": "site-source-sha256.txt",
   "site_source_file_count": 413,
