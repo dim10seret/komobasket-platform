@@ -25,7 +25,7 @@ const ALLOWED_TYPES = new Map([
 
 export async function POST(request: Request) {
   try {
-    const authorization = requireAdmin(request);
+    const authorization = await requireAdmin(request);
     if (authorization.response) return authorization.response;
     const user = await resolveCanonicalAppUser(authorization.identity);
     await requirePlatformSuperAdmin(user);

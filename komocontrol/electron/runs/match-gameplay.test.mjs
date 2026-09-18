@@ -11,26 +11,28 @@ import { PreGameConfigurationManager } from "../../dist-electron/runs/pre-game-c
 import { MatchGameplayManager } from "../../dist-electron/runs/match-gameplay.cjs";
 import { deterministicJson, sha256JsonBytes } from "../../dist-electron/runs/match-engine-bootstrap.cjs";
 import { LiveRunAuthorizationManager } from "../../dist-electron/auth/live-run-authorization.cjs";
+import { activeGameLineupDecision } from "../../src/components/LiveControl.tsx";
 
 const owner = { scorerId: "scorer-gameplay-fixture", organizationId: "organization-gameplay-fixture" };
 const deviceId = "33333333-3333-4333-8333-333333333333";
 const roots = [];
 const databases = [];
 
-function payload(overrides = {}) {
+function payload(overrides = {}, playerCount = 3) {
+    const extraPlayers = (side) => Array.from({ length: Math.max(0, playerCount - 3) }, (_, index) => ({ id: `${side}-${index + 4}`, displayName: `${side} ${index + 4}`, shirtNumber: index + 8, photoUrl: null }));
     return {
         schemaVersion: 1,
         game: { id: "game-gameplay", organizationId: owner.organizationId, competitionId: "competition-1", competitionName: "Gameplay Competition", seasonName: "2026-27", phaseName: "League", roundLabel: "Round 1", scheduledDate: "2026-08-26", scheduledTime: "19:00", scheduledAt: "2026-08-26T16:00:00.000Z", venue: null },
         settings: { game_mode: "FULL", min_players: 2, max_players: 12, starting_players: 2, regulation_periods: 4, regulation_period_seconds: 600, overtime_seconds: 300, tie_allowed: false, winner_required: true, ...overrides },
         teams: [
-            { side: "AWAY", id: "away-team", name: "Away Team", logoUrl: null, players: [{ id: "away-1", displayName: "Away One", shirtNumber: 0, photoUrl: null }, { id: "away-2", displayName: "Away Two", shirtNumber: null, photoUrl: null }, { id: "away-3", displayName: "Away Three", shirtNumber: 7, photoUrl: null }], staff: [] },
-            { side: "HOME", id: "home-team", name: "Home Team", logoUrl: null, players: [{ id: "home-1", displayName: "Home One", shirtNumber: 0, photoUrl: null }, { id: "home-2", displayName: "Home Two", shirtNumber: null, photoUrl: null }, { id: "home-3", displayName: "Home Three", shirtNumber: 7, photoUrl: null }], staff: [] },
+            { side: "AWAY", id: "away-team", name: "Away Team", logoUrl: null, players: [{ id: "away-1", displayName: "Away One", shirtNumber: 0, photoUrl: null }, { id: "away-2", displayName: "Away Two", shirtNumber: null, photoUrl: null }, { id: "away-3", displayName: "Away Three", shirtNumber: 7, photoUrl: null }, ...extraPlayers("away")], staff: [] },
+            { side: "HOME", id: "home-team", name: "Home Team", logoUrl: null, players: [{ id: "home-1", displayName: "Home One", shirtNumber: 0, photoUrl: null }, { id: "home-2", displayName: "Home Two", shirtNumber: null, photoUrl: null }, { id: "home-3", displayName: "Home Three", shirtNumber: 7, photoUrl: null }, ...extraPlayers("home")], staff: [] },
         ],
     };
 }
 
-function packageInput(settings = {}) {
-    const payloadJson = JSON.stringify(payload(settings));
+function packageInput(settings = {}, playerCount = 3) {
+    const payloadJson = JSON.stringify(payload(settings, playerCount));
     return { packageId: "package-gameplay-v2", gameId: "game-gameplay", packageVersion: 2, packageSchemaVersion: 1, payloadJson, payloadHash: createHash("sha256").update(Buffer.from(payloadJson, "utf8")).digest("hex"), publishedAtUtc: "2026-08-26T10:00:00.000Z" };
 }
 
@@ -39,28 +41,28 @@ function copyMigrations(target, maximum = "0008") {
     for (const name of fs.readdirSync(path.resolve("electron/migrations")).filter((name) => name.endsWith(".sql") && name.slice(0, 4) <= maximum).sort()) fs.copyFileSync(path.resolve("electron/migrations", name), path.join(target, name));
 }
 
-function configurationDraft(configuration) {
+function configurationDraft(configuration, starterCount = 2) {
     return {
         gameId: configuration.gameId,
         expectedRevision: configuration.revision,
         teams: configuration.teams.map((team) => ({
             side: team.side,
             players: team.players.map((player) => {
-                const participating = player.playerId.endsWith("-1") || player.playerId.endsWith("-2");
+                const participating = Number(player.playerId.split("-").at(-1)) <= starterCount;
                 const gameShirtNumber = player.playerId.endsWith("-1") ? "0" : player.playerId.endsWith("-2") ? (team.side === "HOME" ? "00" : "2") : player.gameShirtNumber;
                 return { playerId: player.playerId, participating, gameShirtNumber };
             }),
             staff: team.staff.map((member) => ({ staffId: member.staffId, participating: false })),
             extraBench: [],
             captainPlayerId: `${team.side.toLowerCase()}-1`,
-            starterPlayerIds: [`${team.side.toLowerCase()}-1`, `${team.side.toLowerCase()}-2`],
+            starterPlayerIds: Array.from({ length: starterCount }, (_, index) => `${team.side.toLowerCase()}-${index + 1}`),
             gameColor: team.side === "HOME" ? "#D62828" : "#168B4B",
         })),
         presentation: { leftSide: "AWAY" },
     };
 }
 
-function fixture(settings = {}) {
+function fixture(settings = {}, playerCount = 3) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "komocontrol-gameplay-")); roots.push(root);
     const migrationsDirectory = path.join(root, "migrations"); copyMigrations(migrationsDirectory);
     const localDatabase = new LocalDatabase({ databasePath: path.join(root, "komocontrol.sqlite"), migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(localDatabase);
@@ -70,18 +72,18 @@ function fixture(settings = {}) {
         localDatabase.close();
         const raw = new DatabaseSync(localDatabase.databasePath); raw.prepare("UPDATE device_identity SET device_id = ? WHERE singleton_key = 1").run(deviceId); raw.close();
         const reopened = new LocalDatabase({ databasePath: localDatabase.databasePath, migrationsDirectory, backupDirectory: path.join(root, "backups") }); databases.push(reopened); reopened.initialize();
-        return populatedFixture(root, migrationsDirectory, reopened, settings);
+        return populatedFixture(root, migrationsDirectory, reopened, settings, playerCount);
     }
-    return populatedFixture(root, migrationsDirectory, localDatabase, settings);
+    return populatedFixture(root, migrationsDirectory, localDatabase, settings, playerCount);
 }
 
-function populatedFixture(root, migrationsDirectory, localDatabase, settings) {
-    localDatabase.storeVerifiedGamePackage(packageInput(settings));
+function populatedFixture(root, migrationsDirectory, localDatabase, settings, playerCount = 3) {
+    localDatabase.storeVerifiedGamePackage(packageInput(settings, playerCount));
     const setup = new MatchSetupManager(localDatabase);
     const run = new MatchRunManager(setup, localDatabase, deviceId).createOrOpen("game-gameplay", owner).run;
     const configurations = new PreGameConfigurationManager(setup, localDatabase, deviceId);
     const initial = configurations.getOrCreate("game-gameplay", owner).configuration;
-    const configuration = configurations.saveDraft(configurationDraft(initial), owner);
+    const configuration = configurations.saveDraft(configurationDraft(initial, settings.starting_players ?? 2), owner);
     let time = Date.parse("2026-08-26T12:00:00.000Z"); let id = 0; const now = () => new Date(time += 1_000);
     const liveAuthorization = new LiveRunAuthorizationManager(localDatabase, { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value, "utf8"), decryptString: (value) => value.toString("utf8") }, deviceId, now);
     const gameplay = new MatchGameplayManager(setup, localDatabase, deviceId, now, () => `gameplay-event-${++id}`, (input) => liveAuthorization.seal(input));
@@ -120,6 +122,98 @@ afterEach(() => {
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
+describe("SIMPLE mode discipline and reduced-lineup certification", () => {
+    const cases = [
+        ["C", ["COACH"], 1, 0, false],
+        ["C+C", ["COACH", "COACH"], 2, 0, true],
+        ["B", ["BENCH"], 0, 1, false],
+        ["B+B", ["BENCH", "BENCH"], 0, 2, false],
+        ["C+B", ["COACH", "BENCH"], 1, 1, false],
+        ["B+C", ["BENCH", "COACH"], 1, 1, false],
+        ["C+B+B", ["COACH", "BENCH", "BENCH"], 1, 2, true],
+        ["B+C+B", ["BENCH", "COACH", "BENCH"], 1, 2, true],
+        ["B+B+C", ["BENCH", "BENCH", "COACH"], 1, 2, true],
+        ["B+B+B", ["BENCH", "BENCH", "BENCH"], 0, 3, true],
+    ];
+
+    it.each(cases)("persists and recovers SIMPLE staff technical sequence %s", async (_label, sources, expectedCoach, expectedBench, expectedDisqualified) => {
+        const f = fixture({ game_mode: "SIMPLE" });
+        const started = await f.gameplay.initialize(f.run.runId, owner);
+        expect(started.setup.settings.gameMode).toBe("SIMPLE");
+        let live = started;
+        for (const [index, technicalStaffSource] of sources.entries()) {
+            const offender = technicalStaffSource === "COACH"
+                ? { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" }
+                : { kind: "BENCH", personId: "bench:HOME", role: "ACCOMPANYING_DELEGATION" };
+            const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: `simple-staff-${index}`, offender, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: `simple-staff-${index}`, scorerEventContext: { technicalStaffSource } });
+            live = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foul.eventIds.at(-1)}` });
+        }
+        const expectedDiscipline = { headCoachCategory1TechnicalCount: expectedCoach, benchCategory1TechnicalCount: expectedBench, headCoachDisqualified: expectedDisqualified };
+        expect(live.state.home.discipline).toMatchObject(expectedDiscipline);
+        const persisted = f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => JSON.parse(row.eventJson)).filter((event) => event.type === "TECHNICAL_FOUL");
+        expect(persisted).toHaveLength(sources.length);
+        for (const [index, source] of sources.entries()) {
+            expect(persisted[index]).toMatchObject({ offender: source === "COACH" ? { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" } : { kind: "BENCH", personId: "bench:HOME", role: "ACCOMPANYING_DELEGATION" }, scorerEventContext: { technicalStaffSource: source } });
+        }
+        const replayed = await f.gameplay.recover(f.run.runId, owner);
+        const recovered = await new MatchGameplayManager(f.setup, f.localDatabase, deviceId).recover(f.run.runId, owner);
+        expect(replayed.setup.settings.gameMode).toBe("SIMPLE");
+        expect(recovered.setup.settings.gameMode).toBe("SIMPLE");
+        expect(replayed.state).toEqual(live.state);
+        expect(recovered.state).toEqual(live.state);
+        expect(recovered.state.home.discipline).toMatchObject(expectedDiscipline);
+    });
+
+    it("continues SIMPLE bench technical attribution after direct coach disqualification", async () => {
+        const f = fixture({ game_mode: "SIMPLE" });
+        const started = await f.gameplay.initialize(f.run.runId, owner);
+        expect(started.setup.settings.gameMode).toBe("SIMPLE");
+        for (const index of [0, 1]) {
+            const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: `simple-coach-${index}`, offender: { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventContext: { technicalStaffSource: "COACH" } });
+            await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foul.eventIds.at(-1)}` });
+        }
+        expect((await f.gameplay.recover(f.run.runId, owner)).state.home.discipline.headCoachDisqualified).toBe(true);
+        const bench = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: "HOME", stoppageId: "simple-bench-after-coach-dq", offender: { kind: "BENCH", personId: "bench:HOME", role: "ACCOMPANYING_DELEGATION" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventContext: { technicalStaffSource: "BENCH" } });
+        expect(bench.state.home.discipline).toMatchObject({ headCoachCategory1TechnicalCount: 2, benchCategory1TechnicalCount: 1, headCoachDisqualified: true });
+    });
+
+    it("replays and recovers SIMPLE 5-to-4-to-3-to-2 foul-outs without substitutes, then blocks normal play at one", async () => {
+        const f = fixture({ game_mode: "SIMPLE", min_players: 5, starting_players: 5 }, 5);
+        const started = await f.gameplay.initialize(f.run.runId, owner);
+        expect(started.setup.settings.gameMode).toBe("SIMPLE");
+        expect(started.state.rules.startingPlayers).toBe(5);
+        const decision = (state) => activeGameLineupDecision(state.home.players.map((player) => ({ playerId: player.playerId, onCourt: player.onCourt, fouls: { status: player.foulState.status } })), 5);
+        expect(decision(started.state)).toMatchObject({ projectedOnCourtCount: 5, normalGameplayAllowed: true });
+        let live = started;
+        for (const excludedPlayer of [1, 2, 3, 4]) {
+            for (let foulNumber = 1; foulNumber <= 5; foulNumber++) {
+                const foul = await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "HOME", stoppageId: `simple-foul-${excludedPlayer}-${foulNumber}`, offender: { kind: "PLAYER", playerId: `home-${excludedPlayer}` }, context: { kind: "NON_SHOOTING", teamControlFoul: false }, fouledPlayerId: "away-1" });
+                live = foul;
+                const penalty = foul.state.penaltyResolution?.freeThrowQueue[0];
+                if (penalty) live = await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: penalty.penaltyId });
+            }
+            const expectedActive = 5 - excludedPlayer;
+            const current = decision(live.state);
+            expect(current.eligibleSubstituteIds).toEqual([]);
+            expect(current.mandatoryReplacementIds).toEqual([]);
+            expect(current.projectedOnCourtCount).toBe(expectedActive);
+            expect(current.normalGameplayAllowed).toBe(expectedActive >= 2);
+            expect(new Set(live.state.home.players.map((player) => player.playerId)).size).toBe(5);
+            expect(live.state.home.players.find((player) => player.playerId === `home-${excludedPlayer}`).foulState.status).toBe("EXCLUDED");
+            if (excludedPlayer === 3) {
+                const replayed = await f.gameplay.recover(f.run.runId, owner);
+                const recovered = await new MatchGameplayManager(f.setup, f.localDatabase, deviceId).recover(f.run.runId, owner);
+                expect(replayed.setup.settings.gameMode).toBe("SIMPLE");
+                expect(recovered.setup.settings.gameMode).toBe("SIMPLE");
+                expect(replayed.state).toEqual(live.state);
+                expect(recovered.state).toEqual(live.state);
+                expect(decision(recovered.state)).toEqual(current);
+            }
+        }
+        expect(decision(live.state)).toMatchObject({ projectedOnCourtCount: 1, normalGameplayAllowed: false });
+    });
+});
+
 describe("KC-5B10A durable local Match gameplay foundation", () => {
     it("migrates 0004 to 0005 while preserving device, Package, Run, and configuration", () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "komocontrol-gameplay-migration-")); roots.push(root);
@@ -143,6 +237,68 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         expect(state.home.id).toBe("home-team"); expect(state.away.id).toBe("away-team"); expect(state.home.players.map((player) => [player.playerId, player.displayName, player.shirtNumber, player.onCourt])).toEqual([["home-1", "Home One", "0", true], ["home-2", "Home Two", "00", true]]); expect(state.away.players.map((player) => player.playerId)).toEqual(["away-1", "away-2"]);
         expect(state.rules).toMatchObject({ schemaVersion: 1, rulesEdition: "FIBA_2026", minPlayers: 2, maxPlayers: 12, startingPlayers: 2, regulationPeriods: 4, regulationPeriodSeconds: 600, overtimeSeconds: 300, resultPolicy: "REQUIRE_WINNER" });
         const snapshot = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId); expect(snapshot.initialStateJson).not.toContain("captainPlayerId"); expect(snapshot.initialStateJson).not.toContain("gameColor"); expect(snapshot.initialStateJson).not.toContain("leftSide");
+    });
+
+    it("persists ACTIVE Run officials without gameplay events or Package writeback and recovers them after restart", async () => {
+        const f = fixture();
+        const packageBefore = f.localDatabase.readGamePackage("package-gameplay-v2");
+        await f.gameplay.initialize(f.run.runId, owner);
+        const live = f.configurations.getOrCreate("game-gameplay", owner).configuration;
+        const eventsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        const sequenceBefore = f.localDatabase.readLocalGameRun(f.run.runId).lastAcceptedSequence;
+        const officials = { referees: { a: "Person B", b: null, c: null }, table: { timer: null, shotClock: "Manual Person X", scoresheet: null, commissioner: null } };
+        const saved = f.configurations.saveDraft({ ...configurationDraft(live), expectedRevision: live.revision, officials }, owner);
+
+        expect(saved).toMatchObject({ lifecycle: "live", officials });
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(eventsBefore);
+        expect(f.localDatabase.readLocalGameRun(f.run.runId).lastAcceptedSequence).toBe(sequenceBefore);
+        expect(f.localDatabase.readGamePackage("package-gameplay-v2")).toEqual(packageBefore);
+
+        f.localDatabase.close();
+        const reopened = new LocalDatabase({ databasePath: f.localDatabase.databasePath, migrationsDirectory: f.migrationsDirectory, backupDirectory: path.join(f.root, "backups") });
+        databases.push(reopened);
+        reopened.initialize();
+        const recovered = new PreGameConfigurationManager(new MatchSetupManager(reopened), reopened, deviceId).getOrCreate("game-gameplay", owner).configuration;
+        expect(recovered).toMatchObject({ lifecycle: "live", officials });
+        expect(reopened.readLocalMatchEvents(f.run.runId)).toEqual(eventsBefore);
+        expect(reopened.readLocalGameRun(f.run.runId).lastAcceptedSequence).toBe(sequenceBefore);
+    });
+
+    it("adds, edits, removes, and recovers ACTIVE Run-only Extra Bench without gameplay or Package writes", async () => {
+        const f = fixture();
+        const packageBefore = f.localDatabase.readGamePackage("package-gameplay-v2");
+        await f.gameplay.initialize(f.run.runId, owner);
+        const eventsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId);
+        const sequenceBefore = f.localDatabase.readLocalGameRun(f.run.runId).lastAcceptedSequence;
+        const entryId = "55555555-5555-4555-8555-555555555555";
+        const withHomeBench = (configuration, extraBench) => {
+            const input = configurationDraft(configuration);
+            return { ...input, expectedRevision: configuration.revision, teams: input.teams.map((team) => team.side === "HOME" ? { ...team, extraBench } : team) };
+        };
+
+        const live = f.configurations.getOrCreate("game-gameplay", owner).configuration;
+        const added = f.configurations.saveDraft(withHomeBench(live, [{ entryId, name: "Run Coach", role: "coach" }]), owner);
+        expect(added.teams.find((team) => team.side === "HOME").extraBench).toEqual([{ entryId, name: "Run Coach", role: "coach" }]);
+
+        const edited = f.configurations.saveDraft(withHomeBench(added, [{ entryId, name: "Run Doctor", role: "doctor" }]), owner);
+        expect(edited.teams.find((team) => team.side === "HOME").extraBench).toEqual([{ entryId, name: "Run Doctor", role: "doctor" }]);
+        expect(f.localDatabase.readLocalMatchEvents(f.run.runId)).toEqual(eventsBefore);
+        expect(f.localDatabase.readLocalGameRun(f.run.runId).lastAcceptedSequence).toBe(sequenceBefore);
+        expect(f.localDatabase.readGamePackage("package-gameplay-v2")).toEqual(packageBefore);
+
+        f.localDatabase.close();
+        const reopened = new LocalDatabase({ databasePath: f.localDatabase.databasePath, migrationsDirectory: f.migrationsDirectory, backupDirectory: path.join(f.root, "backups") });
+        databases.push(reopened);
+        reopened.initialize();
+        const configurations = new PreGameConfigurationManager(new MatchSetupManager(reopened), reopened, deviceId);
+        const recovered = configurations.getOrCreate("game-gameplay", owner).configuration;
+        expect(recovered.teams.find((team) => team.side === "HOME").extraBench).toEqual([{ entryId, name: "Run Doctor", role: "doctor" }]);
+
+        const removed = configurations.saveDraft(withHomeBench(recovered, []), owner);
+        expect(removed.teams.find((team) => team.side === "HOME").extraBench).toEqual([]);
+        expect(reopened.readLocalMatchEvents(f.run.runId)).toEqual(eventsBefore);
+        expect(reopened.readLocalGameRun(f.run.runId).lastAcceptedSequence).toBe(sequenceBefore);
+        expect(reopened.readGamePackage("package-gameplay-v2")).toEqual(packageBefore);
     });
 
     it("preserves ALLOW_TIE and variable Package period, clock, and starter rules", async () => {
@@ -352,6 +508,26 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         expect(rejected.localDatabase.readLocalMatchFinalization(rejected.run.runId)).toBeNull();
     });
 
+    it("finalizes a SIMPLE Run without fabricated FULL-stat events", async () => {
+        const f = fixture({ game_mode: "SIMPLE", tie_allowed: false, winner_required: true, regulation_periods: 1 });
+        const started = await f.gameplay.initialize(f.run.runId, owner);
+        expect(started.setup.settings.gameMode).toBe("SIMPLE");
+        await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1" });
+        await f.gameplay.append(f.run.runId, owner, { type: "TWO_POINT", team: "HOME", playerId: "home-1" });
+        await f.gameplay.append(f.run.runId, owner, { type: "THREE_POINT", team: "HOME", playerId: "home-1" });
+        await f.gameplay.append(f.run.runId, owner, { type: "PERSONAL_FOUL", team: "AWAY", stoppageId: "simple-finalization-foul", offender: { kind: "PLAYER", playerId: "away-1" }, context: { kind: "NON_SHOOTING" }, fouledPlayerId: "home-1" });
+        await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_SET", remainingSeconds: 0 });
+        await f.gameplay.append(f.run.runId, owner, { type: "PERIOD_END", period: { kind: "REGULATION", index: 1 } });
+        const finalized = await f.gameplay.finalize(f.run.runId, owner);
+        const home = finalized.state.home.players.find((player) => player.playerId === "home-1");
+        expect(finalized).toMatchObject({ lifecycle: "finalized", setup: { settings: { gameMode: "SIMPLE" } }, state: { finished: true, home: { score: 7 } } });
+        expect(home.statistics).toMatchObject({ points: 7, twoPointMade: 2, twoPointAttempts: 2, threePointMade: 1, threePointAttempts: 1, offensiveRebounds: 0, defensiveRebounds: 0, assists: 0, steals: 0, blocks: 0, turnovers: 0 });
+        expect(finalized.state.away.players.find((player) => player.playerId === "away-1").foulState.total).toBe(1);
+        const eventTypes = f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => JSON.parse(row.eventJson).type);
+        expect(eventTypes.at(-1)).toBe("MATCH_END");
+        expect(eventTypes).not.toEqual(expect.arrayContaining(["TURNOVER", "JUMP_BALL", "REBOUND", "ASSIST", "BLOCK", "TWO_POINT_MISSED", "THREE_POINT_MISSED"]));
+    });
+
     it("persists LIVE roster amendments as factual events while keeping the initial snapshot immutable", async () => {
         const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); await f.gameplay.append(f.run.runId, owner, { type: "CLOCK_START" });
         const before = f.configurations.getOrCreate("game-gameplay", owner).configuration; const input = configurationDraft(before); const home = input.teams.find((team) => team.side === "HOME");
@@ -428,7 +604,6 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         ["invalid number on added player", "LIVE_SHIRT_NUMBER_INVALID", (input) => { Object.assign(input.teams[0].players.find((player) => player.playerId === "home-3"), { participating: true, gameShirtNumber: "01" }); }],
         ["required team color removal", "LIVE_TEAM_COLOR_REQUIRED", (input) => { input.teams[0].gameColor = null; }],
         ["captain mutation", "LIVE_LOCKED_FIELD_CHANGE", (input) => { input.teams[0].captainPlayerId = "home-2"; }],
-        ["bench mutation", "LIVE_LOCKED_FIELD_CHANGE", (input) => { input.teams[0].extraBench = [{ entryId: "55555555-5555-4555-8555-555555555555", name: "Synthetic Bench", role: "coach" }]; }],
     ])("rejects LIVE %s with typed validation and zero configuration/gameplay writes", async (_label, code, mutate) => {
         const f = fixture(); await f.gameplay.initialize(f.run.runId, owner); const current = f.configurations.getOrCreate("game-gameplay", owner).configuration; const input = configurationDraft(current); mutate(input);
         const storedBefore = f.localDatabase.readLocalGameRunConfiguration(f.run.runId); const snapshotBefore = f.localDatabase.readLocalMatchEngineSnapshot(f.run.runId); const eventsBefore = f.localDatabase.readLocalMatchEvents(f.run.runId); let failure;
@@ -485,9 +660,10 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
     it("preserves Technical GD staff source metadata and gates ambiguous historical reconstruction", async () => {
         const f = fixture(); await f.gameplay.initialize(f.run.runId, owner);
         const addStaffTechnical = async (side, groupId, technicalStaffSource) => {
-            const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: side, stoppageId: `stop-${groupId}`, offender: { kind: "BENCH", personId: `coach:${side}`, role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: groupId, scorerEventContext: { technicalStaffSource } });
+            const offender = technicalStaffSource === "COACH" ? { kind: "BENCH", personId: `coach:${side}`, role: "HEAD_COACH" } : { kind: "BENCH", personId: `bench:${side}`, role: "ACCOMPANYING_DELEGATION" };
+            const foul = await f.gameplay.append(f.run.runId, owner, { type: "TECHNICAL_FOUL", team: side, stoppageId: `stop-${groupId}`, offender, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1", scorerEventId: groupId, scorerEventContext: { technicalStaffSource } });
             const foulId = foul.eventIds.at(-1);
-            await f.gameplay.correct(f.run.runId, owner, foulId, { type: "TECHNICAL_FOUL", team: side, stoppageId: `stop-${groupId}`, offender: { kind: "BENCH", personId: `coach:${side}`, role: "HEAD_COACH" }, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1" });
+            await f.gameplay.correct(f.run.runId, owner, foulId, { type: "TECHNICAL_FOUL", team: side, stoppageId: `stop-${groupId}`, offender, context: { kind: "NON_CONTACT" }, category: "CATEGORY_1" });
             await f.gameplay.append(f.run.runId, owner, { type: "PENALTY_ADMINISTRATION_ENDED", penaltyId: `penalty:${foulId}`, scorerEventId: groupId, scorerEventTerminal: { reason: "ENTER_EARLY", unresolvedStep: "CHOOSE_SHOOTER" } });
             return foulId;
         };
@@ -496,10 +672,10 @@ describe("KC-5B10A durable local Match gameplay foundation", () => {
         const recovered = await f.gameplay.recover(f.run.runId, owner);
         const persisted = f.localDatabase.readLocalMatchEvents(f.run.runId).map((row) => JSON.parse(row.eventJson));
         expect(persisted.find((event) => event.id === coachId)).toMatchObject({ offender: { kind: "BENCH", personId: "coach:HOME", role: "HEAD_COACH" }, scorerEventContext: { technicalStaffSource: "COACH" } });
-        expect(persisted.find((event) => event.id === benchId)).toMatchObject({ offender: { kind: "BENCH", personId: "coach:AWAY", role: "HEAD_COACH" }, scorerEventContext: { technicalStaffSource: "BENCH" } });
+        expect(persisted.find((event) => event.id === benchId)).toMatchObject({ offender: { kind: "BENCH", personId: "bench:AWAY", role: "ACCOMPANYING_DELEGATION" }, scorerEventContext: { technicalStaffSource: "BENCH" } });
         expect(recovered.events.find((event) => event.eventId === coachId)).toMatchObject({ scorerEventContext: { technicalStaffSource: "COACH" } });
         expect(recovered.events.find((event) => event.eventId === benchId)).toMatchObject({ scorerEventContext: { technicalStaffSource: "BENCH" } });
-        expect(recovered.state).toMatchObject({ home: { discipline: { headCoachCategory1TechnicalCount: 1, benchCategory1TechnicalCount: 0 } }, away: { discipline: { headCoachCategory1TechnicalCount: 1, benchCategory1TechnicalCount: 0 } } });
+        expect(recovered.state).toMatchObject({ home: { discipline: { headCoachCategory1TechnicalCount: 1, benchCategory1TechnicalCount: 0 } }, away: { discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 1 } } });
         expect(await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:technical-coach")).toMatchObject({ safeForReconstruction: true, items: [{ scorerEventContext: { technicalStaffSource: "COACH" } }, {}] });
         expect(await f.gameplay.scorerEventGroup(f.run.runId, owner, "explicit:technical-bench")).toMatchObject({ safeForReconstruction: true, items: [{ scorerEventContext: { technicalStaffSource: "BENCH" } }, {}] });
 

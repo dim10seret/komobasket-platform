@@ -1,5 +1,36 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
-import { authoritativeTeamIndex, compactRosterView, configurationDisplayStatus, customColorLabel, displayedTeamSides, livePlayerControlPolicy, oppositeSide, playerTableColumns, rosterNeedsFilter, rosterView, savedDraftConfirmationVisible, startReadinessPlayerIds, teamAccentStyle, teamColorLabel, teamColorPresets, withPlayerParticipation } from "./PreGameConfiguration";
+import { authoritativeTeamIndex, compactRosterView, configurationDisplayStatus, customColorLabel, displayedTeamSides, livePlayerControlPolicy, oppositeSide, playerTableColumns, rosterNeedsFilter, rosterView, savedDraftConfirmationVisible, startMatchButtonPresentation, startReadinessPlayerIds, teamAccentStyle, teamColorLabel, teamColorPresets, withPlayerParticipation } from "./PreGameConfiguration";
+
+describe("Start Game pre-game UX", () => {
+    it("shows immediate pending feedback and keeps the Start button disabled", () => {
+        expect(startMatchButtonPresentation(false, true, false, true)).toEqual({ disabled: true, label: "Έναρξη…" });
+        expect(startMatchButtonPresentation(false, false, false, false)).toEqual({ disabled: false, label: "Έναρξη αγώνα" });
+        expect(startMatchButtonPresentation(false, false, true, false).disabled).toBe(true);
+    });
+
+    it("keeps accessible button semantics and presents the instruction as an informational callout", () => {
+        const source = fs.readFileSync(new URL("./PreGameConfiguration.tsx", import.meta.url), "utf8");
+        const css = fs.readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
+        expect(source).toContain('<button type="button" className="pregame-back-button"');
+        expect(source).toContain('className="pregame-action-guidance" aria-label="Οδηγίες πριν την έναρξη"');
+        expect(source).toContain("Συμπληρώστε συμμετοχές, αριθμούς, αρχηγούς, βασικούς, Staff, χρώματα και θέση παρουσίασης. Οι αλλαγές ισχύουν μόνο για αυτό το Run.");
+        expect(css).toMatch(/\.pregame-back-button \{[^}]*border: 1px solid[^}]*background: var\(--surface\)/);
+        expect(css).toMatch(/\.pregame-back-button:focus-visible \{[^}]*outline:/);
+        expect(css).toMatch(/\.pregame-back-button:active:not\(:disabled\)/);
+        expect(css).toMatch(/\.pregame-placement \.secondary-button \{[^}]*padding:[^}]*border-color:[^}]*background: #fff/);
+        expect(css).toMatch(/\.pregame-placement \.secondary-button:hover:not\(:disabled\)/);
+        expect(css).toMatch(/\.pregame-placement \.secondary-button:focus-visible/);
+        expect(css).toMatch(/\.pregame-placement \.secondary-button:active:not\(:disabled\)/);
+        expect(css).toMatch(/\.pregame-extra-bench-heading \.text-button, \.pregame-extra-bench-form \.secondary-button \{[^}]*border: 1px solid[^}]*background: #fff/);
+        expect(css).toMatch(/\.pregame-extra-bench-heading \.text-button:hover:not\(:disabled\)/);
+        expect(css).toMatch(/\.pregame-extra-bench-heading \.text-button:focus-visible/);
+        expect(css).toMatch(/\.pregame-extra-bench-heading \.text-button:active:not\(:disabled\)/);
+        expect(source).not.toContain("readOnly || live || draft.extraBench.length");
+        expect(source).toContain("openExtraBenchEdit(entry)");
+        expect(css).toMatch(/\.pregame-action-guidance \{[^}]*border: 1px solid[^}]*background:/);
+    });
+});
 
 describe("KC-5B9A Save Draft feedback", () => {
     it("shows confirmation only for the clean revision returned by a successful Save", () => {

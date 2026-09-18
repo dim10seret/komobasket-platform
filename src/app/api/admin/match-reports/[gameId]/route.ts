@@ -4,7 +4,7 @@ import { platformAuthorizationErrorResponse, requireGameAccess } from "@/lib/pla
 import { readPlatformMatchReport } from "@/services/platform-match-report.service";
 
 export async function GET(request: Request, context: { params: Promise<{ gameId: string }> }) {
-  const authorization = requireAdmin(request);
+  const authorization = await requireAdmin(request);
   if (authorization.response) return authorization.response;
   try {
     const { gameId } = await context.params;

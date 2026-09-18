@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizedIncidentReport, platformMatchReportAvailability, type PlatformMatchReportConsistencySource } from "./platform-match-report";
+import { normalizedIncidentReport, platformMatchReportAvailability, platformMatchReportMode, type PlatformMatchReportConsistencySource } from "./platform-match-report";
 
 const finalized = (overrides: Partial<PlatformMatchReportConsistencySource> = {}): PlatformMatchReportConsistencySource => ({
   gameId: "game_a5dc049d-9812-486c-8dcc-632eefb20be3", gameStatus: "completed", resultSource: "match_report",
@@ -12,6 +12,24 @@ const finalized = (overrides: Partial<PlatformMatchReportConsistencySource> = {}
   finalStateAwayScore: 7, finalizationJsonValid: true, manifestRunId: "run-1",
   manifestHistoryRevision: 142, manifestHistoryHash: "history", manifestFinalStateHash: "state",
   incidentReportType: null, incidentReport: null, ...overrides,
+});
+
+describe("Platform Match Report pinned recording mode", () => {
+  const snapshot = (gameMode: "SIMPLE" | "FULL") => JSON.stringify({ schemaVersion: 1, settings: { game_mode: gameMode } });
+
+  it("reads SIMPLE from the immutable Run package snapshot", () => expect(platformMatchReportMode(snapshot("SIMPLE"))).toBe("SIMPLE"));
+  it("reads FULL from the immutable Run package snapshot", () => expect(platformMatchReportMode(snapshot("FULL"))).toBe("FULL"));
+  it("keeps a SIMPLE Run report SIMPLE after a later FULL package exists", () => {
+    const pinnedRunPackage = snapshot("SIMPLE");
+    const laterPublishedPackage = snapshot("FULL");
+    expect(platformMatchReportMode(pinnedRunPackage)).toBe("SIMPLE");
+    expect(platformMatchReportMode(laterPublishedPackage)).toBe("FULL");
+    expect(platformMatchReportMode(pinnedRunPackage)).toBe("SIMPLE");
+  });
+  it("fails closed when the pinned package mode is absent or invalid", () => {
+    expect(() => platformMatchReportMode(JSON.stringify({ settings: {} }))).toThrow("MATCH_REPORT_MODE_INVALID");
+    expect(() => platformMatchReportMode(JSON.stringify({ settings: { game_mode: "OTHER" } }))).toThrow("MATCH_REPORT_MODE_INVALID");
+  });
 });
 
 describe("Platform Match Report availability", () => {

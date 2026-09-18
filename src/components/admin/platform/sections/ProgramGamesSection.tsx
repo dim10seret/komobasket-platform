@@ -1,5 +1,7 @@
 "use client";
 
+import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
+
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Field,
@@ -455,6 +457,7 @@ export function ProgramGamesSection({
   busy: boolean;
   onRefreshCompetitionData?: () => Promise<void> | void;
 }) {
+  const { request: fetch, url: platformUrl } = usePlatformContext();
   const competitionPhases = useMemo(() => {
     return data.phases
       .filter((phase) => String(phase.competition_id ?? "") === competitionId)
@@ -699,6 +702,11 @@ export function ProgramGamesSection({
     }
   };
 
+  const openGameSheet = () => {
+    if (!matchReportGameId || !matchReportDetail) return;
+    window.open(platformUrl(`/api/admin/match-reports/${encodeURIComponent(matchReportGameId)}/game-sheet`), "_blank", "noopener,noreferrer");
+  };
+
   const openMatchReport = async (gameId: string, availability?: PlatformMatchReportAvailability) => {
     if (!availability?.available) return;
     setMatchReportGameId(gameId); setMatchReportDetail(null); setMatchReportError("");
@@ -909,12 +917,12 @@ export function ProgramGamesSection({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={openVenueManager} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:bg-zinc-50">
+            <PlatformButton type="button" onClick={openVenueManager} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:bg-zinc-50">
               Διαχείριση γηπέδων
-            </button>
-            <button type="button" onClick={openCreateModal} disabled={!competitionPhases.length} className={buttonClass}>
+            </PlatformButton>
+            <PlatformButton type="button" onClick={openCreateModal} disabled={!competitionPhases.length} className={buttonClass}>
               + Δημιουργία Προγράμματος
-            </button>
+            </PlatformButton>
           </div>
         </div>
 
@@ -1068,7 +1076,7 @@ export function ProgramGamesSection({
               const headerLabel = `${String(schedule.phase_name ?? phase?.name ?? "—")}`;
               return (
                 <article key={String(schedule.id)} className="w-full min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-                  <button
+                  <PlatformButton
                     type="button"
                     onClick={() => setOpenScheduleId(isExpanded ? null : scheduleKey)}
                     className="flex w-full min-w-0 flex-wrap items-start justify-between gap-3 text-left"
@@ -1089,7 +1097,7 @@ export function ProgramGamesSection({
                     <span className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">
                       {isExpanded ? "Σύμπτυξη" : "Άνοιγμα"}
                     </span>
-                  </button>
+                  </PlatformButton>
                   {isExpanded ? (
                     <div className="mt-4 min-w-0 space-y-1.5 text-sm text-zinc-700">
                       {buildPhaseSummary(data, phase).map((line) => <p key={line}>{line}</p>)}
@@ -1100,23 +1108,23 @@ export function ProgramGamesSection({
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="text-sm font-black text-zinc-900">{phaseFormat === "series" ? "Σειρά Αγώνων" : "Αγωνιστικές"}</p>
                               <div className="inline-flex rounded-xl border border-zinc-300 bg-white p-1 text-xs font-black text-zinc-700">
-                                <button
+                                <PlatformButton
                                   type="button"
                                   onClick={() => setScheduleDisplayMode(scheduleKey, "round")}
                                   className={`rounded-lg px-3 py-2 transition ${displayMode === "round" ? "bg-orange-600 text-white" : "hover:bg-zinc-50"}`}
                                 >
                                   {phaseFormat === "series" ? "Ανά γύρο" : "Ανά αγωνιστική"}
-                                </button>
-                                <button
+                                </PlatformButton>
+                                <PlatformButton
                                   type="button"
                                   onClick={() => setScheduleDisplayMode(scheduleKey, "all")}
                                   className={`rounded-lg px-3 py-2 transition ${displayMode === "all" ? "bg-orange-600 text-white" : "hover:bg-zinc-50"}`}
                                 >
                                   Εμφάνιση όλων
-                                </button>
+                                </PlatformButton>
                               </div>
                               {displayMode === "round" ? (
-                                <button
+                                <PlatformButton mutation
                                   type="button"
                                   className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
                                   onClick={() => {
@@ -1144,7 +1152,7 @@ export function ProgramGamesSection({
                                   }}
                                 >
                                   Επιλογή όλων
-                                </button>
+                                </PlatformButton>
                               ) : null}
                             </div>
                             {displayMode === "round" ? (
@@ -1242,7 +1250,7 @@ export function ProgramGamesSection({
                                                 ) : null}
                                               </td>
                                               <td className="px-3 py-3 align-top">
-                                                <button
+                                                <PlatformButton
                                                   type="button"
                                                   disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
                                                   aria-disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
@@ -1253,7 +1261,7 @@ export function ProgramGamesSection({
                                                   className={`inline-flex rounded-full border px-3 py-1 text-xs font-black transition focus-visible:outline focus-visible:outline-2 ${matchReportPresentation.className}`}
                                                 >
                                                   {isTransferred ? "Από μεταφορά" : isRealGame ? matchReportPresentation.label : "—"}
-                                                </button>
+                                                </PlatformButton>
                                               </td>
                                               <td className="px-3 py-3 align-top">
                                                 {backingGame?.video_url ? (
@@ -1267,7 +1275,7 @@ export function ProgramGamesSection({
                                               </td>
                                               <td className="px-3 py-3 align-top font-black text-zinc-900">
                                                 {isRealGame ? (
-                                                  <button
+                                                  <PlatformButton
                                                     type="button"
                                                     onClick={() => {
                                                       if (realGame) openResultForm(realGame);
@@ -1275,7 +1283,7 @@ export function ProgramGamesSection({
                                                     className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
                                                   >
                                                     {round.homeScore !== null && round.awayScore !== null ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}` : "—"}
-                                                  </button>
+                                                  </PlatformButton>
                                                 ) : (
                                                   <div className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-zinc-50 px-2 py-2 text-sm font-black text-zinc-600">
                                                     {displayResult}
@@ -1296,7 +1304,7 @@ export function ProgramGamesSection({
                                                   {displayVenue}
                                                 </span>
                                                 {isIfNeeded ? (
-                                                  <button
+                                                  <PlatformButton
                                                     type="button"
                                                     onClick={() => openPlanningDialog({
                                                       phaseId: String(phase?.id ?? schedule.phase_id ?? ""),
@@ -1310,7 +1318,7 @@ export function ProgramGamesSection({
                                                     className="mt-2 inline-flex rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1.5 text-xs font-black text-sky-800 transition hover:bg-sky-100"
                                                   >
                                                     {round.planningSlot ? "Επεξεργασία" : "Προγραμματισμός"}
-                                                  </button>
+                                                  </PlatformButton>
                                                 ) : null}
                                               </td>
                                             </tr>
@@ -1359,7 +1367,7 @@ export function ProgramGamesSection({
                                                 />
                                               </td>
                                               <td className="px-3 py-3 align-top">
-                                                <button
+                                                <PlatformButton
                                                   type="button"
                                                   disabled={matchReportPresentation.disabled}
                                                   aria-disabled={matchReportPresentation.disabled}
@@ -1368,7 +1376,7 @@ export function ProgramGamesSection({
                                                   className={`inline-flex rounded-full border px-3 py-1 text-xs font-black transition focus-visible:outline focus-visible:outline-2 ${matchReportPresentation.className}`}
                                                 >
                                                   {matchReportPresentation.label}
-                                                </button>
+                                                </PlatformButton>
                                               </td>
                                               <td className="px-3 py-3 align-top">
                                                 {game.video_url ? (
@@ -1381,13 +1389,13 @@ export function ProgramGamesSection({
                                                 <span className="block min-w-0 break-words text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
                                               </td>
                                               <td className="px-3 py-3 align-top font-black text-zinc-900">
-                                                <button
+                                                <PlatformButton
                                                   type="button"
                                                   onClick={() => openResultForm(game)}
                                                   className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
                                                 >
                                                   {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
-                                                </button>
+                                                </PlatformButton>
                                               </td>
                                               <td className="px-3 py-3 align-top text-zinc-800">
                                                 <span className="block min-w-0 break-words text-left leading-snug">{String(game.away_team_name ?? "—")}</span>
@@ -1527,15 +1535,15 @@ export function ProgramGamesSection({
                                     {String(selectedResultGame.home_team_name ?? "—")} - {String(selectedResultGame.away_team_name ?? "—")}
                                   </p>
                                 </div>
-                                <button
+                                <PlatformButton
                                   type="button"
                                   onClick={closeResultForm}
                                   className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                                 >
                                   Κλείσιμο
-                                </button>
+                                </PlatformButton>
                               </div>
-                              <form
+                              <PlatformForm
                                 className="mt-4 space-y-4"
                                 onSubmit={async (event) => {
                                   event.preventDefault();
@@ -1578,18 +1586,18 @@ export function ProgramGamesSection({
                                   </Field>
                                 </div>
                                 <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-                                  <button
+                                  <PlatformButton
                                     type="button"
                                     onClick={closeResultForm}
                                     className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
                                   >
                                     Ακύρωση
-                                  </button>
-                                  <button disabled={busy} className={buttonClass}>
+                                  </PlatformButton>
+                                  <PlatformButton mutation disabled={busy} className={buttonClass}>
                                     Αποθήκευση αποτελέσματος
-                                  </button>
+                                  </PlatformButton>
                                 </div>
-                              </form>
+                              </PlatformForm>
                             </div>
                           </div>
                         ) : null}
@@ -1605,15 +1613,15 @@ export function ProgramGamesSection({
                                   <p className="mt-1 text-sm text-zinc-600">{matchReportDetail.game.competition}{matchReportDetail.game.round ? ` · ${matchReportDetail.game.round}` : ""}</p>
                                 </> : null}
                               </div>
-                              <button type="button" onClick={closeMatchReport} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</button>
+                              <PlatformButton type="button" onClick={closeMatchReport} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</PlatformButton>
                             </div>
                             {matchReportLoading ? <p className="mt-6 text-sm font-bold text-zinc-600">Φόρτωση Match Report…</p> : null}
                             {matchReportError ? <p className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">{matchReportError}</p> : null}
                             {matchReportDetail ? <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                              <button type="button" disabled={statisticsPdfLoading} onClick={() => void downloadStatisticsPdf()} className="min-h-12 rounded-xl border border-sky-700 bg-sky-600 px-4 py-3 font-black text-white transition hover:bg-sky-700 disabled:cursor-wait disabled:opacity-60">{statisticsPdfLoading ? "ΔΗΜΙΟΥΡΓΙΑ PDF…" : "ΣΤΑΤΙΣΤΙΚΑ PDF"}</button>
-                              <button type="button" disabled className="min-h-12 rounded-xl border border-zinc-300 bg-zinc-100 px-4 py-3 font-black text-zinc-500" title="Σύντομα">ΦΥΛΛΟ ΑΓΩΝΑ PDF · Σύντομα</button>
+                              <PlatformButton type="button" disabled={statisticsPdfLoading} onClick={() => void downloadStatisticsPdf()} className="min-h-12 rounded-xl border border-sky-700 bg-sky-600 px-4 py-3 font-black text-white transition hover:bg-sky-700 disabled:cursor-wait disabled:opacity-60">{statisticsPdfLoading ? "ΔΗΜΙΟΥΡΓΙΑ PDF…" : "ΣΤΑΤΙΣΤΙΚΑ PDF"}</PlatformButton>
+                              <PlatformButton type="button" onClick={openGameSheet} className="min-h-12 rounded-xl border border-zinc-900 bg-zinc-950 px-4 py-3 font-black text-white transition hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-950">ΦΥΛΛΟ ΑΓΩΝΑ</PlatformButton>
                               {statisticsPdfError ? <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800 sm:col-span-2">{statisticsPdfError}</p> : null}
-                              {matchReportDetail.availability.hasIncidentReport && matchReportDetail.incidentReport ? <button type="button" onClick={() => setShowIncidentReport(true)} className="min-h-12 rounded-xl border border-red-800 bg-red-600 px-4 py-3 font-black text-white transition hover:bg-red-700 sm:col-span-2">⚠ ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</button> : null}
+                              {matchReportDetail.availability.hasIncidentReport && matchReportDetail.incidentReport ? <PlatformButton type="button" onClick={() => setShowIncidentReport(true)} className="min-h-12 rounded-xl border border-red-800 bg-red-600 px-4 py-3 font-black text-white transition hover:bg-red-700 sm:col-span-2">⚠ ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</PlatformButton> : null}
                             </div> : null}
                           </div>
                         </div>
@@ -1624,7 +1632,7 @@ export function ProgramGamesSection({
                           <div className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-red-200 bg-white p-5 shadow-2xl sm:p-6">
                             <div className="flex items-start justify-between gap-4">
                               <h2 id="incident-report-title" className="text-xl font-black text-red-800">ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</h2>
-                              <button type="button" onClick={() => setShowIncidentReport(false)} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</button>
+                              <PlatformButton type="button" onClick={() => setShowIncidentReport(false)} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</PlatformButton>
                             </div>
                             <p className="mt-5 whitespace-pre-wrap break-words rounded-xl border border-red-200 bg-red-50 p-4 text-sm leading-7 text-zinc-900">{matchReportDetail.incidentReport}</p>
                           </div>
@@ -1644,7 +1652,7 @@ export function ProgramGamesSection({
                                   ))}
                                 </div>
                               </div>
-                              <button
+                              <PlatformButton mutation
                                 type="button"
                                 onClick={async () => {
                                   if (!selectedGameIds.length) return;
@@ -1654,13 +1662,13 @@ export function ProgramGamesSection({
                                 className={buttonClass}
                               >
                                 Επεξεργασία επιλεγμένων
-                              </button>
+                              </PlatformButton>
                             </div>
 
                             {selectedGameIds.length === 1 ? (() => {
                               const selectedVideoGame = scheduleGames.find((game) => String(game.id) === selectedGameIds[0]) ?? null;
                               return selectedVideoGame ? (
-                                <form
+                                <PlatformForm
                                   key={selectedVideoGame.id}
                                   className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4"
                                   onSubmit={async (event) => {
@@ -1681,9 +1689,9 @@ export function ProgramGamesSection({
                                     <p className="mt-2 text-xs text-sky-900">Τρέχουσα τιμή: {String(selectedVideoGame.video_url ?? "").trim() || "—"}</p>
                                   </Field>
                                   <div className="mt-3 flex justify-end">
-                                    <button disabled={busy} className={buttonClass}>Αποθήκευση βίντεο</button>
+                                    <PlatformButton mutation disabled={busy} className={buttonClass}>Αποθήκευση βίντεο</PlatformButton>
                                   </div>
-                                </form>
+                                </PlatformForm>
                               ) : null;
                             })() : (
                               <p className="mt-4 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
@@ -1700,13 +1708,13 @@ export function ProgramGamesSection({
                                     onChange={(event) => updateScheduleEditor(scheduleKey, { scheduledDateMode: "set", scheduledDate: event.target.value })}
                                     className={`${inputClass} min-w-0 flex-1`}
                                   />
-                                  <button
+                                  <PlatformButton
                                     type="button"
                                     onClick={() => updateScheduleEditor(scheduleKey, { scheduledDateMode: "clear", scheduledDate: "" })}
                                     className="shrink-0 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
                                   >
                                     Καθαρισμός
-                                  </button>
+                                  </PlatformButton>
                                 </div>
                                 <p className="mt-2 text-xs text-zinc-500">
                                   {selectedRoundGames.length
@@ -1733,13 +1741,13 @@ export function ProgramGamesSection({
                                     maxLength={5}
                                     className={`${inputClass} min-w-0 flex-1`}
                                   />
-                                  <button
+                                  <PlatformButton
                                     type="button"
                                     onClick={() => updateScheduleEditor(scheduleKey, { scheduledTimeMode: "clear", scheduledTime: "" })}
                                     className="shrink-0 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
                                   >
                                     Καθαρισμός
-                                  </button>
+                                  </PlatformButton>
                                 </div>
                                 <p className="mt-2 text-xs text-zinc-500">
                                   {selectedRoundGames.length
@@ -1768,13 +1776,13 @@ export function ProgramGamesSection({
                                       Δεν υπάρχουν διαθέσιμα γήπεδα στη διοργάνωση.
                                     </p>
                                   )}
-                                  <button
+                                  <PlatformButton
                                     type="button"
                                     onClick={() => updateScheduleEditor(scheduleKey, { venueMode: "clear", venueId: "" })}
                                     className="shrink-0 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-black text-zinc-700 transition hover:bg-zinc-50"
                                   >
                                     Καθαρισμός
-                                  </button>
+                                  </PlatformButton>
                                 </div>
                                 <p className="mt-2 text-xs text-zinc-500">
                                   {selectedRoundGames.length
@@ -1793,16 +1801,16 @@ export function ProgramGamesSection({
                       )}
                   <div className="mt-4 flex flex-wrap items-center gap-2">
                     {canGenerate ? (
-                      <button
+                      <PlatformButton
                         type="button"
                         disabled={busy}
                         onClick={() => openGenerateModal(String(schedule.id))}
                         className="rounded-xl border border-orange-300 bg-white px-4 py-2.5 text-sm font-black text-orange-700 transition hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         Δημιουργία Αγώνων
-                      </button>
+                      </PlatformButton>
                     ) : null}
-                    <button
+                    <PlatformButton
                       type="button"
                       disabled={busy || deleteProgramBusy || phaseLifecycle === "finalized" || programObviouslyStarted}
                       onClick={() => {
@@ -1816,7 +1824,7 @@ export function ProgramGamesSection({
                       className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-50 disabled:text-zinc-400"
                     >
                       Διαγραφή Προγράμματος
-                    </button>
+                    </PlatformButton>
                     {phaseLifecycle === "finalized" ? (
                       <span className="text-xs font-bold text-zinc-500">Η οριστικοποιημένη φάση δεν επιτρέπει διαγραφή προγράμματος.</span>
                     ) : programObviouslyStarted ? (
@@ -1840,14 +1848,14 @@ export function ProgramGamesSection({
                   {planningTarget.homeTeamName} — {planningTarget.awayTeamName} · {getRoundOrdinalLabel(planningTarget.seriesRoundNumber)} Γύρος
                 </p>
               </div>
-              <button
+              <PlatformButton
                 type="button"
                 disabled={planningBusy}
                 onClick={closePlanningDialog}
                 className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700 disabled:opacity-60"
               >
                 Κλείσιμο
-              </button>
+              </PlatformButton>
             </div>
             <p className="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm leading-relaxed text-sky-900">
               Ο αγώνας δεν έχει δημιουργηθεί ακόμη. Τα στοιχεία θα μεταφερθούν αυτόματα εάν ο αγώνας χρειαστεί.
@@ -1890,22 +1898,22 @@ export function ProgramGamesSection({
               <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{planningError}</p>
             ) : null}
             <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-              <button
+              <PlatformButton
                 type="button"
                 disabled={planningBusy}
                 onClick={closePlanningDialog}
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 disabled:opacity-60"
               >
                 Ακύρωση
-              </button>
-              <button
+              </PlatformButton>
+              <PlatformButton
                 type="button"
                 disabled={planningBusy || (!!planningTime && !planningDate)}
                 onClick={() => void handleSaveSeriesPlanning()}
                 className="rounded-xl bg-sky-700 px-4 py-2.5 font-black text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {planningBusy ? "Αποθήκευση..." : "Αποθήκευση προγραμματισμού"}
-              </button>
+              </PlatformButton>
             </div>
           </div>
         </div>
@@ -1935,22 +1943,22 @@ export function ProgramGamesSection({
               <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{deleteProgramError}</p>
             ) : null}
             <div className="mt-6 flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-              <button
+              <PlatformButton
                 type="button"
                 disabled={deleteProgramBusy}
                 onClick={closeDeleteProgramDialog}
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 disabled:opacity-60"
               >
                 Ακύρωση
-              </button>
-              <button
+              </PlatformButton>
+              <PlatformButton
                 type="button"
                 disabled={deleteProgramBusy || deleteProgramConfirmation !== "ΔΙΑΓΡΑΦΗ"}
                 onClick={() => void handleDeletePhaseProgram()}
                 className="rounded-xl bg-red-700 px-4 py-2.5 font-black text-white transition hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {deleteProgramBusy ? "Διαγραφή..." : "Οριστική Διαγραφή Προγράμματος"}
-              </button>
+              </PlatformButton>
             </div>
           </div>
         </div>
@@ -1964,15 +1972,15 @@ export function ProgramGamesSection({
                 <h3 className="text-xl font-black text-zinc-950">Δημιουργία Προγράμματος</h3>
                 <p className="mt-1 text-sm text-zinc-600">Επίλεξε μια ήδη αποθηκευμένη φάση της τρέχουσας διοργάνωσης.</p>
               </div>
-              <button
+              <PlatformButton
                 type="button"
                 onClick={closeCreateModal}
                 className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
               >
                 Ακύρωση
-              </button>
+              </PlatformButton>
             </div>
-            <form onSubmit={handleCreate} className="mt-5 space-y-4">
+            <PlatformForm onSubmit={handleCreate} className="mt-5 space-y-4">
               <input type="hidden" name="action" value="materializePhaseProgram" />
               <input type="hidden" name="competitionId" value={competitionId} />
               {availablePhases.length ? (
@@ -2008,18 +2016,18 @@ export function ProgramGamesSection({
                 </p>
               )}
               <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-                <button
+                <PlatformButton
                   type="button"
                   onClick={closeCreateModal}
                   className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
                 >
                   Ακύρωση
-                </button>
-                <button disabled={busy || !selectedPhaseId || !availablePhases.length} className={buttonClass}>
+                </PlatformButton>
+                <PlatformButton mutation disabled={busy || !selectedPhaseId || !availablePhases.length} className={buttonClass}>
                   Δημιουργία Προγράμματος Φάσης
-                </button>
+                </PlatformButton>
               </div>
-            </form>
+            </PlatformForm>
           </div>
         </div>
       )}
@@ -2039,15 +2047,15 @@ export function ProgramGamesSection({
                   </p>
                   <p className="mt-1 text-sm text-zinc-600">Οι αγώνες θα δημιουργηθούν χωρίς ημερομηνία, ώρα και γήπεδο.</p>
                 </div>
-                <button
+                <PlatformButton
                   type="button"
                   onClick={closeGenerateModal}
                   className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                 >
                   Ακύρωση
-                </button>
+                </PlatformButton>
               </div>
-              <form onSubmit={handleGenerate} className="mt-5 space-y-4">
+              <PlatformForm onSubmit={handleGenerate} className="mt-5 space-y-4">
                 <input type="hidden" name="action" value="materializePhaseProgram" />
                 <input type="hidden" name="scheduleId" value={selectedSchedule.id} />
                 <input type="hidden" name="id" value={selectedSchedule.id} />
@@ -2056,14 +2064,14 @@ export function ProgramGamesSection({
                   <p className="mt-1">Πρόχειρο πρόγραμμα · {structure.totalGames} προβλεπόμενοι αγώνες · {structure.rounds} αγωνιστικές</p>
                 </div>
                 <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-                  <button type="button" onClick={closeGenerateModal} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700">
+                  <PlatformButton type="button" onClick={closeGenerateModal} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700">
                     Ακύρωση
-                  </button>
-                  <button disabled={busy} className={buttonClass}>
+                  </PlatformButton>
+                  <PlatformButton mutation disabled={busy} className={buttonClass}>
                     Δημιουργία Αγώνων
-                  </button>
+                  </PlatformButton>
                 </div>
-              </form>
+              </PlatformForm>
             </div>
           </div>
         );
@@ -2077,9 +2085,9 @@ export function ProgramGamesSection({
                 <h3 className="text-xl font-black text-zinc-950">Γήπεδα διοργάνωσης</h3>
                 <p className="mt-1 text-sm text-zinc-600">Διαχείριση γηπέδων για τη συγκεκριμένη διοργάνωση.</p>
               </div>
-              <button type="button" onClick={closeVenueManager} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700">
+              <PlatformButton type="button" onClick={closeVenueManager} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700">
                 ← Επιστροφή
-              </button>
+              </PlatformButton>
             </div>
 
             {!competitionVenues.length ? (
@@ -2087,9 +2095,9 @@ export function ProgramGamesSection({
                 <p className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
                   Δεν έχουν προστεθεί γήπεδα για αυτή τη διοργάνωση.
                 </p>
-                <button type="button" onClick={() => startVenueForm("")} className={buttonClass}>
+                <PlatformButton type="button" onClick={() => startVenueForm("")} className={buttonClass}>
                   + Προσθήκη γηπέδου
-                </button>
+                </PlatformButton>
                 {showVenueForm ? (
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -2097,7 +2105,7 @@ export function ProgramGamesSection({
                         <p className="text-sm font-black text-zinc-900">Προσθήκη γηπέδου</p>
                         <p className="mt-1 text-sm text-zinc-600">Τα ιστορικά παιχνίδια διατηρούν το κείμενο γηπέδου που έχουν ήδη αποθηκεύσει.</p>
                       </div>
-                      <button
+                      <PlatformButton mutation
                         type="button"
                         onClick={() => {
                           setEditingVenueId("");
@@ -2106,9 +2114,9 @@ export function ProgramGamesSection({
                         className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                       >
                         Κλείσιμο
-                      </button>
+                      </PlatformButton>
                     </div>
-                    <form
+                    <PlatformForm
                       className="mt-4 space-y-4"
                       onSubmit={async (event) => {
                         event.preventDefault();
@@ -2131,7 +2139,7 @@ export function ProgramGamesSection({
                         <input name="mapUrl" placeholder="https://..." className={inputClass} />
                       </Field>
                       <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-                        <button
+                        <PlatformButton mutation
                           type="button"
                           onClick={() => {
                             setEditingVenueId("");
@@ -2140,12 +2148,12 @@ export function ProgramGamesSection({
                           className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
                         >
                           Καθαρισμός
-                        </button>
-                        <button disabled={busy} className={buttonClass}>
+                        </PlatformButton>
+                        <PlatformButton mutation disabled={busy} className={buttonClass}>
                           Προσθήκη γηπέδου
-                        </button>
+                        </PlatformButton>
                       </div>
-                    </form>
+                    </PlatformForm>
                   </div>
                 ) : null}
               </div>
@@ -2170,20 +2178,20 @@ export function ProgramGamesSection({
                           ) : null}
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <button
+                          <PlatformButton
                             type="button"
                             onClick={() => startVenueForm(String(venue.id))}
                             className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                           >
                             Επεξεργασία
-                          </button>
-                          <button
+                          </PlatformButton>
+                          <PlatformButton
                             type="button"
                             onClick={() => void handleVenueDelete(venue)}
                             className="rounded-xl border border-red-300 bg-white px-3 py-2 text-sm font-black text-red-700"
                           >
                             Αφαίρεση
-                          </button>
+                          </PlatformButton>
                         </div>
                       </div>
                     </article>
@@ -2196,7 +2204,7 @@ export function ProgramGamesSection({
                         <p className="text-sm font-black text-zinc-900">{selectedVenue ? "Επεξεργασία γηπέδου" : "Προσθήκη γηπέδου"}</p>
                         <p className="mt-1 text-sm text-zinc-600">Τα ιστορικά παιχνίδια διατηρούν το κείμενο γηπέδου που έχουν ήδη αποθηκεύσει.</p>
                       </div>
-                      <button
+                      <PlatformButton mutation
                         type="button"
                         onClick={() => {
                           setEditingVenueId("");
@@ -2205,9 +2213,9 @@ export function ProgramGamesSection({
                         className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                       >
                         Κλείσιμο
-                      </button>
+                      </PlatformButton>
                     </div>
-                    <form
+                    <PlatformForm
                       className="mt-4 space-y-4"
                       onSubmit={async (event) => {
                         event.preventDefault();
@@ -2244,7 +2252,7 @@ export function ProgramGamesSection({
                         />
                       </Field>
                       <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
-                        <button
+                        <PlatformButton mutation
                           type="button"
                           onClick={() => {
                             setEditingVenueId("");
@@ -2253,12 +2261,12 @@ export function ProgramGamesSection({
                           className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700"
                         >
                           Καθαρισμός
-                        </button>
-                        <button disabled={busy} className={buttonClass}>
+                        </PlatformButton>
+                        <PlatformButton mutation disabled={busy} className={buttonClass}>
                           {selectedVenue ? "Αποθήκευση αλλαγών" : "Προσθήκη γηπέδου"}
-                        </button>
+                        </PlatformButton>
                       </div>
-                    </form>
+                    </PlatformForm>
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-sm text-zinc-600">

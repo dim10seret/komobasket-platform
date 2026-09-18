@@ -1,0 +1,25 @@
+.screen { --ink: #172033; --accent: #ea580c; min-height: 100svh; display: grid; place-items: center; padding: 32px 20px; color: var(--ink); background: radial-gradient(ellipse at 15% 0%, #fff0e2, transparent 55%), #f4f6f8; }
+.panel { width: 100%; max-width: 570px; padding: clamp(24px, 5vw, 44px); background: white; border: 1px solid #e4e8ed; border-top: 4px solid var(--accent); border-radius: 14px; box-shadow: 0 16px 45px #1720330a; }
+.brand { display: inline-block; color: var(--ink); font-weight: 800; font-size: 22px; text-decoration: none; margin-bottom: 32px; }
+.brand span { color: #ad4209; font-weight: 500; }
+.panel h1 { font-size: 25px; line-height: 1.4; font-weight: 700; margin-bottom: 24px; overflow-wrap: anywhere; }
+.panel p { line-height: 1.6; margin: 10px 0; overflow-wrap: anywhere; }
+.form { display: grid; gap: 10px; }
+.form label { font-size: 14px; font-weight: 600; }
+.form input { width: 100%; min-width: 0; background: #fff; color: var(--ink); border: 1px solid #aeb8c5; border-radius: 7px; padding: 12px; margin-bottom: 10px; }
+.primary, .secondary { display: inline-flex; align-items: center; justify-content: center; text-align: center; min-height: 44px; padding: 10px 16px; border-radius: 7px; font-weight: 600; font-size: 14px; text-decoration: none; cursor: pointer; border: 1px solid transparent; }
+.primary { background: #c74709; color: white; }
+.primary:hover { background: #a83906; }
+.secondary { color: var(--ink); background: #f3f5f8; border-color: #ccd3dd; margin-top: 20px; margin-right: 10px; }
+.secondary:hover { background: #e8edf3; }
+.primary:active, .secondary:active { transform: translateY(1px); }
+.panel :focus-visible { outline: 3px solid #f18b44; outline-offset: 3px; }
+.panel button:disabled { opacity: .55; cursor: not-allowed; }
+.organizations { display: grid; gap: 14px; }
+.organization { padding: 18px; border: 1px solid #dce2e9; border-radius: 9px; }
+.organizationName { display: flex; align-items: center; gap: 12px; }
+.logo { width: 40px; height: 40px; object-fit: contain; flex-shrink: 0; }
+.role { color: #526173; font-size: 14px; }
+.notice { padding: 18px; margin-top: 20px; background: #f5f7fa; border-left: 3px solid var(--accent); font-weight: 600; }
+.notice p { font-size: 14px; font-weight: 400; }
+.error { border: 1px solid #fecaca; color: #991b1b; background: #fff1f2; border-radius: 7px; padding: 12px; font-size: 14px; }

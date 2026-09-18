@@ -19,13 +19,13 @@ function LeaderCard({ title, player, category }: { title: string; player: Public
   return <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-[0.16em] text-orange-700">{title}</p>{player ? <><h3 className="mt-3 text-xl font-black text-zinc-950">{player.displayName}</h3><p className="mt-1 font-bold text-zinc-600">{player.teamName} · ΑΓ. {player.gamesPlayed}</p><strong className="mt-5 block text-3xl font-black tabular-nums text-zinc-950">{rankingValue(player, category)}</strong></> : <p className="mt-4 font-bold text-zinc-500">Δεν υπάρχουν δεδομένα.</p>}</article>;
 }
 
-export default function PublicCompetitionStatisticsView({ data }: { data: PublicCompetitionStatisticsPageData }) {
+export default function PublicCompetitionStatisticsView({ data, basePath = "/stats" }: { data: PublicCompetitionStatisticsPageData; basePath?: string }) {
   const router = useRouter();
   const [category, setCategory] = useState<PublicLeaderCategory>("points");
   const [matchdayId, setMatchdayId] = useState(data.statistics?.matchdays[0]?.id ?? "");
   const statistics = data.statistics;
   const matchday = statistics?.matchdays.find((item) => item.id === matchdayId) ?? statistics?.matchdays[0] ?? null;
-  const navigate = (season: string, competition?: string) => { const params = new URLSearchParams({ season }); if (competition) params.set("competition", competition); router.push(`/stats?${params}`); };
+  const navigate = (season: string, competition?: string) => { const params = new URLSearchParams({ season }); if (competition) params.set("competition", competition); router.push(`${basePath}?${params}`); };
   return <div className="mt-8 space-y-8">
     <section className="grid gap-4 rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm sm:grid-cols-2 sm:p-6">
       <label><span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-zinc-600">Σεζόν</span><select value={data.selectedSeason?.slug ?? ""} onChange={(event) => navigate(event.target.value)} className="min-h-11 w-full rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black">{data.seasons.map((season) => <option key={season.slug} value={season.slug}>{season.name}</option>)}</select></label>

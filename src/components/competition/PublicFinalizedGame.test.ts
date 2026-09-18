@@ -7,8 +7,8 @@ import { publicFinalizedGameHref } from "./PublicGameResult";
 const game = (overrides: Partial<PublicGame> = {}): PublicGame => ({ id: "game-reference", roundNumber: 1, gameOrder: 1, roundLabel: "1η Αγωνιστική", scheduledDate: "2026-09-02", scheduledTime: "18:30", venue: null, homeScore: 14, awayScore: 7, publicStatus: "completed", liveAvailable: false, finalizedStatisticsAvailable: true, videoUrl: null, homeTeam: { id: "home", name: "ΛΕΚΑΒΕΞ", logoUrl: null }, awayTeam: { id: "away", name: "JUGOPIASTIKA", logoUrl: null }, ...overrides });
 const component = readFileSync(new URL("./PublicFinalizedGame.tsx", import.meta.url), "utf8");
 const resultComponent = readFileSync(new URL("./PublicGameResult.tsx", import.meta.url), "utf8");
-const page = readFileSync(new URL("../../app/competitions/games/[gameId]/page.tsx", import.meta.url), "utf8");
-const competitionPage = readFileSync(new URL("../../app/competitions/page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../../app/(central)/competitions/games/[gameId]/page.tsx", import.meta.url), "utf8");
+const competitionPage = readFileSync(new URL("./PublicCompetitionsView.tsx", import.meta.url), "utf8");
 const service = readFileSync(new URL("../../services/public-finalized-game.service.ts", import.meta.url), "utf8");
 const dto = readFileSync(new URL("../../lib/public-finalized-game.ts", import.meta.url), "utf8");
 

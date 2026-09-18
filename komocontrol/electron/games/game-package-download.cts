@@ -9,10 +9,13 @@ export interface GamePackageEnvelope { packageId: string; gameId: string; packag
 export interface GamePackageV1Player { id: string; displayName: string; shirtNumber: number | null; photoUrl: string | null; }
 export interface GamePackageV1StaffMember { id: string; displayName: string; role: string; roleLabel: string | null; }
 export interface GamePackageV1Team { side: "HOME" | "AWAY"; id: string; name: string; logoUrl: string | null; players: GamePackageV1Player[]; staff: GamePackageV1StaffMember[]; }
+export interface GamePackageV1Official { id: string; displayName: string; }
+export interface GamePackageV1Officials { referees: { a: GamePackageV1Official | null; b: GamePackageV1Official | null; c: GamePackageV1Official | null }; table: { timer: GamePackageV1Official | null; shotClock: GamePackageV1Official | null; scoresheet: GamePackageV1Official | null; commissioner: GamePackageV1Official | null }; }
 export interface GamePackageV1 {
     schemaVersion: 1;
     game: { id: string; organizationId: string; competitionId: string; competitionName: string; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string | null; scheduledTime: string | null; scheduledAt: string | null; venue: string | null; };
     settings: { game_mode: "SIMPLE" | "FULL"; min_players: number; max_players: number; starting_players: number; regulation_periods: number; regulation_period_seconds: number; overtime_seconds: number; tie_allowed: boolean; winner_required: boolean; };
+    officials?: GamePackageV1Officials;
     teams: GamePackageV1Team[];
 }
 export type GamePackageDownloadResult = { ok: true; status: LocalGamePackageStatus; outcome: "stored" | "unchanged"; state: DesktopAuthState } | { ok: false; errorCode: GamePackageOperationErrorCode; state: DesktopAuthState };
@@ -47,10 +50,18 @@ function validateTeam(value: unknown, expectedSide: "HOME" | "AWAY"): void {
     for (const value of item.players) { const player = record(value); if (!player || !text(player.id) || !text(player.displayName) || !(player.shirtNumber === null || nonNegativeInteger(player.shirtNumber)) || !nullableString(player.photoUrl)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
     for (const value of item.staff) { const staff = record(value); if (!staff || !text(staff.id) || !text(staff.displayName) || !text(staff.role) || !nullableString(staff.roleLabel)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
 }
+function validateOfficial(value: unknown): void { if (value === null) return; const item = record(value); if (!item || !text(item.id) || !text(item.displayName)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
+function validateOfficials(value: unknown): void {
+    if (value === undefined) return;
+    const officials = record(value); const referees = record(officials?.referees); const table = record(officials?.table);
+    if (!officials || !referees || !table) throw new GamePackageFlowError("PACKAGE_INVALID");
+    for (const official of [referees.a, referees.b, referees.c, table.timer, table.shotClock, table.scoresheet, table.commissioner]) validateOfficial(official);
+}
 export function validateGamePackagePayload(payload: unknown, gameId: string): asserts payload is GamePackageV1 {
     const root = record(payload); const game = record(root?.game);
     if (!root || root.schemaVersion !== 1 || !game || game.id !== gameId || !text(game.organizationId) || !text(game.competitionId) || !text(game.competitionName) || !text(game.seasonName) || !nullableString(game.phaseName) || !nullableString(game.roundLabel) || !nullableString(game.scheduledDate) || !nullableString(game.scheduledTime) || !nullableString(game.scheduledAt) || !nullableString(game.venue)) throw new GamePackageFlowError("PACKAGE_INVALID");
     validateSettings(root.settings);
+    validateOfficials(root.officials);
     if (!Array.isArray(root.teams) || root.teams.length !== 2) throw new GamePackageFlowError("PACKAGE_INVALID");
     const home = root.teams.filter((team) => record(team)?.side === "HOME"); const away = root.teams.filter((team) => record(team)?.side === "AWAY");
     if (home.length !== 1 || away.length !== 1) throw new GamePackageFlowError("PACKAGE_INVALID");

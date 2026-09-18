@@ -9,6 +9,7 @@ import {
   Database,
   FileText,
   Handshake,
+  Globe2,
   LayoutDashboard,
   RefreshCw,
   ShieldCheck,
@@ -32,6 +33,7 @@ import { PlatformAccessManagement } from "./platform/PlatformAccessManagement";
 import { PlatformOrganizationManagement } from "./platform/PlatformOrganizationManagement";
 import { PlatformKomoControlManagement } from "./platform/PlatformKomoControlManagement";
 import SupportersManager from "@/components/admin/SupportersManager";
+import OrganizationPublicPageManagement from "./platform/OrganizationPublicPageManagement";
 
 type AccessibleOrganization = {
   organizationId: string;
@@ -55,6 +57,7 @@ const tabs = [
   ["teams", "Ομάδες & Συμμετοχές", ShieldCheck],
   ["players", "Παίκτες & Ρόστερ", UsersRound],
   ["movements", "Μεταγραφές & Αποχωρήσεις", UserRoundCog],
+  ["public-page", "Δημόσια Σελίδα", Globe2],
   ["komocontrol", "KomoControl", Trophy],
 ] as const;
 
@@ -97,6 +100,15 @@ function AdminHeader({ view, onRefresh }: { view: AdminView; onRefresh?: () => v
 }
 
 function AdminHome() {
+  const [canManageSupporters, setCanManageSupporters] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/admin/league?view=organizations", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => { if (active) setCanManageSupporters(payload?.isSuperAdmin === true); })
+      .catch(() => { if (active) setCanManageSupporters(false); });
+    return () => { active = false; };
+  }, []);
   return <div className="min-h-screen bg-zinc-100">
     <AdminHeader view="home" />
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-7 sm:py-16">
@@ -121,12 +133,12 @@ function AdminHome() {
           <p className="mt-3 flex-1 leading-7 text-zinc-600">Διαχείριση σεζόν, διοργανώσεων, ομάδων, παικτών, ρόστερ και αγώνων.</p>
           <span className="mt-7 inline-flex items-center gap-2 font-black text-orange-600">Άνοιγμα ενότητας <span aria-hidden="true">→</span></span>
         </Link>
-        <Link href="/admin/platform?management=supporters" className="group flex min-h-64 flex-col rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm transition hover:-translate-y-1 hover:border-orange-300 hover:shadow-xl sm:p-9">
+        {canManageSupporters && <Link href="/admin/platform?management=supporters" className="group flex min-h-64 flex-col rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm transition hover:-translate-y-1 hover:border-orange-300 hover:shadow-xl sm:p-9">
           <span className="flex size-14 items-center justify-center rounded-2xl bg-zinc-950 text-orange-500 transition group-hover:bg-orange-600 group-hover:text-white"><Handshake size={28} /></span>
           <h3 className="mt-7 text-2xl font-black text-zinc-950">Υποστηρικτές &amp; Συνεργάτες</h3>
           <p className="mt-3 flex-1 leading-7 text-zinc-600">Διαχείριση κεντρικών υποστηρικτών και συνεργατών του KomoBasket.</p>
           <span className="mt-7 inline-flex items-center gap-2 font-black text-orange-600">Άνοιγμα ενότητας <span aria-hidden="true">→</span></span>
-        </Link>
+        </Link>}
       </div>
     </main>
   </div>;
@@ -402,6 +414,29 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
     }
   };
 
+  const addMovement = async (payload: Record<string, unknown>) => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "addAthleteMovement", ...payload, organizationId: selectedOrganizationId }),
+      });
+      const responsePayload = await response.json();
+      if (!response.ok) throw new Error(responsePayload.error || "Η προσθήκη απέτυχε.");
+      setNotice("Ο αθλητής προστέθηκε στο ρόστερ και η κίνηση καταγράφηκε.");
+      await load();
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Η προσθήκη απέτυχε.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const transfer = async (payload: Record<string, unknown>) => {
     setBusy(true);
     setError("");
@@ -579,8 +614,9 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
               />
             )}
             {tab === "players" && <Players data={data} onRefreshSnapshot={load} />}
-            {tab === "komocontrol" && <PlatformKomoControlManagement organizationId={selectedOrganizationId} />}
-            {tab === "movements" && <Movements data={data} depart={depart} transfer={transfer} busy={busy} />}
+            {tab === "komocontrol" && <PlatformKomoControlManagement organizationId={selectedOrganizationId} isSuperAdmin={canManagePlatform} />}
+            {tab === "movements" && <Movements data={data} add={addMovement} depart={depart} transfer={transfer} busy={busy} />}
+            {tab === "public-page" && <OrganizationPublicPageManagement organizationId={selectedOrganizationId} role={selectedOrganization.role} />}
           </>
         )}
       </main>

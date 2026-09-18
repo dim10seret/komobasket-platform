@@ -58,12 +58,14 @@ export interface PreGameConfigurationTeamV1 {
     extraBench: ExtraBenchEntryV1[];
 }
 export interface PreGameConfigurationPresentationV1 { leftSide: TeamSide; }
+export interface PreGameConfigurationOfficialsV1 { referees: { a: string | null; b: string | null; c: string | null }; table: { timer: string | null; shotClock: string | null; scoresheet: string | null; commissioner: string | null }; }
 export interface PreGameConfigurationV1 {
     schemaVersion: 1;
     runId: string;
     gameId: string;
     teams: [PreGameConfigurationTeamV1, PreGameConfigurationTeamV1];
     presentation: PreGameConfigurationPresentationV1;
+    officials: PreGameConfigurationOfficialsV1;
 }
 
 export interface SafePreGameConfigurationPlayer {
@@ -102,6 +104,7 @@ export interface SafePreGameConfiguration {
     lifecycle: PreGameConfigurationLifecycle;
     teams: [SafePreGameConfigurationTeam, SafePreGameConfigurationTeam];
     presentation: PreGameConfigurationPresentationV1;
+    officials: PreGameConfigurationOfficialsV1;
     settings: { minPlayers: number; maxPlayers: number; startingPlayers: number; };
     createdAtUtc: string;
     updatedAtUtc: string;
@@ -127,6 +130,7 @@ export interface PreGameConfigurationSaveDraftInput {
     expectedRevision: number;
     teams: [PreGameConfigurationTeamDraft, PreGameConfigurationTeamDraft];
     presentation: PreGameConfigurationPresentationDraft;
+    officials?: PreGameConfigurationOfficialsV1;
 }
 export type PreGameConfigurationOperationResult =
     | { ok: true; outcome: "created" | "existing" | "saved"; configuration: SafePreGameConfiguration; state: DesktopAuthState }
@@ -197,6 +201,12 @@ function presentationFromUnknown(value: unknown): PreGameConfigurationPresentati
     if (!item || (item.leftSide !== "HOME" && item.leftSide !== "AWAY")) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     return { leftSide: item.leftSide };
 }
+function officialName(value: unknown): string | null { if (value === null || value === undefined || value === "") return null; if (typeof value !== "string") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID"); const normalized = value.trim(); if (!normalized) return null; if (normalized.length > 120 || /[\u0000-\u001f\u007f]/.test(normalized)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID"); return normalized; }
+export function preGameOfficialsFromUnknown(value: unknown): PreGameConfigurationOfficialsV1 {
+    if (value === undefined) return { referees: { a: null, b: null, c: null }, table: { timer: null, shotClock: null, scoresheet: null, commissioner: null } };
+    const item = record(value); const referees = record(item?.referees); const table = record(item?.table); if (!item || !referees || !table) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
+    return { referees: { a: officialName(referees.a), b: officialName(referees.b), c: officialName(referees.c) }, table: { timer: officialName(table.timer), shotClock: officialName(table.shotClock), scoresheet: officialName(table.scoresheet), commissioner: officialName(table.commissioner) } };
+}
 function parseConfiguration(json: string): PreGameConfigurationV1 {
     let value: unknown;
     try { value = JSON.parse(json); } catch { throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID"); }
@@ -204,7 +214,7 @@ function parseConfiguration(json: string): PreGameConfigurationV1 {
     if (!item || item.schemaVersion !== 1 || !runId || !gameId || !Array.isArray(item.teams) || item.teams.length !== 2) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     const teams = item.teams.map(teamFromUnknown).sort((left, right) => sideOrder(left.side) - sideOrder(right.side));
     if (teams[0]?.side !== "HOME" || teams[1]?.side !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-    return { schemaVersion: 1, runId, gameId, teams: [teams[0], teams[1]], presentation: presentationFromUnknown(item.presentation) };
+    return { schemaVersion: 1, runId, gameId, teams: [teams[0], teams[1]], presentation: presentationFromUnknown(item.presentation), officials: preGameOfficialsFromUnknown(item.officials) };
 }
 export function parseStoredPreGameConfiguration(stored: StoredLocalGameRunConfiguration): PreGameConfigurationV1 {
     if (stored.configurationSchemaVersion !== 1 || !Number.isInteger(stored.revision) || stored.revision < 1 || configurationHash(stored.configurationJson) !== stored.configurationHash) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
@@ -251,15 +261,14 @@ function validateConfiguration(configuration: PreGameConfigurationV1, run: Store
 function defaultPlayers(players: MatchSetupPlayer[]): PreGameConfigurationPlayerV1[] { return players.map((player) => ({ playerId: player.playerId, participating: false, gameShirtNumber: player.shirtNumber === null ? null : String(player.shirtNumber) })); }
 function defaultStaff(staff: MatchSetupStaffMember[]): PreGameConfigurationStaffV1[] { return staff.map((member) => ({ staffId: member.staffId, participating: false })); }
 function defaultTeam(team: MatchSetupTeam): PreGameConfigurationTeamV1 { return { side: team.side, teamId: team.teamId, players: defaultPlayers(team.players), staff: defaultStaff(team.staff), captainPlayerId: null, starterPlayerIds: [], gameColor: null, extraBench: [] }; }
-function defaultConfiguration(run: StoredLocalGameRun, setup: MatchSetup): PreGameConfigurationV1 { return { schemaVersion: 1, runId: run.runId, gameId: run.gameId, teams: [defaultTeam(setup.home), defaultTeam(setup.away)], presentation: { leftSide: "HOME" } }; }
+function defaultConfiguration(run: StoredLocalGameRun, setup: MatchSetup): PreGameConfigurationV1 { return { schemaVersion: 1, runId: run.runId, gameId: run.gameId, teams: [defaultTeam(setup.home), defaultTeam(setup.away)], presentation: { leftSide: "HOME" }, officials: { referees: { a: setup.officials.referees.a?.displayName ?? null, b: setup.officials.referees.b?.displayName ?? null, c: setup.officials.referees.c?.displayName ?? null }, table: { timer: setup.officials.table.timer?.displayName ?? null, shotClock: setup.officials.table.shotClock?.displayName ?? null, scoresheet: setup.officials.table.scoresheet?.displayName ?? null, commissioner: setup.officials.table.commissioner?.displayName ?? null } } }; }
 
 function canonicalTeamDraft(value: PreGameConfigurationTeamDraft, current: PreGameConfigurationTeamV1, source: MatchSetupTeam, lifecycle: PreGameConfigurationLifecycle): PreGameConfigurationTeamV1 {
     if (value.side !== source.side || value.players.length !== source.players.length || value.staff.length !== source.staff.length || !uniqueById(value.players, (player) => player.playerId) || !uniqueById(value.staff, (staff) => staff.staffId) || !(value.captainPlayerId === null || (typeof value.captainPlayerId === "string" && value.captainPlayerId.trim())) || !Array.isArray(value.starterPlayerIds) || !value.starterPlayerIds.every((id) => typeof id === "string" && id.trim()) || !uniqueById(value.starterPlayerIds, (id) => id)) throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
     if (lifecycle === "live" && (JSON.stringify(value.staff) !== JSON.stringify(current.staff)
-        || JSON.stringify(value.extraBench) !== JSON.stringify(current.extraBench)
         || value.captainPlayerId !== current.captainPlayerId
         || JSON.stringify(value.starterPlayerIds) !== JSON.stringify(current.starterPlayerIds))) {
-        throw liveValidation(source, "LIVE_LOCKED_FIELD_CHANGE", "Κατά τη διάρκεια του αγώνα επιτρέπονται μόνο προσθήκη παίκτη, διόρθωση αριθμού φανέλας, χρώματος ομάδας και πλευρών.");
+        throw liveValidation(source, "LIVE_LOCKED_FIELD_CHANGE", "Κατά τη διάρκεια του αγώνα επιτρέπονται μόνο προσθήκη παίκτη, διαχείριση Run-only πρόσθετου πάγκου και διόρθωση αριθμού φανέλας, χρώματος ομάδας ή πλευρών.");
     }
     const drafts = new Map(value.players.map((player) => [player.playerId, player]));
     const players = source.players.map((sourcePlayer) => {
@@ -368,7 +377,7 @@ export class PreGameConfigurationManager {
         const drafts = [...input.teams].sort((left, right) => sideOrder(left.side) - sideOrder(right.side));
         if (drafts[0]?.side !== "HOME" || drafts[1]?.side !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
         if (input.presentation.leftSide !== "HOME" && input.presentation.leftSide !== "AWAY") throw new PreGameConfigurationFlowError("CONFIGURATION_INVALID");
-        const next: PreGameConfigurationV1 = { ...current, teams: [canonicalTeamDraft(drafts[0], current.teams[0], setup.home, lifecycle), canonicalTeamDraft(drafts[1], current.teams[1], setup.away, lifecycle)], presentation: { leftSide: input.presentation.leftSide } };
+        const next: PreGameConfigurationV1 = { ...current, teams: [canonicalTeamDraft(drafts[0], current.teams[0], setup.home, lifecycle), canonicalTeamDraft(drafts[1], current.teams[1], setup.away, lifecycle)], presentation: { leftSide: input.presentation.leftSide }, officials: input.officials === undefined ? current.officials : preGameOfficialsFromUnknown(input.officials) };
         if (lifecycle === "live") validateLiveCorrection(current, next, setup);
         validateConfiguration(next, run, setup, "draft"); const configurationJson = JSON.stringify(next);
         let saved: StoredLocalGameRunConfiguration;
@@ -474,7 +483,7 @@ export class PreGameConfigurationManager {
     }
     private verifyStored(stored: StoredLocalGameRunConfiguration, run: StoredLocalGameRun, setup: MatchSetup, lifecycle: PreGameConfigurationLifecycle): SafePreGameConfiguration {
         const configuration = this.verifyStoredConfiguration(stored, run, setup);
-        return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, configurationSchemaVersion: 1, revision: stored.revision, status: stored.status, lifecycle, teams: [safeTeam(configuration.teams[0], setup.home), safeTeam(configuration.teams[1], setup.away)], presentation: configuration.presentation, settings: { minPlayers: setup.settings.minPlayers, maxPlayers: setup.settings.maxPlayers, startingPlayers: setup.settings.startingPlayers }, createdAtUtc: stored.createdAtUtc, updatedAtUtc: stored.updatedAtUtc };
+        return { runId: run.runId, gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, configurationSchemaVersion: 1, revision: stored.revision, status: stored.status, lifecycle, teams: [safeTeam(configuration.teams[0], setup.home), safeTeam(configuration.teams[1], setup.away)], presentation: configuration.presentation, officials: configuration.officials, settings: { minPlayers: setup.settings.minPlayers, maxPlayers: setup.settings.maxPlayers, startingPlayers: setup.settings.startingPlayers }, createdAtUtc: stored.createdAtUtc, updatedAtUtc: stored.updatedAtUtc };
     }
     private mapStoreError(error: unknown): PreGameConfigurationFlowError {
         const kind = localConflictKind(error);

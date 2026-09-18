@@ -47,11 +47,12 @@ function headRow(state: PublicLiveValidatorState = validator) {
 
 function databaseFor(state: PublicLiveValidatorState = validator) {
   const queries: string[] = [];
+  const bindings: unknown[][] = [];
   const database: D1DatabaseBinding = {
     prepare(query) {
       queries.push(query);
       const statement: D1PreparedStatement = {
-        bind: () => statement,
+        bind: (...values: unknown[]) => { bindings.push(values); return statement; },
         first: async <T,>() => (query.includes("FROM league_games")
           ? headRow(state)
           : query.includes("FROM league_komocontrol_match_engine_snapshots_v1 snapshot")
@@ -76,7 +77,7 @@ function databaseFor(state: PublicLiveValidatorState = validator) {
     },
     batch: async () => [],
   };
-  return { database, queries };
+  return { database, queries, bindings };
 }
 
 describe("public LIVE revision-aware short-circuit", () => {
@@ -92,6 +93,12 @@ describe("public LIVE revision-aware short-circuit", () => {
     expect(result.kind === "game" ? result.etag : null).toBe(publicLiveEtag(validator));
     expect(fixture.queries.some((query) => query.includes("league_komocontrol_match_events_v2"))).toBe(true);
     expect(mocks.project).toHaveBeenCalledOnce();
+  });
+
+  it("binds an explicit hosted organization to game ownership validation", async () => {
+    const fixture = databaseFor();
+    await readPublicLiveGameWithDb(fixture.database, "game-1", {}, "organization_runbasket");
+    expect(fixture.bindings[0]).toEqual(["game-1", "organization_runbasket"]);
   });
 
   it("returns 304 metadata before loading history or invoking projection", async () => {

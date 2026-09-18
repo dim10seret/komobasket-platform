@@ -2,7 +2,12 @@ import "server-only";
 
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { normalizeOptionalOrganizationPublicHeaderLogoUrl, normalizeOptionalPublicHttpUrl } from "@/lib/hosted-public-url";
 import { isReservedOrganizationSlug } from "@/lib/organization-slug";
+import {
+  createRevokeAllOrganizationUserSessionsStatement,
+  createRevokeSessionsWithoutActiveMembershipsStatement,
+} from "@/services/organization-user-auth.service";
 
 type OrganizationStatus = "active" | "suspended" | "archived";
 type OrganizationPublicationStatus = "unpublished" | "published";
@@ -24,6 +29,8 @@ type OrganizationRow = {
   name: string;
   status: OrganizationStatus;
   logo_url: string | null;
+  public_header_logo_url: string | null;
+  public_header_link_url: string | null;
   publication_status: OrganizationPublicationStatus;
   published_at: string | null;
   created_at: string;
@@ -38,6 +45,8 @@ type AppUserRow = {
   display_name: string | null;
   status: AppUserStatus;
   is_super_admin: number;
+  credential_configured: number;
+  password_set_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -150,7 +159,7 @@ function normalizeEmail(value: unknown) {
   return email;
 }
 
-function normalizeSlug(value: unknown) {
+function normalizeSlug(value: unknown, allowCentralKomoBasket = false) {
   const slug = requiredText(value, "slug").toLowerCase();
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
     throw new PlatformManagementError(
@@ -159,7 +168,7 @@ function normalizeSlug(value: unknown) {
       400,
     );
   }
-  if (isReservedOrganizationSlug(slug)) {
+  if (isReservedOrganizationSlug(slug) && !(allowCentralKomoBasket && slug === "komobasket")) {
     throw new PlatformManagementError(
       "reserved_organization_slug",
       "Το slug είναι δεσμευμένο από την πλατφόρμα.",
@@ -208,7 +217,8 @@ async function loadOrganization(id: string) {
   const db = await requireDatabase();
   return db
     .prepare(
-      `SELECT id, slug, name, status, logo_url, publication_status, published_at,
+      `SELECT id, slug, name, status, logo_url, public_header_logo_url,
+              public_header_link_url, publication_status, published_at,
               created_at, updated_at
        FROM league_organizations WHERE id = ?`,
     )
@@ -256,9 +266,13 @@ async function loadUser(id: string) {
   const db = await requireDatabase();
   return db
     .prepare(
-      `SELECT id, email, normalized_email, display_name, status,
-              is_super_admin, created_at, updated_at
-       FROM league_app_users WHERE id = ?`,
+      `SELECT u.id, u.email, u.normalized_email, u.display_name, u.status,
+              u.is_super_admin,
+              CASE WHEN c.user_id IS NULL THEN 0 ELSE 1 END AS credential_configured,
+              c.password_set_at, u.created_at, u.updated_at
+       FROM league_app_users u
+       LEFT JOIN league_user_credentials c ON c.user_id = u.id
+       WHERE u.id = ?`,
     )
     .bind(id)
     .first<AppUserRow>();
@@ -286,7 +300,8 @@ export async function listManagedOrganizations(user: CanonicalAppUser) {
   if (user.isSuperAdmin) {
     const result = await db
       .prepare(
-        `SELECT id, slug, name, status, logo_url, publication_status, published_at,
+        `SELECT id, slug, name, status, logo_url, public_header_logo_url,
+                public_header_link_url, publication_status, published_at,
                 created_at, updated_at
          FROM league_organizations ORDER BY name, id`,
       )
@@ -296,7 +311,8 @@ export async function listManagedOrganizations(user: CanonicalAppUser) {
 
   const result = await db
     .prepare(
-      `SELECT o.id, o.slug, o.name, o.status, o.logo_url, o.publication_status,
+      `SELECT o.id, o.slug, o.name, o.status, o.logo_url,
+              o.public_header_logo_url, o.public_header_link_url, o.publication_status,
               o.published_at, o.created_at, o.updated_at, m.role
        FROM league_organization_memberships m
        JOIN league_organizations o ON o.id = m.organization_id
@@ -312,9 +328,13 @@ export async function listManagedUsers() {
   const db = await requireDatabase();
   const result = await db
     .prepare(
-      `SELECT id, email, normalized_email, display_name, status,
-              is_super_admin, created_at, updated_at
-       FROM league_app_users ORDER BY normalized_email, id`,
+      `SELECT u.id, u.email, u.normalized_email, u.display_name, u.status,
+              u.is_super_admin,
+              CASE WHEN c.user_id IS NULL THEN 0 ELSE 1 END AS credential_configured,
+              c.password_set_at, u.created_at, u.updated_at
+       FROM league_app_users u
+       LEFT JOIN league_user_credentials c ON c.user_id = u.id
+       ORDER BY u.normalized_email, u.id`,
     )
     .all<AppUserRow>();
   return result.results ?? [];
@@ -402,7 +422,9 @@ export async function updateManagedOrganization(
     throw new PlatformManagementError("organization_not_found", "Ο Οργανισμός δεν βρέθηκε.", 404);
   }
   const name = input.name === undefined ? current.name : requiredText(input.name, "name");
-  const slug = input.slug === undefined ? current.slug : normalizeSlug(input.slug);
+  const slug = input.slug === undefined
+    ? current.slug
+    : normalizeSlug(input.slug, current.id === "organization_komobasket");
   const status = input.status === undefined
     ? current.status
     : enumValue(input.status, ORGANIZATION_STATUSES, "status");
@@ -412,6 +434,18 @@ export async function updateManagedOrganization(
         input.publicationStatus ?? input.publication_status,
         ORGANIZATION_PUBLICATION_STATUSES,
         "publicationStatus",
+      );
+  const publicHeaderLogoUrl = input.publicHeaderLogoUrl === undefined && input.public_header_logo_url === undefined
+    ? current.public_header_logo_url
+    : normalizeOptionalOrganizationPublicHeaderLogoUrl(
+        input.publicHeaderLogoUrl ?? input.public_header_logo_url,
+        id,
+      );
+  const publicHeaderLinkUrl = input.publicHeaderLinkUrl === undefined && input.public_header_link_url === undefined
+    ? current.public_header_link_url
+    : normalizeOptionalPublicHttpUrl(
+        input.publicHeaderLinkUrl ?? input.public_header_link_url,
+        "Public header link URL",
       );
   const db = await requireDatabase();
   const duplicate = await db
@@ -430,6 +464,7 @@ export async function updateManagedOrganization(
       .prepare(
         `UPDATE league_organizations
          SET name = ?, slug = ?, status = ?, publication_status = ?,
+             public_header_logo_url = ?, public_header_link_url = ?,
              published_at = CASE
                WHEN ? = 'published' THEN COALESCE(published_at, CURRENT_TIMESTAMP)
                ELSE published_at
@@ -437,13 +472,73 @@ export async function updateManagedOrganization(
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
       )
-      .bind(name, slug, status, publicationStatus, publicationStatus, id),
+      .bind(
+        name,
+        slug,
+        status,
+        publicationStatus,
+        publicHeaderLogoUrl,
+        publicHeaderLinkUrl,
+        publicationStatus,
+        id,
+      ),
     auditStatement(db, actorEmail, "update", "organization", id, {
-      before: { name: current.name, slug: current.slug, status: current.status, publicationStatus: current.publication_status },
-      after: { name, slug, status, publicationStatus },
+      before: {
+        name: current.name,
+        slug: current.slug,
+        status: current.status,
+        publicationStatus: current.publication_status,
+        publicHeaderLogoUrl: current.public_header_logo_url,
+        publicHeaderLinkUrl: current.public_header_link_url,
+      },
+      after: { name, slug, status, publicationStatus, publicHeaderLogoUrl, publicHeaderLinkUrl },
     }),
   ]);
   return loadOrganization(id);
+}
+
+export async function updateManagedOrganizationPublicPresentation(
+  organizationId: string,
+  input: Record<string, unknown>,
+  actorEmail: string,
+) {
+  rejectKeys(input, [
+    "id", "organization_id", "name", "slug", "status",
+    "publicationStatus", "publication_status", "logoUrl", "logo_url",
+    "publishedAt", "published_at",
+  ]);
+  const current = await loadOrganization(organizationId);
+  if (!current) {
+    throw new PlatformManagementError("organization_not_found", "Ο Οργανισμός δεν βρέθηκε.", 404);
+  }
+  const publicHeaderLogoUrl = input.publicHeaderLogoUrl === undefined && input.public_header_logo_url === undefined
+    ? current.public_header_logo_url
+    : normalizeOptionalOrganizationPublicHeaderLogoUrl(
+        input.publicHeaderLogoUrl ?? input.public_header_logo_url,
+        organizationId,
+      );
+  const publicHeaderLinkUrl = input.publicHeaderLinkUrl === undefined && input.public_header_link_url === undefined
+    ? current.public_header_link_url
+    : normalizeOptionalPublicHttpUrl(
+        input.publicHeaderLinkUrl ?? input.public_header_link_url,
+        "Public header link URL",
+      );
+  const db = await requireDatabase();
+  await db.batch([
+    db.prepare(
+      `UPDATE league_organizations
+       SET public_header_logo_url = ?, public_header_link_url = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    ).bind(publicHeaderLogoUrl, publicHeaderLinkUrl, organizationId),
+    auditStatement(db, actorEmail, "update", "organization_public_presentation", organizationId, {
+      before: {
+        publicHeaderLogoUrl: current.public_header_logo_url,
+        publicHeaderLinkUrl: current.public_header_link_url,
+      },
+      after: { publicHeaderLogoUrl, publicHeaderLinkUrl },
+    }),
+  ]);
+  return loadOrganization(organizationId);
 }
 
 export async function updateManagedOrganizationLogo(
@@ -616,7 +711,7 @@ export async function updateManagedUser(
       409,
     );
   }
-  await db.batch([
+  const statements = [
     db
       .prepare(
         `UPDATE league_app_users
@@ -633,7 +728,16 @@ export async function updateManagedUser(
       },
       after: { email: normalizedEmail, displayName, status },
     }),
-  ]);
+  ];
+  if (
+    current.is_super_admin === 0
+    && (normalizedEmail !== current.normalized_email || status === "disabled")
+  ) {
+    statements.push(
+      createRevokeAllOrganizationUserSessionsStatement(db, id, new Date().toISOString()),
+    );
+  }
+  await db.batch(statements);
   return loadUser(id);
 }
 
@@ -710,7 +814,7 @@ export async function updateManagedMembership(
     ? current.status
     : enumValue(input.status, MEMBERSHIP_STATUSES, "status");
   const db = await requireDatabase();
-  await db.batch([
+  const statements = [
     db
       .prepare(
         `UPDATE league_organization_memberships
@@ -731,7 +835,17 @@ export async function updateManagedMembership(
         after: { role, status },
       },
     ),
-  ]);
+  ];
+  if (current.status === "active" && status !== "active") {
+    statements.push(
+      createRevokeSessionsWithoutActiveMembershipsStatement(
+        db,
+        current.user_id,
+        new Date().toISOString(),
+      ),
+    );
+  }
+  await db.batch(statements);
   return loadMembership(membershipId);
 }
 

@@ -13,6 +13,8 @@ type ManagedOrganization = {
   slug: string;
   status: OrganizationStatus;
   logo_url: string | null;
+  public_header_logo_url: string | null;
+  public_header_link_url: string | null;
   publication_status: "unpublished" | "published";
   published_at: string | null;
 };
@@ -48,6 +50,13 @@ async function uploadLogo(organizationId: string, file: File) {
   return readPayload(await fetch("/api/admin/organization-logo", { method: "POST", body }));
 }
 
+async function uploadPublicHeaderLogo(organizationId: string, file: File) {
+  const body = new FormData();
+  body.set("organizationId", organizationId);
+  body.set("file", file);
+  return readPayload(await fetch("/api/admin/organization-public-header-logo", { method: "POST", body }));
+}
+
 export function PlatformOrganizationManagement({ initialCreate = false }: { initialCreate?: boolean }) {
   const [organizations, setOrganizations] = useState<ManagedOrganization[]>([]);
   const [editing, setEditing] = useState<ManagedOrganization | null>(null);
@@ -78,6 +87,7 @@ export function PlatformOrganizationManagement({ initialCreate = false }: { init
     setBusy("create"); setError(""); setNotice("");
     const form = new FormData(event.currentTarget);
     const logo = form.get("logo");
+    const publicHeaderLogo = form.get("publicHeaderLogo");
     try {
       const payload = await readPayload(await fetch("/api/admin/platform/organizations", {
         method: "POST",
@@ -105,15 +115,26 @@ export function PlatformOrganizationManagement({ initialCreate = false }: { init
     setBusy(`edit-${editing.id}`); setError(""); setNotice("");
     const form = new FormData(event.currentTarget);
     const logo = form.get("logo");
+    const publicHeaderLogo = form.get("publicHeaderLogo");
     try {
       await readPayload(await fetch("/api/admin/platform/organizations", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ organizationId: editing.id, name: form.get("name"), slug: form.get("slug"), status: form.get("status") }),
+        body: JSON.stringify({
+          organizationId: editing.id,
+          name: form.get("name"),
+          slug: form.get("slug"),
+          status: form.get("status"),
+          publicationStatus: form.get("publicationStatus"),
+          publicHeaderLinkUrl: form.get("publicHeaderLinkUrl"),
+        }),
       }));
       let logoFailed = false;
       if (logo instanceof File && logo.size > 0) {
         try { await uploadLogo(editing.id, logo); } catch { logoFailed = true; }
+      }
+      if (publicHeaderLogo instanceof File && publicHeaderLogo.size > 0) {
+        try { await uploadPublicHeaderLogo(editing.id, publicHeaderLogo); } catch { logoFailed = true; }
       }
       setEditing(null);
       await loadOrganizations();
@@ -189,7 +210,10 @@ export function PlatformOrganizationManagement({ initialCreate = false }: { init
         <label className="block text-sm font-black text-zinc-700">Όνομα<input name="name" required defaultValue={editing.name} className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
         <label className="block text-sm font-black text-zinc-700">Slug<input name="slug" required defaultValue={editing.slug} className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /><span className="mt-2 block text-xs font-medium leading-5 text-amber-700">Μελλοντικοί δημόσιοι σύνδεσμοι μπορεί να εξαρτώνται από το slug. Δεν διατηρείται ιστορικό ανακατευθύνσεων.</span></label>
         <label className="block text-sm font-black text-zinc-700">Λειτουργική κατάσταση<select name="status" defaultValue={editing.status} className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold"><option value="active">Ενεργός</option><option value="suspended">Σε αναστολή</option><option value="archived">Αρχειοθετημένος</option></select></label>
-        <label className="block text-sm font-black text-zinc-700">Αλλαγή λογοτύπου<input name="logo" type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="mt-2 block w-full text-sm font-semibold text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:font-black" /></label>
+        <label className="block text-sm font-black text-zinc-700">Public microsite<select name="publicationStatus" defaultValue={editing.publication_status} className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold"><option value="unpublished">Unpublished</option><option value="published">Published</option></select></label>
+        <label className="block text-sm font-black text-zinc-700">Σύνδεσμος λογοτύπου (προαιρετικό)<input name="publicHeaderLinkUrl" type="url" defaultValue={editing.public_header_link_url ?? ""} placeholder="https://..." className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /><span className="mt-2 block text-xs font-medium leading-5 text-zinc-500">Αν συμπληρωθεί, το λογότυπο θα είναι clickable και θα ανοίγει αυτόν τον σύνδεσμο.</span></label>
+        <label className="block text-sm font-black text-zinc-700">Αλλαγή public header λογοτύπου{editing.public_header_logo_url && <img src={editing.public_header_logo_url} alt="Τρέχον public header logo" className="mt-2 h-16 max-w-48 rounded-xl border border-zinc-200 bg-zinc-50 object-contain p-2" />}<input name="publicHeaderLogo" type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="mt-2 block w-full text-sm font-semibold text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:font-black" /></label>
+        <label className="block text-sm font-black text-zinc-700">Αλλαγή canonical λογοτύπου<input name="logo" type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="mt-2 block w-full text-sm font-semibold text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:font-black" /></label>
         <button type="submit" disabled={Boolean(busy)} className="w-full rounded-xl bg-orange-600 px-4 py-3 font-black text-white disabled:opacity-50">Αποθήκευση αλλαγών</button>
         <div className="border-t border-zinc-200 pt-4">
           <p className="text-sm leading-6 text-zinc-600">Η αρχειοθέτηση είναι η ασφαλής επιλογή κύκλου ζωής. Διαγραφή επιτρέπεται μόνο όταν δεν υπάρχουν διοργανώσεις, ομάδες, παίκτες, staff ή memberships.</p>

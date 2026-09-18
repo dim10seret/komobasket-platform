@@ -141,7 +141,11 @@ describe("KomoControl typed gameplay intent boundary", () => {
             },
         };
         const result = safeGameplay(recovery, { lastAcknowledgedHistoryRevision: 2, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: "SYNC_PENDING_CONFIGURATION", consecutiveFailures: 0, nextRetryAtUtc: null });
-        expect(result.teams).toMatchObject([{ side: "HOME", presentationSide: "RIGHT", gameColor: "#FF0000", discipline: { headCoachCategory1TechnicalCount: 1 }, players: [{ playerId: "home-1", shirtNumber: "0" }] }, { side: "AWAY", presentationSide: "LEFT", gameColor: "#00FF00", discipline: { benchCategory1TechnicalCount: 1 }, players: [{ playerId: "away-1", shirtNumber: "00" }] }]);
+        expect(result.gameMode).toBe("FULL");
+        expect(result.teams).toMatchObject([{ side: "HOME", presentationSide: "RIGHT", gameColor: "#FF0000", nextDefensivePersonalFoulCreatesPenalty: false, discipline: { headCoachCategory1TechnicalCount: 1 }, players: [{ playerId: "home-1", shirtNumber: "0" }] }, { side: "AWAY", presentationSide: "LEFT", gameColor: "#00FF00", nextDefensivePersonalFoulCreatesPenalty: false, discipline: { benchCategory1TechnicalCount: 1 }, players: [{ playerId: "away-1", shirtNumber: "00" }] }]);
+        recovery.state.away.teamFouls = 4;
+        expect(safeGameplay(recovery, { lastAcknowledgedHistoryRevision: 2, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: "SYNC_PENDING_CONFIGURATION", consecutiveFailures: 0, nextRetryAtUtc: null }).teams[1].nextDefensivePersonalFoulCreatesPenalty).toBe(true);
+        recovery.state.away.teamFouls = 0;
         expect(result.sync).toMatchObject({ status: "pending", lastErrorCode: null });
         expect(result.latestEvent).toMatchObject({ eventId: "shot", sequence: 3, type: "TWO_POINT" });
         expect(result.periodScores).toEqual([{ period: { kind: "REGULATION", index: 1 }, home: 2, away: 0 }]);
@@ -155,5 +159,7 @@ describe("KomoControl typed gameplay intent boundary", () => {
         expect(result).not.toHaveProperty("eventIds");
         expect(result).not.toHaveProperty("events");
         expect(JSON.stringify(result)).not.toMatch(/configurationJson|configurationHash|payload|token/i);
+        recovery.setup.settings.gameMode = "SIMPLE";
+        expect(safeGameplay(recovery, { lastAcknowledgedHistoryRevision: 2, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: "SYNC_PENDING_CONFIGURATION", consecutiveFailures: 0, nextRetryAtUtc: null }).gameMode).toBe("SIMPLE");
     });
 });

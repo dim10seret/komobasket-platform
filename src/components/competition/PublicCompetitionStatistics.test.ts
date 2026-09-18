@@ -8,7 +8,7 @@ vi.mock("@/services/public-competition.service", () => ({ CANONICAL_PUBLIC_SEASO
 vi.mock("@/services/platform-match-report.service", () => ({ readAuthoritativeCompetitionStatisticalGamesWithDb: vi.fn(async () => []) }));
 
 const component = readFileSync(new URL("./PublicCompetitionStatistics.tsx", import.meta.url), "utf8");
-const page = readFileSync(new URL("../../app/stats/page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../../app/(central)/stats/page.tsx", import.meta.url), "utf8");
 const header = readFileSync(new URL("../layout/Header.tsx", import.meta.url), "utf8");
 const service = readFileSync(new URL("../../services/public-competition-statistics.service.ts", import.meta.url), "utf8");
 const reportService = readFileSync(new URL("../../services/platform-match-report.service.ts", import.meta.url), "utf8");

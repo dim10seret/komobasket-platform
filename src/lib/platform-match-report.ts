@@ -1,5 +1,7 @@
 export type MatchReportUnavailableReason = "NOT_FINALIZED" | "LEGACY_RESULT" | "INCONSISTENT_DATA";
 
+export type PlatformMatchReportMode = "SIMPLE" | "FULL";
+
 export type PlatformMatchReportAvailability = {
   available: boolean;
   hasIncidentReport: boolean;
@@ -46,6 +48,7 @@ export type PlatformMatchReportTeamStatistics = {
 };
 
 export type PlatformMatchReport = {
+  mode: PlatformMatchReportMode;
   availability: PlatformMatchReportAvailability;
   game: {
     gameId: string;
@@ -68,6 +71,17 @@ export type PlatformMatchReport = {
   };
   incidentReport: string | null;
 };
+
+export function platformMatchReportMode(packageSnapshotJson: string): PlatformMatchReportMode {
+  let parsed: unknown;
+  try { parsed = JSON.parse(packageSnapshotJson); } catch { throw new Error("MATCH_REPORT_MODE_INVALID"); }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("MATCH_REPORT_MODE_INVALID");
+  const settings = (parsed as Record<string, unknown>).settings;
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) throw new Error("MATCH_REPORT_MODE_INVALID");
+  const mode = (settings as Record<string, unknown>).game_mode;
+  if (mode !== "SIMPLE" && mode !== "FULL") throw new Error("MATCH_REPORT_MODE_INVALID");
+  return mode;
+}
 
 export type PlatformMatchReportConsistencySource = {
   gameId: string;

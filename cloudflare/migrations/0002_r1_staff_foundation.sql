@@ -4,7 +4,7 @@
 PRAGMA foreign_keys = ON;
 
 ALTER TABLE league_players
-  ADD COLUMN IF NOT EXISTS photo_url TEXT;
+  ADD COLUMN photo_url TEXT;
 
 CREATE TABLE IF NOT EXISTS league_staff (
   id TEXT PRIMARY KEY,

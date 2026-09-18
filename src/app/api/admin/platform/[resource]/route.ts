@@ -17,18 +17,26 @@ import {
   updateManagedOrganization,
   updateManagedUser,
 } from "@/services/platform-management.service";
+import {
+  getOrganizationUserCredentialStatus,
+  organizationUserAuthErrorResponse,
+  setOrganizationUserPassword,
+} from "@/services/organization-user-auth.service";
 
-type ManagementResource = "organizations" | "users" | "memberships";
+type ManagementResource = "organizations" | "users" | "memberships" | "user-credentials";
 
 function isManagementResource(value: string): value is ManagementResource {
-  return value === "organizations" || value === "users" || value === "memberships";
+  return value === "organizations"
+    || value === "users"
+    || value === "memberships"
+    || value === "user-credentials";
 }
 
 async function requestContext(
   request: Request,
   context: { params: Promise<{ resource: string }> },
 ) {
-  const authorization = requireAdmin(request);
+  const authorization = await requireAdmin(request);
   if (authorization.response) return { response: authorization.response } as const;
   const { resource } = await context.params;
   if (!isManagementResource(resource)) {
@@ -44,6 +52,7 @@ function errorResponse(error: unknown) {
   return (
     platformAuthorizationErrorResponse(error) ??
     platformManagementErrorResponse(error) ??
+    organizationUserAuthErrorResponse(error) ??
     Response.json(
       { error: error instanceof Error ? error.message : "Η ενέργεια απέτυχε." },
       { status: 400 },
@@ -67,6 +76,13 @@ export async function GET(
       return Response.json({ users: await listManagedUsers() });
     }
     const url = new URL(request.url);
+    if (resolved.resource === "user-credentials") {
+      return Response.json({
+        credential: await getOrganizationUserCredentialStatus(
+          url.searchParams.get("userId")?.trim() ?? "",
+        ),
+      });
+    }
     return Response.json({
       memberships: await listManagedMemberships({
         organizationId: url.searchParams.get("organizationId")?.trim() || undefined,
@@ -100,6 +116,27 @@ export async function POST(
         { status: 201 },
       );
     }
+    if (resolved.resource === "user-credentials") {
+      const userId = typeof input.userId === "string" ? input.userId.trim() : "";
+      const password = typeof input.password === "string" ? input.password : "";
+      const confirmPassword = typeof input.confirmPassword === "string"
+        ? input.confirmPassword
+        : "";
+      if (!userId || password !== confirmPassword) {
+        return Response.json(
+          { error: "Οι δύο κωδικοί πρέπει να είναι ίδιοι." },
+          { status: 400 },
+        );
+      }
+      const credential = await setOrganizationUserPassword(userId, password);
+      return Response.json({
+        credential: {
+          userId: credential.userId,
+          credentialConfigured: true,
+          passwordSetAt: credential.passwordSetAt,
+        },
+      });
+    }
     return Response.json(
       { membership: await createManagedMembership(input, actorEmail) },
       { status: 201 },
@@ -126,6 +163,12 @@ export async function PATCH(
     }
     if (resolved.resource === "users") {
       return Response.json({ user: await updateManagedUser(input, actorEmail) });
+    }
+    if (resolved.resource === "user-credentials") {
+      return Response.json(
+        { error: "Η μέθοδος δεν υποστηρίζεται για κωδικούς." },
+        { status: 405 },
+      );
     }
     return Response.json({
       membership: await updateManagedMembership(input, actorEmail),

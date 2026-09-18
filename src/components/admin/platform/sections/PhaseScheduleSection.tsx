@@ -1,5 +1,7 @@
 "use client";
 
+import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
+
 import type { FormEvent, MouseEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -214,14 +216,14 @@ export function PhaseFields({
             const stepNumber = index + 1;
             const isActive = activeStep === stepNumber;
             return (
-              <button
+              <PlatformButton
                 key={step}
                 type="button"
                 onClick={() => setActiveStep(stepNumber)}
                 className={`rounded-lg px-3 py-2 text-xs font-black ${isActive ? "bg-orange-600 text-white" : "bg-white text-zinc-700"}`}
               >
                 {step}
-              </button>
+              </PlatformButton>
             );
           })}
         </div>
@@ -296,22 +298,22 @@ export function PhaseFields({
                     <span>{standingsTieBreakerLabel[key] ?? key}</span>
                   </span>
                   <span className="inline-flex gap-1">
-                    <button
+                    <PlatformButton
                       type="button"
                       disabled={!canMoveUp(index)}
                       onClick={() => moveTieBreaker(index, -1)}
                       className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
                     >
                       ↑
-                    </button>
-                    <button
+                    </PlatformButton>
+                    <PlatformButton
                       type="button"
                       disabled={!canMoveDown(index)}
                       onClick={() => moveTieBreaker(index, 1)}
                       className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
                     >
                       ↓
-                    </button>
+                    </PlatformButton>
                   </span>
                 </label>;
               })}
@@ -411,22 +413,22 @@ export function PhaseFields({
                       <span>{standingsTieBreakerLabel[key] ?? key}</span>
                     </span>
                     <span className="inline-flex gap-1">
-                      <button
+                      <PlatformButton
                         type="button"
                         disabled={!canMoveUp(index)}
                         onClick={() => moveTieBreaker(index, -1)}
                         className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
                       >
                         ↑
-                      </button>
-                      <button
+                      </PlatformButton>
+                      <PlatformButton
                         type="button"
                         disabled={!canMoveDown(index)}
                         onClick={() => moveTieBreaker(index, 1)}
                         className="rounded-lg border border-zinc-300 px-2 py-1 text-xs font-bold disabled:opacity-30"
                       >
                         ↓
-                      </button>
+                      </PlatformButton>
                     </span>
                   </label>;
                 })}
@@ -438,10 +440,10 @@ export function PhaseFields({
         )}
 
         <div className="flex flex-wrap justify-end gap-2 border-t border-zinc-200 pt-4">
-          <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => onCancel?.()}>Ακύρωση</button>
-          {canGoPrevious && <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.max(1, current - 1))}>Προηγούμενο</button>}
+          <PlatformButton type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => onCancel?.()}>Ακύρωση</PlatformButton>
+          {canGoPrevious && <PlatformButton type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.max(1, current - 1))}>Προηγούμενο</PlatformButton>}
           {showSave ? (
-            <button
+            <PlatformButton
               type="button"
               disabled={isSaving}
               className="rounded-xl border border-orange-600 bg-orange-600 px-4 py-2.5 font-black text-white transition duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
@@ -459,8 +461,8 @@ export function PhaseFields({
               }}
             >
               {isSaving ? "Αποθήκευση..." : "Αποθήκευση Φάσης"}
-            </button>
-          ) : <button type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.min(4, current + 1))}>Επόμενο</button>}
+            </PlatformButton>
+          ) : <PlatformButton type="button" className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black" onClick={() => setActiveStep((current) => Math.min(4, current + 1))}>Επόμενο</PlatformButton>}
         </div>
       </div>
     );
@@ -470,7 +472,7 @@ export function PhaseFields({
     {renderStepperHeader()}
     {renderStepContent()}
     {!shouldUseStepper && (
-      <button type="submit" name="phaseSave" data-c4-save="1" className="rounded-xl border border-orange-600 bg-orange-600 px-4 py-2.5 font-black text-white disabled:opacity-60">Αποθήκευση Φάσης</button>
+      <PlatformButton mutation type="submit" name="phaseSave" data-c4-save="1" className="rounded-xl border border-orange-600 bg-orange-600 px-4 py-2.5 font-black text-white disabled:opacity-60">Αποθήκευση Φάσης</PlatformButton>
     )}
   </div>;
 }
@@ -586,13 +588,13 @@ export function StandingsPhasePreview({
                 <td className="px-2 py-2 text-zinc-700">{row.rank}</td>
                 <td className="px-2 py-2 text-zinc-700">
                   {row.placeholder || !openTeamRoster || !row.teamId ? row.team : (
-                    <button
+                    <PlatformButton
                       type="button"
                       className="text-left font-black text-blue-700 underline decoration-blue-300 hover:text-blue-900"
                       onClick={() => openTeamRoster(row.teamId, competitionId, seasonId)}
                     >
                       {row.team}
-                    </button>
+                    </PlatformButton>
                   )}
                 </td>
                 <td className="px-2 py-2 text-right text-zinc-700">{row.gamesPlayed}</td>
@@ -613,6 +615,7 @@ export function StandingsPhasePreview({
 }
 
 export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(r:string,e:FormEvent<HTMLFormElement>)=>void;updateEntity:UpdateEntity;busy:boolean}) {
+  const { request: fetch, url: platformUrl } = usePlatformContext();
   const [selectedCompetitionId,setSelectedCompetitionId]=useState("");
   const [editingPhaseId,setEditingPhaseId]=useState<string|null>(null);
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
@@ -766,11 +769,11 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
 
   return <>
     <Panel title="Competition Format & φάσεις" description="Κάθε διοργάνωση μπορεί να έχει το δικό της format. Οι φάσεις και οι κανόνες τους μπορούν να αλλάξουν οποιαδήποτε στιγμή χωρίς να διαγράφεται το ιστορικό.">
-      <form onSubmit={(event)=>void submit("phases",event)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <PlatformForm onSubmit={(event)=>void submit("phases",event)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Field label="Διοργάνωση"><select required name="competitionId" value={selectedCompetitionId} onChange={(event)=>setSelectedCompetitionId(event.target.value)} className={inputClass}><option value="">Επιλογή</option>{data.competitions.map((competition)=><option key={String(competition.id)} value={String(competition.id)}>{competition.season_name} · {competition.name}</option>)}</select></Field>
         <PhaseFields data={data} competitionId={selectedCompetitionId}/>
-        <button disabled={busy} className={`${buttonClass} sm:col-span-2 xl:col-span-4 xl:justify-self-start`}>Προσθήκη φάσης</button>
-      </form>
+        <PlatformButton mutation disabled={busy} className={`${buttonClass} sm:col-span-2 xl:col-span-4 xl:justify-self-start`}>Προσθήκη φάσης</PlatformButton>
+      </PlatformForm>
           <div className="mt-7 grid gap-4 xl:grid-cols-2">
         {data.phases.map((phase)=>{
           const id=String(phase.id);
@@ -810,7 +813,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                 <h3 className="mt-1 text-lg font-black text-zinc-950">{phase.name}</h3>
                 <p className="mt-2 text-sm text-zinc-600">{phaseFormatLabel(phaseFormat)} · σειρά {phase.order_index ?? 0}</p>
               </div>
-              <button type="button" onClick={()=>setEditingPhaseId(isEditing?null:id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing?"Αρχικό μενού Φάσεων":"Edit"}</button>
+              <PlatformButton mutation type="button" onClick={()=>setEditingPhaseId(isEditing?null:id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing?"Αρχικό μενού Φάσεων":"Edit"}</PlatformButton>
             </div>
             {!isEditing && phaseFormat === "standings" && (
               <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm">
@@ -818,26 +821,26 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                   {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
                 </span>
                 {!isFinalized && (
-                  <form onSubmit={(event) => void updateEntity("phases", id, event, "Η φάση οριστικοποιήθηκε.")}>
+                  <PlatformForm onSubmit={(event) => void updateEntity("phases", id, event, "Η φάση οριστικοποιήθηκε.")}>
                     <input type="hidden" name="action" value="finalizePhase" />
                     <input type="hidden" name="phaseId" value={id} />
                     <input type="hidden" name="competitionId" value={String(phase.competition_id)} />
-                    <button type="submit" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100">Οριστικοποίηση φάσης</button>
-                  </form>
+                    <PlatformButton mutation type="submit" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100">Οριστικοποίηση φάσης</PlatformButton>
+                  </PlatformForm>
                 )}
               </div>
             )}
             {!isEditing && phaseFormat === "standings" && !isFinalized && (
-              <form onSubmit={(event) => void updateEntity("phases", id, event, "Η φάση οριστικοποιήθηκε.")} className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <PlatformForm onSubmit={(event) => void updateEntity("phases", id, event, "Η φάση οριστικοποιήθηκε.")} className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
                 <input type="hidden" name="action" value="finalizePhase" />
                 <input type="hidden" name="phaseId" value={id} />
                 <input type="hidden" name="competitionId" value={String(phase.competition_id)} />
                 <p className="text-sm font-semibold text-amber-900">Η οριστικοποίηση της φάσης επιτρέπει στην τελική κατάταξη να χρησιμοποιηθεί από επόμενες φάσεις.</p>
-                <button type="submit" className="mt-3 rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-amber-700">Οριστικοποίηση φάσης</button>
-              </form>
+                <PlatformButton mutation type="submit" className="mt-3 rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-amber-700">Οριστικοποίηση φάσης</PlatformButton>
+              </PlatformForm>
             )}
             {!isEditing && phaseFormat === "standings" && <StandingsPhasePreview data={data} phase={phase} openTeamRoster={showTeamRosterPopup} />}
-            {isEditing && <form
+            {isEditing && <PlatformForm
               ref={phaseEditFormRef}
               onSubmit={(event)=>void handleEditFormSubmit(event)}
               className="mt-5 w-full space-y-4 border-t border-zinc-200 pt-5"
@@ -851,13 +854,13 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                 onExplicitSave={handlePhaseSave}
                 onCancel={() => setEditingPhaseId(null)}
               />
-            </form>}
+            </PlatformForm>}
           </article>;
         })}
         {!data.phases.length && <p className="text-sm text-zinc-500">Δεν έχουν δημιουργηθεί ακόμη φάσεις.</p>}
       </div>
     </Panel>
-    <Panel title="Νέος αγώνας"><form onSubmit={(e)=>void submit("games",e)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Field label="Διοργάνωση"><select required name="competitionId" className={inputClass}><option value="">Επιλογή</option>{data.competitions.map(c=><option key={String(c.id)} value={String(c.id)}>{c.season_name} · {c.name}</option>)}</select></Field><Field label="Φάση"><select name="phaseId" className={inputClass}><option value="">Χωρίς φάση</option>{data.phases.map(p=><option key={String(p.id)} value={String(p.id)}>{p.competition_name} · {p.name}</option>)}</select></Field><Field label="Γύρος / αγωνιστική"><input name="roundLabel" className={inputClass}/></Field><Field label="Ημερομηνία & ώρα"><input name="scheduledAt" type="datetime-local" className={inputClass}/></Field><Field label="Γηπεδούχος"><select required name="homeTeamId" className={inputClass}><option value="">Επιλογή</option>{data.teams.map(t=><option key={String(t.id)} value={String(t.id)}>{t.name}</option>)}</select></Field><Field label="Φιλοξενούμενος"><select required name="awayTeamId" className={inputClass}><option value="">Επιλογή</option>{data.teams.map(t=><option key={String(t.id)} value={String(t.id)}>{t.name}</option>)}</select></Field><Field label="Γήπεδο"><input name="venue" className={inputClass}/></Field><button disabled={busy} className={`${buttonClass} self-end`}>Προσθήκη αγώνα</button></form></Panel>
+    <Panel title="Νέος αγώνας"><PlatformForm onSubmit={(e)=>void submit("games",e)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Field label="Διοργάνωση"><select required name="competitionId" className={inputClass}><option value="">Επιλογή</option>{data.competitions.map(c=><option key={String(c.id)} value={String(c.id)}>{c.season_name} · {c.name}</option>)}</select></Field><Field label="Φάση"><select name="phaseId" className={inputClass}><option value="">Χωρίς φάση</option>{data.phases.map(p=><option key={String(p.id)} value={String(p.id)}>{p.competition_name} · {p.name}</option>)}</select></Field><Field label="Γύρος / αγωνιστική"><input name="roundLabel" className={inputClass}/></Field><Field label="Ημερομηνία & ώρα"><input name="scheduledAt" type="datetime-local" className={inputClass}/></Field><Field label="Γηπεδούχος"><select required name="homeTeamId" className={inputClass}><option value="">Επιλογή</option>{data.teams.map(t=><option key={String(t.id)} value={String(t.id)}>{t.name}</option>)}</select></Field><Field label="Φιλοξενούμενος"><select required name="awayTeamId" className={inputClass}><option value="">Επιλογή</option>{data.teams.map(t=><option key={String(t.id)} value={String(t.id)}>{t.name}</option>)}</select></Field><Field label="Γήπεδο"><input name="venue" className={inputClass}/></Field><PlatformButton mutation disabled={busy} className={`${buttonClass} self-end`}>Προσθήκη αγώνα</PlatformButton></PlatformForm></Panel>
     <Panel title="Αγώνες"><SimpleTable rows={data.games} columns={[["scheduled_at","Ημερομηνία"],["phase_name","Φάση"],["round_label","Γύρος"],["home_team_name","Γηπεδούχος"],["away_team_name","Φιλοξενούμενος"],["status","Κατάσταση"]]}/></Panel>
 
     {teamRosterLoading && (
@@ -870,7 +873,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
         <div className="w-full max-w-xl rounded-2xl bg-white p-4">
           <div className="text-sm font-black text-red-700">{teamRosterError}</div>
-          <button type="button" onClick={closeTeamRosterPopup} className="mt-4 rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Κλείσιμο</button>
+          <PlatformButton type="button" onClick={closeTeamRosterPopup} className="mt-4 rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Κλείσιμο</PlatformButton>
         </div>
       </div>
     )}
@@ -884,8 +887,8 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
               <p className="text-sm text-zinc-600">{teamRoster.competitionName} · {teamRoster.seasonName}</p>
             </div>
             <div className="flex items-center gap-2">
-              <button type="button" className={`${buttonClass} text-sm`}>Επεξεργασία Ρόστερ</button>
-              <button type="button" onClick={closeTeamRosterPopup} className="rounded-xl border border-zinc-300 px-3 py-2.5 font-black">Κλείσιμο</button>
+              <PlatformButton type="button" className={`${buttonClass} text-sm`}>Επεξεργασία Ρόστερ</PlatformButton>
+              <PlatformButton type="button" onClick={closeTeamRosterPopup} className="rounded-xl border border-zinc-300 px-3 py-2.5 font-black">Κλείσιμο</PlatformButton>
             </div>
           </div>
           {teamRosterNotice ? <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{teamRosterNotice}</p> : null}
@@ -915,24 +918,24 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                         }
                       </td>
                       <td className="px-3 py-2">
-                        <button
+                        <PlatformButton
                           type="button"
                           className="text-blue-700 underline decoration-blue-300 hover:text-blue-900"
                           onClick={() => openAthleteEdit(athlete)}
                           disabled={rosterActionBusy}
                         >
                           {athlete.first_name || athlete.display_name || "—"}
-                        </button>
+                        </PlatformButton>
                       </td>
                       <td className="px-3 py-2">
-                        <button
+                        <PlatformButton
                           type="button"
                           className="text-blue-700 underline decoration-blue-300 hover:text-blue-900"
                           onClick={() => openAthleteEdit(athlete)}
                           disabled={rosterActionBusy}
                         >
                           {athlete.last_name || athlete.display_name || "—"}
-                        </button>
+                        </PlatformButton>
                       </td>
                       <td className="px-3 py-2 text-zinc-700">{parseDateForDisplay(String(athlete.birth_date ?? ""))}</td>
                       <td className="px-3 py-2 text-zinc-700">{athlete.shirt_number ?? "—"}</td>
@@ -1014,7 +1017,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                 </div>
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                   <span>📷 {editingAthletePhotoPreview || editingAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                  <input
+                  <PlatformFileInput
                     type="file"
                     accept="image/*"
                     className="hidden"
@@ -1029,10 +1032,10 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
               <p className="mt-2 text-xs text-zinc-500">{editingAthleteUploadBusy ? "Φόρτωση εικόνας..." : (editingAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${editingAthletePhotoFileName}` : editingAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
             </Field>
             <div className="mt-1 flex gap-2">
-              <button type="button" className={buttonClass} onClick={() => void saveAthleteEditsFromRoster()} disabled={rosterActionBusy}>
+              <PlatformButton mutation type="button" className={buttonClass} onClick={() => void saveAthleteEditsFromRoster()} disabled={rosterActionBusy}>
                 Αποθήκευση
-              </button>
-              <button
+              </PlatformButton>
+              <PlatformButton mutation
                 type="button"
                 onClick={() => {
                   clearBlobPreviewUrl(editingAthletePhotoPreview);
@@ -1043,7 +1046,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
                 className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black"
               >
                 Ακύρωση
-              </button>
+              </PlatformButton>
             </div>
           </div>
         </div>
@@ -1052,4 +1055,3 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
 
   </>;
 }
-

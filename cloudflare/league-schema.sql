@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS league_organizations (
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active','suspended','archived')),
   logo_url TEXT,
+  public_header_logo_url TEXT,
+  public_header_link_url TEXT,
   publication_status TEXT NOT NULL DEFAULT 'unpublished'
     CHECK (publication_status IN ('unpublished','published')),
   published_at TEXT,
@@ -44,6 +46,34 @@ CREATE INDEX IF NOT EXISTS idx_organization_memberships_user
   ON league_organization_memberships(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_organization_memberships_organization
   ON league_organization_memberships(organization_id, status, role);
+
+CREATE TABLE IF NOT EXISTS league_user_credentials (
+  user_id TEXT PRIMARY KEY
+    REFERENCES league_app_users(id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  credential_version INTEGER NOT NULL DEFAULT 1
+    CHECK (credential_version >= 1),
+  password_set_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS league_user_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL
+    REFERENCES league_app_users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE
+    CHECK (length(token_hash) = 64),
+  credential_version INTEGER NOT NULL
+    CHECK (credential_version >= 1),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_league_user_sessions_user_revoked
+  ON league_user_sessions(user_id, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_league_user_sessions_expires_at
+  ON league_user_sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS league_supporters (
   id TEXT PRIMARY KEY,
@@ -145,6 +175,23 @@ CREATE TABLE IF NOT EXISTS league_table_officials (
 );
 CREATE INDEX IF NOT EXISTS idx_table_officials_organization_active_name
   ON league_table_officials(organization_id, active, last_name, first_name);
+
+CREATE TABLE IF NOT EXISTS league_game_official_assignments (
+  game_id TEXT NOT NULL REFERENCES league_games(id) ON DELETE CASCADE,
+  slot_code TEXT NOT NULL CHECK (slot_code IN ('REFEREE_A', 'REFEREE_B', 'REFEREE_C', 'TABLE_TIMER', 'TABLE_SHOT_CLOCK', 'TABLE_SCORESHEET', 'TABLE_COMMISSIONER')),
+  referee_id TEXT REFERENCES league_referees(id) ON DELETE RESTRICT,
+  table_official_id TEXT REFERENCES league_table_officials(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (game_id, slot_code),
+  CHECK (
+    (slot_code IN ('REFEREE_A', 'REFEREE_B', 'REFEREE_C') AND referee_id IS NOT NULL AND table_official_id IS NULL)
+    OR
+    (slot_code IN ('TABLE_TIMER', 'TABLE_SHOT_CLOCK', 'TABLE_SCORESHEET', 'TABLE_COMMISSIONER') AND referee_id IS NULL AND table_official_id IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_game_official_assignments_referee ON league_game_official_assignments(referee_id);
+CREATE INDEX IF NOT EXISTS idx_game_official_assignments_table_official ON league_game_official_assignments(table_official_id);
 
 CREATE TABLE IF NOT EXISTS league_komocontrol_game_packages (
   id TEXT PRIMARY KEY,
@@ -471,6 +518,7 @@ CREATE TABLE IF NOT EXISTS league_competition_teams (
 CREATE TABLE IF NOT EXISTS league_players (
   id TEXT PRIMARY KEY, organization_id TEXT REFERENCES league_organizations(id),
   slug TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, normalized_name TEXT NOT NULL,
+  first_name TEXT, last_name TEXT,
   birth_date TEXT, photo_url TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -506,8 +554,9 @@ CREATE INDEX IF NOT EXISTS idx_rosters_team ON league_roster_memberships(team_id
 
 CREATE TABLE IF NOT EXISTS league_player_movements (
   id TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES league_players(id), season_id TEXT NOT NULL REFERENCES league_seasons(id),
+  competition_id TEXT REFERENCES league_competitions(id) ON DELETE SET NULL,
   from_team_id TEXT REFERENCES league_teams(id), to_team_id TEXT REFERENCES league_teams(id),
-  movement_type TEXT NOT NULL CHECK (movement_type IN ('registration','transfer','departure','return')),
+  movement_type TEXT NOT NULL CHECK (movement_type IN ('registration','transfer','departure','return','addition')),
   effective_on TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -518,6 +567,7 @@ CREATE TABLE IF NOT EXISTS league_staff (
   birth_date TEXT, photo_url TEXT, active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_player_movements_competition ON league_player_movements(competition_id);
 
 CREATE INDEX IF NOT EXISTS idx_league_staff_normalized ON league_staff(normalized_name);
 CREATE INDEX IF NOT EXISTS idx_league_staff_organization

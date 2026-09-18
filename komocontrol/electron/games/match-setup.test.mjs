@@ -14,6 +14,7 @@ describe("MatchSetupManager", () => {
     it("sorts shirt numbers ascending", () => expect(manager(stored()).getMatchSetup(gameId).home.players.map((player) => player.shirtNumber)).toEqual([7, 10]));
     it("keeps an empty staff snapshot valid", () => expect(manager(stored()).getMatchSetup(gameId).away.staff).toEqual([]));
     it("keeps nullable media values", () => expect(manager(stored()).getMatchSetup(gameId).home.logoUrl).toBeNull());
+    it("maps SIMPLE package settings to the safe Match Setup", () => { const value = payload(); value.settings.game_mode = "SIMPLE"; expect(manager(stored(value)).getMatchSetup(gameId).settings.gameMode).toBe("SIMPLE"); });
     it("does not expose payload or hash in the DTO", () => expect(JSON.stringify(manager(stored()).getMatchSetup(gameId))).not.toMatch(/payload|hash/i));
     it("rejects a missing local package", () => expect(() => manager(null).getMatchSetup(gameId)).toThrowError(expect.objectContaining({ code: "PACKAGE_UNAVAILABLE" })));
     it("rejects an unsupported local schema", () => expect(() => manager(stored(payload(), { packageSchemaVersion: 2 })).getMatchSetup(gameId)).toThrowError(expect.objectContaining({ code: "PACKAGE_UNSUPPORTED" })));

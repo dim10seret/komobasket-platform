@@ -1,4 +1,4 @@
-import { requireAdmin } from "@/lib/admin-auth";
+import { requirePlatformSuperAdminRequest } from "@/lib/admin-auth";
 import { newsApiError } from "@/lib/news-api";
 import { deleteNewsAsset, storeNewsAsset } from "@/lib/news-assets";
 import { createNewsAttachment } from "@/services/news.service";
@@ -27,7 +27,7 @@ function cleanFilename(value: string) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
   if (authorization.response) return authorization.response;
 
   try {

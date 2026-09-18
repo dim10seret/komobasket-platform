@@ -1,4 +1,4 @@
-import { requireAdmin } from "@/lib/admin-auth";
+import { requirePlatformSuperAdminRequest } from "@/lib/admin-auth";
 import { newsApiError, parseNewsArticleInput } from "@/lib/news-api";
 import {
   createNewsArticle,
@@ -6,7 +6,7 @@ import {
 } from "@/services/news.service";
 
 export async function GET(request: Request) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
 
   if (authorization.response) {
     return authorization.response;
@@ -22,7 +22,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
 
   if (authorization.response) {
     return authorization.response;

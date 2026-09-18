@@ -15,7 +15,7 @@ export class KomoControlAdminError extends Error {
 }
 
 const DEFAULTS = {
-  game_mode: "SIMPLE" as GameMode,
+  game_mode: "FULL" as GameMode,
   min_players: 5,
   max_players: 12,
   starting_players: 5,
@@ -176,8 +176,41 @@ export type GamePackageV1 = {
   schemaVersion: 1;
   game: { id: string; organizationId: string; competitionId: string; competitionName: string; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string | null; scheduledTime: string | null; scheduledAt: string | null; venue: string | null };
   settings: GamePackageSettings;
+  officials: GameOfficials;
   teams: Array<{ side: "HOME" | "AWAY"; id: string; name: string; logoUrl: string | null; players: Array<{ id: string; displayName: string; shirtNumber: number | null; photoUrl: string | null }>; staff: Array<{ id: string; displayName: string; role: string; roleLabel: string | null }> }>;
 };
+
+export type GameOfficialIdentity = { id: string; displayName: string };
+export type GameOfficials = {
+  referees: { a: GameOfficialIdentity | null; b: GameOfficialIdentity | null; c: GameOfficialIdentity | null };
+  table: { timer: GameOfficialIdentity | null; shotClock: GameOfficialIdentity | null; scoresheet: GameOfficialIdentity | null; commissioner: GameOfficialIdentity | null };
+};
+const officialAssignmentSpecs = [
+  { inputKey: "referee_a_id", slot: "REFEREE_A", registry: "referee" },
+  { inputKey: "referee_b_id", slot: "REFEREE_B", registry: "referee" },
+  { inputKey: "referee_c_id", slot: "REFEREE_C", registry: "referee" },
+  { inputKey: "table_timer_id", slot: "TABLE_TIMER", registry: "table" },
+  { inputKey: "table_shot_clock_id", slot: "TABLE_SHOT_CLOCK", registry: "table" },
+  { inputKey: "table_scoresheet_id", slot: "TABLE_SCORESHEET", registry: "table" },
+  { inputKey: "table_commissioner_id", slot: "TABLE_COMMISSIONER", registry: "table" },
+] as const;
+function emptyGameOfficials(): GameOfficials { return { referees: { a: null, b: null, c: null }, table: { timer: null, shotClock: null, scoresheet: null, commissioner: null } }; }
+async function readGameOfficials(database: Awaited<ReturnType<typeof db>>, gameId: string): Promise<GameOfficials> {
+  const rows = (await database.prepare(`SELECT a.slot_code, COALESCE(r.id, t.id) AS id, COALESCE(TRIM(r.first_name || ' ' || r.last_name), TRIM(t.first_name || ' ' || t.last_name)) AS display_name
+    FROM league_game_official_assignments a LEFT JOIN league_referees r ON r.id=a.referee_id LEFT JOIN league_table_officials t ON t.id=a.table_official_id WHERE a.game_id=?`).bind(gameId).all<{ slot_code: string; id: string | null; display_name: string | null }>()).results ?? [];
+  const result = emptyGameOfficials();
+  for (const row of rows) { if (!row.id || !row.display_name) continue; const person = { id: row.id, displayName: row.display_name };
+    if (row.slot_code === "REFEREE_A") result.referees.a = person; else if (row.slot_code === "REFEREE_B") result.referees.b = person; else if (row.slot_code === "REFEREE_C") result.referees.c = person;
+    else if (row.slot_code === "TABLE_TIMER") result.table.timer = person; else if (row.slot_code === "TABLE_SHOT_CLOCK") result.table.shotClock = person; else if (row.slot_code === "TABLE_SCORESHEET") result.table.scoresheet = person; else if (row.slot_code === "TABLE_COMMISSIONER") result.table.commissioner = person; }
+  return result;
+}
+async function validatedOfficialAssignments(database: Awaited<ReturnType<typeof db>>, organizationId: string, input: Record<string, unknown>) {
+  const assignments: Array<{ slot: string; registry: "referee" | "table"; id: string }> = [];
+  for (const spec of officialAssignmentSpecs) { const id = String(input[spec.inputKey] ?? "").trim(); if (!id) continue; const table = spec.registry === "referee" ? "league_referees" : "league_table_officials";
+    const person = await database.prepare(`SELECT id FROM ${table} WHERE id=? AND organization_id=? AND active=1`).bind(id, organizationId).first<{ id: string }>();
+    if (!person) throw new KomoControlAdminError("Ο επιλεγμένος διαιτητής ή κριτής δεν ανήκει στον Οργανισμό ή δεν είναι ενεργός.", 409); assignments.push({ slot: spec.slot, registry: spec.registry, id }); }
+  return assignments;
+}
 
 type GameRow = { id: string; competition_id: string; organization_id: string; competition_name: string; season_name: string; phase_name: string | null; round_label: string | null; scheduled_date: string | null; scheduled_time: string | null; scheduled_at: string | null; venue: string | null; status: string; home_team_id: string; away_team_id: string; home_team_name: string; away_team_name: string; home_team_logo_url: string | null; away_team_logo_url: string | null };
 const settingKeys = ["game_mode", "min_players", "max_players", "starting_players", "regulation_periods", "regulation_period_seconds", "overtime_seconds", "tie_allowed", "winner_required"] as const;
@@ -231,8 +264,8 @@ function gameSettingsOverrideFromDatabase(values: Record<string, unknown>): Game
 async function gameForOrganization(organizationId: string, gameId: string) {
   const row = await (await db()).prepare(`SELECT g.id, g.competition_id, c.organization_id, c.name AS competition_name, s.name AS season_name,
       p.name AS phase_name, g.round_label, g.scheduled_date, g.scheduled_time, g.scheduled_at, g.venue, g.status, g.home_team_id, g.away_team_id,
-      COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, COALESCE(home_st.logo_url, home.logo_url) AS home_team_logo_url,
-      COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, COALESCE(away_st.logo_url, away.logo_url) AS away_team_logo_url
+      COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, NULLIF(TRIM(home.logo_url), '') AS home_team_logo_url,
+      COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, NULLIF(TRIM(away.logo_url), '') AS away_team_logo_url
     FROM league_games g JOIN league_competitions c ON c.id=g.competition_id JOIN league_seasons s ON s.id=c.season_id
     LEFT JOIN league_phases p ON p.id=g.phase_id
     JOIN league_competition_teams home_ct ON home_ct.competition_id=g.competition_id AND home_ct.status='active'
@@ -280,8 +313,9 @@ async function teamSnapshot(database: Awaited<ReturnType<typeof db>>, game: Game
 export async function buildGamePackagePreview(organizationId: string, gameId: string) {
   const { game, defaults, override, effective } = await effectiveGameSettings(organizationId, gameId); const database = await db();
   const teams = [await teamSnapshot(database, game, "HOME"), await teamSnapshot(database, game, "AWAY")];
+  const officials = await readGameOfficials(database, gameId);
   for (const team of teams) if (team.players.length < Math.max(effective.min_players, effective.starting_players)) throw new KomoControlAdminError(`${team.name}: δεν υπάρχουν αρκετοί διαθέσιμοι παίκτες για τις ρυθμίσεις KomoControl.`, 409);
-  const snapshot: GamePackageV1 = { schemaVersion: 1, game: { id: game.id, organizationId, competitionId: game.competition_id, competitionName: game.competition_name, seasonName: game.season_name, phaseName: game.phase_name, roundLabel: game.round_label, scheduledDate: game.scheduled_date, scheduledTime: game.scheduled_time, scheduledAt: game.scheduled_at, venue: game.venue }, settings: effective, teams };
+  const snapshot: GamePackageV1 = { schemaVersion: 1, game: { id: game.id, organizationId, competitionId: game.competition_id, competitionName: game.competition_name, seasonName: game.season_name, phaseName: game.phase_name, roundLabel: game.round_label, scheduledDate: game.scheduled_date, scheduledTime: game.scheduled_time, scheduledAt: game.scheduled_at, venue: game.venue }, settings: effective, officials, teams };
   const hash = await snapshotHash(snapshot);
   const packages = (await database.prepare("SELECT id, package_version, status, snapshot_hash, published_at, generated_at, superseded_at FROM league_komocontrol_game_packages WHERE game_id=? ORDER BY package_version DESC").bind(gameId).all<Record<string, unknown>>()).results ?? [];
   return { snapshot, hash, defaults, override, effective, current: packages.find((row) => row.status === "published") ?? null, history: packages, changed: hash !== packages.find((row) => row.status === "published")?.snapshot_hash };
@@ -313,8 +347,10 @@ export async function saveGameOverride(organizationId: string, input: Record<str
   const gameId = requiredText(input.gameId, "Αγώνας"); const { effective } = await effectiveGameSettings(organizationId, gameId); const database = await db();
   if (input.clear === true) { await database.prepare("DELETE FROM league_game_komocontrol_overrides WHERE game_id=?").bind(gameId).run(); return { cleared: true }; }
   const values = settingsInput({ ...effective, ...input });
-  await database.prepare(`INSERT INTO league_game_komocontrol_overrides (game_id, game_mode, min_players, max_players, starting_players, regulation_periods, regulation_period_seconds, overtime_seconds, tie_allowed, winner_required)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(game_id) DO UPDATE SET game_mode=excluded.game_mode,min_players=excluded.min_players,max_players=excluded.max_players,starting_players=excluded.starting_players,regulation_periods=excluded.regulation_periods,regulation_period_seconds=excluded.regulation_period_seconds,overtime_seconds=excluded.overtime_seconds,tie_allowed=excluded.tie_allowed,winner_required=excluded.winner_required,updated_at=CURRENT_TIMESTAMP`).bind(gameId, values.game_mode, values.min_players, values.max_players, values.starting_players, values.regulation_periods, values.regulation_period_seconds, values.overtime_seconds, values.tie_allowed, values.winner_required).run();
+  const statements = [database.prepare(`INSERT INTO league_game_komocontrol_overrides (game_id, game_mode, min_players, max_players, starting_players, regulation_periods, regulation_period_seconds, overtime_seconds, tie_allowed, winner_required)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(game_id) DO UPDATE SET game_mode=excluded.game_mode,min_players=excluded.min_players,max_players=excluded.max_players,starting_players=excluded.starting_players,regulation_periods=excluded.regulation_periods,regulation_period_seconds=excluded.regulation_period_seconds,overtime_seconds=excluded.overtime_seconds,tie_allowed=excluded.tie_allowed,winner_required=excluded.winner_required,updated_at=CURRENT_TIMESTAMP`).bind(gameId, values.game_mode, values.min_players, values.max_players, values.starting_players, values.regulation_periods, values.regulation_period_seconds, values.overtime_seconds, values.tie_allowed, values.winner_required)];
+  if (officialAssignmentSpecs.some((spec) => Object.prototype.hasOwnProperty.call(input, spec.inputKey))) { const assignments = await validatedOfficialAssignments(database, organizationId, input); statements.push(database.prepare("DELETE FROM league_game_official_assignments WHERE game_id=?").bind(gameId)); for (const assignment of assignments) statements.push(database.prepare("INSERT INTO league_game_official_assignments (game_id, slot_code, referee_id, table_official_id) VALUES (?, ?, ?, ?)").bind(gameId, assignment.slot, assignment.registry === "referee" ? assignment.id : null, assignment.registry === "table" ? assignment.id : null)); }
+  await database.batch(statements);
   return { cleared: false };
 }
 

@@ -52,6 +52,7 @@ data/news-uploaded-files/
 .wrangler-state/
 
 # local temp and backups
+.production-backups/
 .d1tmp/
 .tmp_backups_*/
 .tmp_d1_backup_*/

@@ -1,4 +1,4 @@
-import { requireAdmin } from "@/lib/admin-auth";
+import { requirePlatformSuperAdminRequest } from "@/lib/admin-auth";
 import { newsApiError } from "@/lib/news-api";
 import { deleteNewsAsset, readNewsAsset } from "@/lib/news-assets";
 import {
@@ -28,7 +28,7 @@ async function getRouteAttachment(context: RouteContext) {
 }
 
 export async function GET(request: Request, context: RouteContext) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
   if (authorization.response) return authorization.response;
 
   try {
@@ -54,7 +54,7 @@ export async function GET(request: Request, context: RouteContext) {
 }
 
 export async function PATCH(request: Request, context: RouteContext) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
   if (authorization.response) return authorization.response;
 
   try {
@@ -80,7 +80,7 @@ export async function PATCH(request: Request, context: RouteContext) {
 }
 
 export async function DELETE(request: Request, context: RouteContext) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
   if (authorization.response) return authorization.response;
 
   try {

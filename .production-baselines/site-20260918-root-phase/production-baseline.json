@@ -1,0 +1,18 @@
+{
+  "product": "KomoBasket Site",
+  "environment": "production",
+  "date_utc": "2026-09-18T08:24:03.499Z",
+  "release": "root-phase-competition-participants",
+  "cloudflare_deployment_id": "ad96f7e6-b68d-41bf-b98a-16164acdee78",
+  "cloudflare_version_id": "b801d3f8-ffd3-4921-90ec-fac47d5d66a1",
+  "traffic_percent": 100,
+  "d1_migrations_applied": 34,
+  "d1_migrations_pending": 0,
+  "d1_quick_check": "ok",
+  "d1_fk_violations": 0,
+  "git_commit": null,
+  "git_tag": "production-site-20260918-root-phase",
+  "site_source_manifest": "site-source-sha256.txt",
+  "site_source_file_count": 413,
+  "source_scope": "website-worker-only; excludes tests, desktop, generated artifacts and secrets"
+}

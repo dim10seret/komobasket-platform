@@ -81,6 +81,7 @@ export interface SafeGameplayTeam {
     timeoutAllowance: number;
     teamFouls: number;
     inBonus: boolean;
+    nextDefensivePersonalFoulCreatesPenalty: boolean;
     discipline: { headCoachCategory1TechnicalCount: number; benchCategory1TechnicalCount: number; headCoachDisqualified: boolean; disqualifiedBenchCount: number };
     captainPlayerId: string | null;
     starterPlayerIds: string[];
@@ -99,6 +100,7 @@ export interface SafeGameplayPenaltySummary {
 
 export interface SafeMatchGameplay {
     runId: string;
+    gameMode: "SIMPLE" | "FULL";
     lifecycle: "live" | "finalized";
     eventHistoryRevision: number;
     lastAcceptedSequence: number;
@@ -340,6 +342,7 @@ function safeTeam(recovery: MatchGameplayRecovery, stateTeamValue: unknown, side
         timeoutAllowance: typeof stateTeam.timeoutAllowance === "number" ? number(stateTeam.timeoutAllowance) : 5,
         teamFouls: number(stateTeam.teamFouls),
         inBonus: number(stateTeam.teamFouls) >= threshold,
+        nextDefensivePersonalFoulCreatesPenalty: number(stateTeam.teamFouls) + 1 >= threshold,
         discipline: {
             headCoachCategory1TechnicalCount: number(discipline.headCoachCategory1TechnicalCount),
             benchCategory1TechnicalCount: number(discipline.benchCategory1TechnicalCount),
@@ -674,6 +677,7 @@ export function safeGameplay(
     const resultPolicy = rules.resultPolicy === "ALLOW_TIE" || rules.resultPolicy === "REQUIRE_WINNER" ? rules.resultPolicy : (() => { throw new Error("Invalid gameplay rules projection."); })();
     return {
         runId: recovery.runId,
+        gameMode: recovery.setup.settings.gameMode,
         lifecycle: recovery.lifecycle,
         eventHistoryRevision: currentRevision,
         lastAcceptedSequence: recovery.lastAcceptedSequence,

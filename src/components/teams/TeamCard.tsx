@@ -14,7 +14,7 @@ export default function TeamCard({ slug, team, season, players, logo }: TeamCard
     <div className="rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm transition hover:-translate-y-1 hover:shadow-xl">
       <div className="flex justify-center">
         <div className="relative h-32 w-32 overflow-hidden rounded-full border border-zinc-200 bg-white shadow-sm">
-          <Image src={logo} alt={`Λογότυπο ${team}`} fill sizes="128px" className="object-contain p-2" />
+          {logo ? <Image src={logo} alt={`Λογότυπο ${team}`} fill sizes="128px" className="object-contain p-2" /> : null}
         </div>
       </div>
 

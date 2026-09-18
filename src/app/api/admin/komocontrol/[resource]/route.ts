@@ -1,6 +1,6 @@
 import { requireAdmin } from "@/lib/admin-auth";
 import { resolveCanonicalAppUser } from "@/lib/app-user-identity";
-import { platformAuthorizationErrorResponse, requireOrganizationAccess } from "@/lib/platform-authorization";
+import { platformAuthorizationErrorResponse, requireOrganizationAccess, requirePlatformSuperAdmin } from "@/lib/platform-authorization";
 import { buildGamePackagePreview, createRegistryEntry, createScorer, komoControlAdminErrorResponse, listKomoControlGames, listKomoControlSettings, listRegistry, listScorers, publishGamePackage, publishGamePackages, saveGameOverride, saveKomoControlSettings, updateRegistryEntry, updateScorer } from "@/services/komocontrol-admin.service";
 
 type Resource = "settings" | "scorers" | "referees" | "table-officials" | "games" | "game-settings";
@@ -8,11 +8,13 @@ const isResource = (value: string): value is Resource => ["settings", "scorers",
 const isRegistryResource = (value: Resource): value is "referees" | "table-officials" => value === "referees" || value === "table-officials";
 
 async function context(request: Request, route: { params: Promise<{ resource: string }> }) {
-  const authorization = requireAdmin(request); if (authorization.response) return { response: authorization.response } as const;
+  const authorization = await requireAdmin(request); if (authorization.response) return { response: authorization.response } as const;
   const { resource } = await route.params; if (!isResource(resource)) return { response: Response.json({ error: "Μη υποστηριζόμενος πόρος KomoControl." }, { status: 404 }) } as const;
   const organizationId = new URL(request.url).searchParams.get("organizationId")?.trim() || "";
   if (!organizationId) return { response: Response.json({ error: "Απαιτείται Οργανισμός." }, { status: 400 }) } as const;
-  const user = await resolveCanonicalAppUser(authorization.identity); await requireOrganizationAccess(user, organizationId, "manage");
+  const user = await resolveCanonicalAppUser(authorization.identity);
+  if (resource === "scorers") await requirePlatformSuperAdmin(user);
+  await requireOrganizationAccess(user, organizationId, "manage");
   return { response: null, resource, organizationId, user } as const;
 }
 function failure(error: unknown) { return platformAuthorizationErrorResponse(error) ?? komoControlAdminErrorResponse(error) ?? Response.json({ error: error instanceof Error ? error.message : "Η ενέργεια απέτυχε." }, { status: 400 }); }

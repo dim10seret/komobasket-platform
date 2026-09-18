@@ -1,12 +1,141 @@
 import fs from "node:fs";
-import { describe, expect, it } from "vitest";
-import { myGamesPresentation, sortMyGamesByRunState } from "./App";
+import { describe, expect, it, vi } from "vitest";
+import { myGamesPresentation, runMatchStartOnce, sortMyGamesByRunState, subscribeToMyGamesSyncState } from "./App";
+
+type TestStartResult = { ok: true; gameplay: string } | { ok: false; errorCode: string };
+
+describe("Start Game single-flight and recovery", () => {
+    it("submits the first request once and ignores a rapid second request while pending", async () => {
+        let release!: (result: TestStartResult) => void;
+        const pendingResult = new Promise<TestStartResult>((resolve) => { release = resolve; });
+        const calls: string[] = [];
+        const bridge = { startMatch: async (runId: string) => { calls.push(runId); return pendingResult; }, recoverMatchGameplay: async (): Promise<TestStartResult> => ({ ok: false, errorCode: "unused" }) };
+        const guard = { current: false };
+        const first = runMatchStartOnce(bridge, "run-1", guard);
+        const second = await runMatchStartOnce(bridge, "run-1", guard);
+        expect(second).toBeNull(); expect(guard.current).toBe(true); expect(calls).toEqual(["run-1"]);
+        release({ ok: true, gameplay: "live" });
+        await expect(first).resolves.toEqual({ result: { ok: true, gameplay: "live" }, recovered: false });
+        expect(guard.current).toBe(false);
+    });
+
+    it("recovers only the same requested Run when Start reports GAMEPLAY_CONFLICT", async () => {
+        const startIds: string[] = []; const recoveryIds: string[] = [];
+        const bridge = { startMatch: async (runId: string): Promise<TestStartResult> => { startIds.push(runId); return { ok: false, errorCode: "GAMEPLAY_CONFLICT" }; }, recoverMatchGameplay: async (runId: string): Promise<TestStartResult> => { recoveryIds.push(runId); return { ok: true, gameplay: "recovered-live" }; } };
+        await expect(runMatchStartOnce(bridge, "run-same", { current: false })).resolves.toEqual({ result: { ok: true, gameplay: "recovered-live" }, recovered: true });
+        expect(startIds).toEqual(["run-same"]); expect(recoveryIds).toEqual(["run-same"]);
+    });
+
+    it("keeps a real conflict as failure when authoritative same-Run recovery fails", async () => {
+        const bridge = { startMatch: async (): Promise<TestStartResult> => ({ ok: false, errorCode: "GAMEPLAY_CONFLICT" }), recoverMatchGameplay: async (): Promise<TestStartResult> => ({ ok: false, errorCode: "GAMEPLAY_UNAVAILABLE" }) };
+        await expect(runMatchStartOnce(bridge, "run-1", { current: false })).resolves.toEqual({ result: { ok: false, errorCode: "GAMEPLAY_CONFLICT" }, recovered: false });
+    });
+
+    it("commits successful gameplay and clears the pre-game view so LiveControl wins render precedence", () => {
+        const source = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+        expect(source).toMatch(/if \(result\.ok\) \{ setMatchGameplay\(result\.gameplay\); setPreGameConfiguration\(null\);/);
+        expect(source).toContain("startPending={gameplayBusy}");
+    });
+});
 
 const state = (syncStatus: KomoControlMyGamesRunSyncStatus, overrides: Partial<KomoControlMyGamesRunState> = {}): KomoControlMyGamesRunState => ({
     gameId: "game-1", runId: "run-1", lifecycle: syncStatus === "active" ? "active" : "finalized", historyRevision: 926,
     acknowledgedHistoryRevision: syncStatus === "completed" ? 926 : 925, finalizationHash: "f".repeat(64),
     acknowledgedFinalizationHash: syncStatus === "completed" ? "f".repeat(64) : null, syncStatus, homeScore: syncStatus === "completed" ? 105 : null,
     awayScore: syncStatus === "completed" ? 103 : null, ...overrides,
+});
+
+describe("My Games background sync notifications", () => {
+    const catalogue = (syncStatus: KomoControlMyGamesRunSyncStatus): KomoControlMyGamesRunStateCatalogueResult => ({
+        ok: true, runs: [state(syncStatus)], state: {} as KomoControlAuthState,
+    });
+    function fixture() {
+        const listeners = new Set<(runId: string) => void>();
+        const unsubscribe = vi.fn(() => listeners.clear());
+        const bridge = {
+            onGameplaySyncStateChanged: vi.fn((listener: (runId: string) => void) => { listeners.add(listener); return unsubscribe; }),
+            listMyGamesRunStates: vi.fn(async () => catalogue("completed")),
+            createOrOpenGameRun: vi.fn(), retryGameplaySync: vi.fn(), reconnectGameplaySync: vi.fn(), listAvailableGames: vi.fn(),
+        };
+        return { bridge, listeners, unsubscribe, notify: () => listeners.forEach((listener) => listener("run-1")) };
+    }
+
+    it.each(["pending", "retry-needed"] as const)("refreshes a %s card after acknowledgement without creating a Run or initiating Sync", async (initial) => {
+        const { bridge, notify, listeners } = fixture();
+        let runs: Record<string, KomoControlMyGamesRunState> = { "game-1": state(initial) };
+        const onError = vi.fn();
+        const cleanup = subscribeToMyGamesSyncState(bridge, (next) => { runs = next; }, onError);
+        expect(myGamesPresentation(runs["game-1"])).toBe(initial);
+        expect(bridge.listMyGamesRunStates).not.toHaveBeenCalled();
+        notify();
+        await vi.waitFor(() => expect(myGamesPresentation(runs["game-1"])).toBe("completed"));
+        expect(runs["game-1"].homeScore).toBe(105);
+        expect(bridge.listMyGamesRunStates).toHaveBeenCalledTimes(1);
+        expect(bridge.createOrOpenGameRun).not.toHaveBeenCalled();
+        expect(bridge.retryGameplaySync).not.toHaveBeenCalled();
+        expect(bridge.reconnectGameplaySync).not.toHaveBeenCalled();
+        expect(bridge.listAvailableGames).not.toHaveBeenCalled();
+        expect(onError).not.toHaveBeenCalled();
+        expect(listeners.size).toBe(1);
+        cleanup();
+    });
+
+    it("keeps one subscription across state updates and removes it on unmount", async () => {
+        const { bridge, notify, listeners, unsubscribe } = fixture();
+        const onRuns = vi.fn();
+        const cleanup = subscribeToMyGamesSyncState(bridge, onRuns, vi.fn());
+        notify();
+        await vi.waitFor(() => expect(onRuns).toHaveBeenCalledTimes(1));
+        notify();
+        await vi.waitFor(() => expect(onRuns).toHaveBeenCalledTimes(2));
+        expect(bridge.onGameplaySyncStateChanged).toHaveBeenCalledTimes(1);
+        cleanup();
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        expect(listeners.size).toBe(0);
+        notify();
+        expect(bridge.listMyGamesRunStates).toHaveBeenCalledTimes(2);
+        const source = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+        expect(source).toMatch(/useEffect\(\(\) => \{\s*if \(!bridge\) return;\s*return subscribeToMyGamesSyncState\(bridge, setMyGamesRuns, setGamesError\);\s*\}, \[bridge\]\);/);
+    });
+
+    it("ignores a read that completes after unmount", async () => {
+        const { bridge, notify } = fixture();
+        let resolve!: (result: KomoControlMyGamesRunStateCatalogueResult) => void;
+        const pending = new Promise<KomoControlMyGamesRunStateCatalogueResult>((done) => { resolve = done; });
+        bridge.listMyGamesRunStates.mockReturnValueOnce(pending);
+        const onRuns = vi.fn(); const onError = vi.fn();
+        const cleanup = subscribeToMyGamesSyncState(bridge, onRuns, onError);
+        notify(); cleanup(); resolve(catalogue("completed"));
+        await pending;
+        expect(onRuns).not.toHaveBeenCalled(); expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("does not overwrite a newer acknowledgement with an older read", async () => {
+        const { bridge, notify } = fixture();
+        let resolve!: (result: KomoControlMyGamesRunStateCatalogueResult) => void;
+        const older = new Promise<KomoControlMyGamesRunStateCatalogueResult>((done) => { resolve = done; });
+        bridge.listMyGamesRunStates.mockReturnValueOnce(older);
+        const onRuns = vi.fn();
+        const cleanup = subscribeToMyGamesSyncState(bridge, onRuns, vi.fn());
+        notify(); notify();
+        await vi.waitFor(() => expect(onRuns).toHaveBeenCalledTimes(1));
+        resolve(catalogue("retry-needed")); await older;
+        expect(onRuns).toHaveBeenCalledTimes(1);
+        expect(onRuns.mock.calls[0][0]["game-1"].syncStatus).toBe("completed");
+        cleanup();
+    });
+
+    it("reports a failed read without inventing completion or retrying Sync", async () => {
+        const { bridge, notify } = fixture();
+        bridge.listMyGamesRunStates.mockRejectedValueOnce(new Error("read unavailable"));
+        const onRuns = vi.fn(); const onError = vi.fn();
+        const cleanup = subscribeToMyGamesSyncState(bridge, onRuns, onError);
+        notify();
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+        expect(onRuns).not.toHaveBeenCalled();
+        expect(bridge.retryGameplaySync).not.toHaveBeenCalled();
+        cleanup();
+    });
 });
 
 describe("My Games completion presentation", () => {

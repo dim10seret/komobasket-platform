@@ -5,6 +5,8 @@ import { resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryO
 import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame } from "@/lib/series-progression";
 import { calculateStandings, type StandingsTieBreakerKey } from "@/lib/standings-calculator";
 import { buildPublicTeamStatistics, type PublicTeamStatistics } from "@/lib/public-team-statistics";
+import { selectCompetitionLatestMovements } from "@/lib/competition-latest-movements";
+import type { PlatformMatchReportMode } from "@/lib/platform-match-report";
 import { listPlatformMatchReportAvailabilityWithDb, readAuthoritativeTeamStatisticalGamesWithDb } from "@/services/platform-match-report.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
@@ -67,6 +69,8 @@ export type PublicPhase = {
   id: string;
   slug: string;
   name: string;
+  phaseOrder: number;
+  lifecycleStatus: string | null;
   format: "standings" | "series" | "custom";
   phaseType: string;
   participantCount: number | null;
@@ -82,6 +86,7 @@ export type PublicCompetition = {
   name: string;
   type: string;
   lifecycleStatus: "online" | "complete";
+  gameMode: PlatformMatchReportMode;
 };
 
 export type PublicSeason = {
@@ -106,6 +111,7 @@ export type PublicTeamGame = {
 
 export type PublicTeamView = {
   team: PublicGameTeam;
+  gameMode: PlatformMatchReportMode;
   roster: PublicTeamRosterPlayer[];
   games: PublicTeamGame[];
   statistics: PublicTeamStatistics;
@@ -140,6 +146,7 @@ type PublicCompetitionRow = {
   competition_slug: string;
   competition_type: string;
   lifecycle_status: "online" | "complete";
+  game_mode: "SIMPLE" | "FULL" | null;
 };
 
 type PublicPhaseRow = {
@@ -278,6 +285,8 @@ function normalizePhase(row: PublicPhaseRow): PublicPhase {
     id: row.id,
     slug: row.slug,
     name: row.name,
+    phaseOrder: row.phase_order ?? Number.MAX_SAFE_INTEGER,
+    lifecycleStatus: row.lifecycle_status,
     format: normalizedFormat,
     phaseType: row.phase_type,
     participantCount,
@@ -464,22 +473,26 @@ function buildCompetitionBracketProjection(phaseRows: PublicPhaseRow[], phases: 
   return { meaningful: canonicalEdges.length > 0 && stages.some((stage) => stage.kind === "series"), stages, edges: canonicalEdges };
 }
 
-export async function getPublicCompetitionContext(input: {
-  seasonSlug?: string | null;
-  competitionSlug?: string | null;
-  phaseSlug?: string | null;
-  teamId?: string | null;
-} = {}): Promise<PublicCompetitionContext> {
-  const db = await getDb();
+export async function getPublicCompetitionContextForOrganizationWithDb(
+  db: D1DatabaseBinding,
+  organizationId: string,
+  input: {
+    seasonSlug?: string | null;
+    competitionSlug?: string | null;
+    phaseSlug?: string | null;
+    teamId?: string | null;
+  } = {},
+): Promise<PublicCompetitionContext> {
   const visible = await db.prepare(`
     SELECT s.id AS season_id, s.name AS season_name, s.slug AS season_slug,
            c.id AS competition_id, c.name AS competition_name, c.slug AS competition_slug,
-           c.type AS competition_type,
+           c.type AS competition_type, COALESCE(kc.game_mode, 'FULL') AS game_mode,
            COALESCE(cp.lifecycle_status,
              CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END
            ) AS lifecycle_status
       FROM league_competitions c
       JOIN league_seasons s ON s.id=c.season_id
+      LEFT JOIN league_competition_komocontrol_defaults kc ON kc.competition_id=c.id
       LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
      WHERE c.organization_id=?
        AND s.starts_on >= ?
@@ -488,7 +501,7 @@ export async function getPublicCompetitionContext(input: {
              CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END
            ) IN ('online','complete')
      ORDER BY s.starts_on DESC, s.name DESC, c.name COLLATE NOCASE ASC, c.id ASC
-  `).bind(PUBLIC_KOMOBASKET_ORGANIZATION_ID, CANONICAL_PUBLIC_SEASON_START).all<PublicCompetitionRow>();
+  `).bind(organizationId, CANONICAL_PUBLIC_SEASON_START).all<PublicCompetitionRow>();
   const rows = visible.results ?? [];
   const seasons = Array.from(new Map(rows.map((row) => [row.season_id, {
     id: row.season_id,
@@ -497,12 +510,13 @@ export async function getPublicCompetitionContext(input: {
   }])).values());
   const selectedSeason = seasons.find((season) => season.slug === input.seasonSlug) ?? seasons[0] ?? null;
   const competitions = selectedSeason
-    ? rows.filter((row) => row.season_id === selectedSeason.id).map((row) => ({
+    ? rows.filter((row) => row.season_id === selectedSeason.id).map((row): PublicCompetition => ({
       id: row.competition_id,
       slug: row.competition_slug,
       name: row.competition_name,
       type: row.competition_type,
       lifecycleStatus: row.lifecycle_status,
+      gameMode: row.game_mode === "SIMPLE" ? "SIMPLE" : "FULL",
     }))
     : [];
   const selectedCompetition = competitions.find((competition) => competition.slug === input.competitionSlug) ?? competitions[0] ?? null;
@@ -529,16 +543,16 @@ export async function getPublicCompetitionContext(input: {
   if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition, selectedPhase: null };
 
   const [teamResult, gameResult, matchReportAvailability] = await Promise.all([
-    db.prepare(`SELECT t.id, COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) AS name, COALESCE(st.logo_url, t.logo_url) AS logo_url
+    db.prepare(`SELECT t.id, COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) AS name, NULLIF(TRIM(t.logo_url), '') AS logo_url
       FROM league_competition_teams ct JOIN league_season_teams st ON st.id=ct.season_team_id JOIN league_teams t ON t.id=st.team_id
       WHERE ct.competition_id=? AND ct.status='active' AND t.organization_id=? ORDER BY COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) COLLATE NOCASE, t.id`)
-      .bind(selectedCompetition.id, PUBLIC_KOMOBASKET_ORGANIZATION_ID).all<PublicTeamRow>(),
+      .bind(selectedCompetition.id, organizationId).all<PublicTeamRow>(),
     db.prepare(`
     SELECT g.id, g.competition_id, g.phase_id, g.schedule_id, g.cycle_number, g.round_number, g.series_round_number, g.game_order, g.round_label,
            g.scheduled_date, g.scheduled_time, g.venue AS game_venue, v.id AS venue_id, v.name AS venue_name, v.address AS venue_address, v.map_url AS venue_map_url,
            g.home_score, g.away_score, g.status, g.result_source, gameplay_head.lifecycle AS gameplay_lifecycle, g.series_matchup_id, g.video_url,
-           home.id AS home_team_id, COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, COALESCE(home_st.logo_url, home.logo_url) AS home_team_logo_url,
-           away.id AS away_team_id, COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, COALESCE(away_st.logo_url, away.logo_url) AS away_team_logo_url
+           home.id AS home_team_id, COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, NULLIF(TRIM(home.logo_url), '') AS home_team_logo_url,
+           away.id AS away_team_id, COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, NULLIF(TRIM(away.logo_url), '') AS away_team_logo_url
       FROM league_games g
       LEFT JOIN league_komocontrol_gameplay_game_claims gameplay_claim ON gameplay_claim.game_id=g.id
       LEFT JOIN league_komocontrol_gameplay_heads gameplay_head ON gameplay_head.run_id=gameplay_claim.run_id
@@ -554,11 +568,11 @@ export async function getPublicCompetitionContext(input: {
               g.game_order, g.id
   `).bind(
     selectedCompetition.id,
-    PUBLIC_KOMOBASKET_ORGANIZATION_ID,
-    PUBLIC_KOMOBASKET_ORGANIZATION_ID,
+    organizationId,
+    organizationId,
     selectedPhase.format,
   ).all<PublicGameRow>(),
-    listPlatformMatchReportAvailabilityWithDb(db, PUBLIC_KOMOBASKET_ORGANIZATION_ID),
+    listPlatformMatchReportAvailabilityWithDb(db, organizationId),
   ]);
   const teams = teamResult.results ?? [];
   const canonicalGames = (gameResult.results ?? []).map((game) => ({
@@ -581,7 +595,7 @@ export async function getPublicCompetitionContext(input: {
          AND p.organization_id=?
        ORDER BY CASE WHEN r.shirt_number IS NULL THEN 1 ELSE 0 END,
                 r.shirt_number ASC, p.display_name COLLATE NOCASE, p.id
-    `).bind(selectedSeason.id, selectedCompetition.id, selectedTeam.id, PUBLIC_KOMOBASKET_ORGANIZATION_ID).all<{
+    `).bind(selectedSeason.id, selectedCompetition.id, selectedTeam.id, organizationId).all<{
       id: string;
       display_name: string;
       shirt_number: number | null;
@@ -590,7 +604,7 @@ export async function getPublicCompetitionContext(input: {
       db,
       selectedCompetition.id,
       selectedTeam.id,
-      PUBLIC_KOMOBASKET_ORGANIZATION_ID,
+      organizationId,
     )]);
     const publicPhaseById = new Map(phases.map((phase) => [phase.id, phase]));
     const phaseById = new Map<string, { name: string; format: PublicPhase["format"]; order: number }>();
@@ -619,6 +633,7 @@ export async function getPublicCompetitionContext(input: {
     const roster = (rosterResult.results ?? []).map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: player.shirt_number, photoUrl: player.photo_url?.trim() || null }));
     teamView = {
       team: { id: selectedTeam.id, name: selectedTeam.name, logoUrl: selectedTeam.logo_url?.trim() || null },
+      gameMode: selectedCompetition.gameMode,
       roster,
       games: normalizedTeamGames,
       statistics: buildPublicTeamStatistics({ team: { id: selectedTeam.id, name: selectedTeam.name }, roster, games: statisticalGames }),
@@ -649,4 +664,94 @@ export async function getPublicCompetitionContext(input: {
     }
   }
   return { seasons, competitions, phases, games, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };
+}
+
+export async function getPublicCompetitionContextForOrganization(
+  organizationId: string,
+  input: {
+    seasonSlug?: string | null;
+    competitionSlug?: string | null;
+    phaseSlug?: string | null;
+    teamId?: string | null;
+  } = {},
+): Promise<PublicCompetitionContext> {
+  return getPublicCompetitionContextForOrganizationWithDb(await getDb(), organizationId, input);
+}
+
+export type PublicCompetitionMovement = {
+  id: string;
+  movementType: "addition" | "departure" | "transfer";
+  effectiveOn: string;
+  playerName: string;
+  fromTeamName: string | null;
+  toTeamName: string | null;
+};
+
+export async function listPublicCompetitionMovementsForOrganizationWithDb(
+  db: D1DatabaseBinding,
+  organizationId: string,
+  seasonId: string,
+  competitionId: string,
+): Promise<PublicCompetitionMovement[]> {
+  const result = await db.prepare(`SELECT
+      m.id, c.organization_id, m.season_id, m.competition_id, m.movement_type,
+      m.effective_on, m.created_at, p.display_name AS player_name,
+      ft.name AS from_team_name, tt.name AS to_team_name
+    FROM league_player_movements m
+    JOIN league_competitions c ON c.id=m.competition_id
+    JOIN league_seasons s ON s.id=m.season_id AND s.id=c.season_id
+    JOIN league_players p ON p.id=m.player_id
+    LEFT JOIN league_teams ft ON ft.id=m.from_team_id
+    LEFT JOIN league_teams tt ON tt.id=m.to_team_id
+    LEFT JOIN league_competition_publication cp ON cp.competition_id=c.id
+    WHERE m.competition_id=? AND m.season_id=?
+      AND c.organization_id=? AND p.organization_id=?
+      AND (ft.id IS NULL OR ft.organization_id=?)
+      AND (tt.id IS NULL OR tt.organization_id=?)
+      AND s.starts_on >= ? AND s.status IN ('active','completed')
+      AND COALESCE(cp.lifecycle_status,
+        CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END
+      ) IN ('online','complete')
+      AND m.movement_type IN ('addition','departure','transfer')
+    ORDER BY m.effective_on DESC, m.created_at DESC, m.id DESC`)
+    .bind(competitionId, seasonId, organizationId, organizationId, organizationId, organizationId, CANONICAL_PUBLIC_SEASON_START)
+    .all<{
+      id: string;
+      organization_id: string;
+      season_id: string;
+      competition_id: string;
+      movement_type: string;
+      effective_on: string;
+      created_at: string;
+      player_name: string;
+      from_team_name: string | null;
+      to_team_name: string | null;
+    }>();
+
+  return selectCompetitionLatestMovements(result.results ?? [], { organizationId, seasonId, competitionId })
+    .map((movement) => ({
+      id: movement.id,
+      movementType: movement.movement_type as PublicCompetitionMovement["movementType"],
+      effectiveOn: movement.effective_on,
+      playerName: movement.player_name,
+      fromTeamName: movement.from_team_name,
+      toTeamName: movement.to_team_name,
+    }));
+}
+
+export async function listPublicCompetitionMovementsForOrganization(
+  organizationId: string,
+  seasonId: string,
+  competitionId: string,
+) {
+  return listPublicCompetitionMovementsForOrganizationWithDb(await getDb(), organizationId, seasonId, competitionId);
+}
+
+export async function getPublicCompetitionContext(input: {
+  seasonSlug?: string | null;
+  competitionSlug?: string | null;
+  phaseSlug?: string | null;
+  teamId?: string | null;
+} = {}): Promise<PublicCompetitionContext> {
+  return getPublicCompetitionContextForOrganization(PUBLIC_KOMOBASKET_ORGANIZATION_ID, input);
 }

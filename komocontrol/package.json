@@ -1,7 +1,9 @@
 {
   "name": "komocontrol",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "author": { "name": "D.Seretidis" },
+  "description": "Official Scoring Application for KomoBasket",
   "main": "dist-electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -47,6 +49,8 @@
   "build": {
     "appId": "gr.komobasket.komocontrol",
     "productName": "KomoControl",
+    "copyright": "© 2026 D.Seretidis. All rights reserved.",
+    "afterSign": "scripts/windows-release-metadata.cjs",
     "asar": true,
     "files": [
       "dist/**/*",
@@ -54,7 +58,8 @@
       "package.json"
     ],
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "extraResources": [
       {
@@ -63,9 +68,14 @@
         "filter": [
           "**/*.sql"
         ]
+      },
+      {
+        "from": "build/KomoControl.ico",
+        "to": "KomoControl.ico"
       }
     ],
     "win": {
+      "icon": "build/KomoControl.ico",
       "target": [
         {
           "target": "nsis",
@@ -80,7 +90,9 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/KomoControl.ico",
+      "uninstallerIcon": "build/KomoControl.ico"
     }
   }
 }

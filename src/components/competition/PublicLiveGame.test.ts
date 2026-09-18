@@ -8,11 +8,11 @@ import {
 
 const componentSource = readFileSync(new URL("./PublicLiveGame.tsx", import.meta.url), "utf8");
 const competitionSource = readFileSync(
-  new URL("../../app/competitions/page.tsx", import.meta.url),
+  new URL("./PublicCompetitionsView.tsx", import.meta.url),
   "utf8",
 );
 const livePageSource = readFileSync(
-  new URL("../../app/competitions/games/[gameId]/live/page.tsx", import.meta.url),
+  new URL("../../app/(central)/competitions/games/[gameId]/live/page.tsx", import.meta.url),
   "utf8",
 );
 
@@ -57,7 +57,7 @@ describe("public LIVE presentation", () => {
   });
 
   it("links the LIVE button to the correct public game route", () => {
-    expect(competitionSource).toContain("/competitions/games/");
+    expect(competitionSource).toContain("gameBasePath");
     expect(competitionSource).toContain("game.id");
     expect(competitionSource).toContain("/live");
   });

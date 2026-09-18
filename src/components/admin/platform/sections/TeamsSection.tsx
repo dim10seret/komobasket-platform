@@ -1,10 +1,13 @@
 "use client";
 
+import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
+
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CompetitionWorkspaceMode, CreateEntity, DeleteEntity, Field, Panel, Row, Snapshot, UpdateEntity, inputClass, buttonClass, isCompletedCompetition, parseDateForDisplay, participationStatusLabels } from "../shared/admin-core";
 
 export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,teamSeasonFilter,setTeamSeasonFilter,selectedParticipationTeamIds,setSelectedParticipationTeamIds}:{data:Snapshot;submit:(r:string,e:FormEvent<HTMLFormElement>)=>void;updateEntity:UpdateEntity;deleteEntity:DeleteEntity;createEntity:CreateEntity;busy:boolean;teamSeasonFilter:string;setTeamSeasonFilter:(value:string)=>void;selectedParticipationTeamIds:string[];setSelectedParticipationTeamIds:(ids:string[])=>void}) {
+  const { request: fetch, url: platformUrl } = usePlatformContext();
   const [selectedSeasonId,setSelectedSeasonId]=useState("");
   const [selectedCompetitionId,setSelectedCompetitionId]=useState("");
   const [selectedRegistryTeamId,setSelectedRegistryTeamId]=useState("");
@@ -19,6 +22,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
   );
   const competitionById = new Map(data.competitions.map((competition) => [String(competition.id), competition]));
   const seasonById = new Map(data.seasons.map((season) => [String(season.id), season]));
+  const teamById = new Map(data.teams.map((team) => [String(team.id), team]));
   const selectedCompetition = selectedCompetitionId
     ? data.competitions.find((competition)=>String(competition.id)===selectedCompetitionId)
     : null;
@@ -336,10 +340,10 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                 <p className="mt-1 text-sm text-zinc-600">{selectedRegistryTeam.city || "—"}</p>
                 <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ${Number(selectedRegistryTeam.active ?? 1)===1?"bg-emerald-100 text-emerald-800":"bg-zinc-200 text-zinc-700"}`}>{Number(selectedRegistryTeam.active ?? 1)===1?"Ενεργή":"Ανενεργή"}</span>
               </div>
-              <button type="button" onClick={()=>setEditingRegistryTeam((value)=>!value)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{editingRegistryTeam ? "Ακύρωση" : "Edit"}</button>
+              <PlatformButton mutation type="button" onClick={()=>setEditingRegistryTeam((value)=>!value)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{editingRegistryTeam ? "Ακύρωση" : "Edit"}</PlatformButton>
             </div>
             {editingRegistryTeam && (
-              <form
+              <PlatformForm
                 key={String(selectedRegistryTeam.id)}
                 onSubmit={async(event)=>{if(await updateEntity("teams",String(selectedRegistryTeam.id),event,"Τα μόνιμα στοιχεία της ομάδας αποθηκεύτηκαν.")){setEditingRegistryTeam(false);}}}
                 className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2"
@@ -354,7 +358,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                 <Field label="Επιλογή Λογότυπου">
                   <div className="flex flex-col gap-2">
                     <input ref={editLogoInputRef} type="hidden" name="logoUrl" defaultValue={String(selectedRegistryTeam.logo_url ?? "")} />
-                    <input
+                    <PlatformFileInput
                       ref={editLogoFileInputRef}
                       type="file"
                       accept="image/jpeg,image/png,image/webp,image/avif"
@@ -364,18 +368,18 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                         if (file) void uploadEditTeamLogo(file);
                       }}
                     />
-                    <button
+                    <PlatformButton
                       type="button"
                       disabled={uploadingLogo}
                       onClick={() => editLogoFileInputRef.current?.click()}
                       className="inline-flex w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {uploadingLogo ? "Μεταφόρτωση..." : "Επιλογή Λογότυπου"}
-                    </button>
+                    </PlatformButton>
                     {editLogoUploadMessage ? <p className="text-xs text-zinc-500">{editLogoUploadMessage}</p> : null}
                   </div>
                 </Field>
-                <button disabled={busy} className={`${buttonClass} sm:col-span-2 sm:justify-self-start`}>Αποθήκευση ομάδας</button>
+                <PlatformButton mutation disabled={busy} className={`${buttonClass} sm:col-span-2 sm:justify-self-start`}>Αποθήκευση ομάδας</PlatformButton>
                 <div className="sm:col-span-2 flex flex-wrap gap-3">
                   {!selectedTeamCanDelete && selectedTeamParticipations.length > 0 ? (
                     <p className="w-full text-sm text-red-700">
@@ -384,7 +388,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                         : "Η ομάδα συμμετέχει ακόμη σε ενεργή διοργάνωση. Αφαίρεσέ την πρώτα από τη διοργάνωση και δοκίμασε ξανά."}
                     </p>
                   ) : null}
-                  <button
+                  <PlatformButton mutation
                     type="button"
                     disabled={busy || !selectedTeamCanDelete}
                     onClick={async()=>{
@@ -399,9 +403,9 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                     className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Διαγραφή ομάδας
-                  </button>
+                  </PlatformButton>
                 </div>
-              </form>
+              </PlatformForm>
             )}
           </article>
         )}
@@ -409,13 +413,13 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
     </Panel>
 
     <Panel title="Νέα ομάδα" description="Η ομάδα δημιουργείται μία φορά στο ενιαίο μητρώο και μπορεί να χρησιμοποιείται σε πολλές σεζόν και διοργανώσεις.">
-      <form onSubmit={(event)=>void submit("teams",event)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <PlatformForm onSubmit={(event)=>void submit("teams",event)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Field label="Ονομασία"><input required name="name" className={inputClass}/></Field>
         <Field label="Πόλη"><input name="city" defaultValue="Κομοτηνή" className={inputClass}/></Field>
         <Field label="Επιλογή Λογότυπου">
           <div className="flex flex-col gap-2">
             <input ref={logoUrlInputRef} type="hidden" name="logoUrl" />
-            <input
+            <PlatformFileInput
               ref={logoFileInputRef}
               type="file"
               accept="image/jpeg,image/png,image/webp,image/avif"
@@ -425,14 +429,14 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                 if (file) void uploadLogoFile(file);
               }}
             />
-            <button
+            <PlatformButton
               type="button"
               disabled={uploadingLogo}
               onClick={() => logoFileInputRef.current?.click()}
               className="inline-flex w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {uploadingLogo ? "Μεταφόρτωση..." : "Επιλογή Λογότυπου"}
-            </button>
+            </PlatformButton>
             {selectedLogoName ? (
               <p className="text-xs text-zinc-500">
                 {selectedLogoName}{logoUploadMessage ? ` · ${logoUploadMessage}` : ""}
@@ -440,12 +444,12 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
             ) : null}
           </div>
         </Field>
-        <button disabled={busy || uploadingLogo} className={`${buttonClass} self-end`}>Προσθήκη ομάδας</button>
-      </form>
+        <PlatformButton mutation disabled={busy || uploadingLogo} className={`${buttonClass} self-end`}>Προσθήκη ομάδας</PlatformButton>
+      </PlatformForm>
     </Panel>
 
     <Panel title="Συμμετοχή ομάδας σε διοργάνωση" description="Επίλεξε τη σεζόν, τη διοργάνωση και τις ομάδες για πολλαπλή προσθήκη.">
-      <form onSubmit={(event)=>{event.preventDefault(); void submitBulkParticipation();}} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <PlatformForm onSubmit={(event)=>{event.preventDefault(); void submitBulkParticipation();}} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Field label="Σεζόν">
           <select required name="seasonId" value={selectedSeasonId} onChange={(event) => { const next = event.target.value; setSelectedSeasonId(next); setSelectedCompetitionId(""); setTeamSeasonFilter("all"); setSelectedParticipationTeamIds([]); }} className={inputClass}>
             <option value="">Επιλογή</option>
@@ -472,38 +476,43 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                 </select>
               </label>
               <div className="grid gap-2">
-                <button
+                <PlatformButton
                   type="button"
                   onClick={toggleAllParticipationTeams}
                   className="self-start rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-black text-orange-900 transition hover:border-orange-400"
                 >
                   {allParticipationTeamsSelected ? "Αποεπιλογή όλων" : "Επιλογή όλων"}
-                </button>
+                </PlatformButton>
                 <div className="max-h-56 overflow-auto rounded-xl border border-zinc-200 bg-white p-2">
                   <div className="grid gap-2">
-                    {availableParticipationTeams.length ? availableParticipationTeams.map((team)=><label key={String(team.id)} className="flex items-center gap-2 rounded-lg border border-zinc-100 px-2 py-1.5 text-sm text-zinc-800">
-                    <input
-                        type="checkbox"
-                        checked={selectedParticipationTeamIds.includes(String(team.id))}
-                        disabled={existingTeamIdsInCompetition.has(String(team.id)) || (!selectedParticipationTeamIds.includes(String(team.id)) && remainingParticipationSlots <= 0)}
-                        onChange={(event)=>toggleParticipationTeam(String(team.id), event.target.checked)}
-                      />
-                      <span className="flex-1">{team.name}</span>
-                      {existingTeamIdsInCompetition.has(String(team.id)) ? <span className="ml-auto text-xs font-black uppercase text-zinc-500">Ήδη συμμετέχει</span> : null}
-                    </label>) : <p className="px-2 py-1.5 text-sm text-zinc-500">Δεν υπάρχουν ενεργές ομάδες.</p>}
+                    {availableParticipationTeams.length ? availableParticipationTeams.map((team) => {
+                      const teamLogoUrl = String(team.logo_url ?? "").trim();
+
+                      return <label key={String(team.id)} className="flex items-center gap-2 rounded-lg border border-zinc-100 px-2 py-1.5 text-sm text-zinc-800">
+                        <input
+                          type="checkbox"
+                          checked={selectedParticipationTeamIds.includes(String(team.id))}
+                          disabled={existingTeamIdsInCompetition.has(String(team.id)) || (!selectedParticipationTeamIds.includes(String(team.id)) && remainingParticipationSlots <= 0)}
+                          onChange={(event)=>toggleParticipationTeam(String(team.id), event.target.checked)}
+                        />
+                        {teamLogoUrl ? <img src={teamLogoUrl} alt="" className="h-7 w-7 shrink-0 rounded-md object-contain" /> : null}
+                        <span className="min-w-0 flex-1">{team.name}</span>
+                        {existingTeamIdsInCompetition.has(String(team.id)) ? <span className="ml-auto text-xs font-black uppercase text-zinc-500">Ήδη συμμετέχει</span> : null}
+                      </label>;
+                    }) : <p className="px-2 py-1.5 text-sm text-zinc-500">Δεν υπάρχουν ενεργές ομάδες.</p>}
                   </div>
                 </div>
               </div>
             </>
           )}
         </Field>
-        <button
+        <PlatformButton mutation
           disabled={busy || !selectedSeasonId || !availableCompetitions.length || !selectedCompetitionId || !selectedParticipationTeamIds.some((teamId)=>!existingTeamIdsInCompetition.has(teamId)) || bulkCapacityReached || selectedCapacityWouldOverflow}
           className={`${buttonClass} self-end`}
         >
           Προσθήκη επιλεγμένων ομάδων
-        </button>
-      </form>
+        </PlatformButton>
+      </PlatformForm>
       {selectedSeasonId && !availableCompetitions.length && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Δεν υπάρχει ακόμη διοργάνωση για την επιλεγμένη σεζόν.</p>}
       {selectedCompetitionId && selectedCompetition && (
         <p className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm font-bold text-zinc-700">
@@ -563,12 +572,17 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
           const status=String(participation.status ?? "active");
           const participationCompetition = competitionById.get(String(participation.competition_id ?? ""));
           const season = seasonById.get(String(participation.season_id ?? String(participationCompetition?.season_id ?? "")));
+          const canonicalTeam = teamById.get(String(participation.team_id ?? ""));
+          const canonicalTeamLogoUrl = String(canonicalTeam?.logo_url ?? "").trim();
           const canRemoveParticipation = !isCompletedCompetition(String(participationCompetition?.lifecycle_status ?? "")) && !isCompletedCompetition(String(season?.status ?? ""));
           return <article key={id} className="border-t border-zinc-200 first:border-t-0">
             <div className="grid gap-3 bg-zinc-50/60 p-4 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_minmax(100px,.7fr)_minmax(110px,.7fr)_auto] md:items-center md:gap-4">
               <div className="min-w-0">
                 <p className="text-xs font-black uppercase tracking-wide text-zinc-500 md:hidden">Ομάδα</p>
-                <h3 className="mt-1 break-words font-black text-zinc-950 md:mt-0">{participation.team_name}</h3>
+                <div className="mt-1 flex min-w-0 items-center gap-2 md:mt-0">
+                  {canonicalTeamLogoUrl ? <img src={canonicalTeamLogoUrl} alt="" className="h-8 w-8 shrink-0 rounded-md object-contain" /> : null}
+                  <h3 className="min-w-0 break-words font-black text-zinc-950">{participation.team_name}</h3>
+                </div>
                 {participation.seed ? <p className="mt-1 text-xs font-bold text-zinc-500">seed {participation.seed}</p> : null}
               </div>
               <div className="min-w-0">
@@ -583,25 +597,25 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                 <p className="text-xs font-black uppercase tracking-wide text-zinc-500 md:hidden">Κατάσταση</p>
                 <span className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-black md:mt-0 ${status==="active"?"bg-emerald-100 text-emerald-800":status==="withdrawn"?"bg-red-100 text-red-700":"bg-zinc-200 text-zinc-700"}`}>{participationStatusLabels[status] ?? status}</span>
               </div>
-              <button
+              <PlatformButton mutation
                 type="button"
                 onClick={() => {
                   setEditingParticipationId(isEditing ? null : id);
                   setEditParticipationLogoUploadMessage("");
-                  if (editParticipationLogoInputRef.current) editParticipationLogoInputRef.current.value = String(participation.logo_url ?? "");
+                  if (editParticipationLogoInputRef.current) editParticipationLogoInputRef.current.value = canonicalTeamLogoUrl;
                   if (editParticipationLogoFileInputRef.current) editParticipationLogoFileInputRef.current.value = "";
                 }}
                 className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500 md:w-auto"
               >
                 {isEditing ? "Ακύρωση" : "Edit"}
-              </button>
+              </PlatformButton>
             </div>
-            {isEditing && <form onSubmit={async(event)=>{if(await updateEntity("participations",id,event,"Οι αλλαγές στη συμμετοχή της ομάδας αποθηκεύτηκαν."))setEditingParticipationId(null);}} className="grid gap-3 border-t border-zinc-200 bg-white p-4 sm:grid-cols-2">
+            {isEditing && <PlatformForm onSubmit={async(event)=>{if(await updateEntity("participations",id,event,"Οι αλλαγές στη συμμετοχή της ομάδας αποθηκεύτηκαν."))setEditingParticipationId(null);}} className="grid gap-3 border-t border-zinc-200 bg-white p-4 sm:grid-cols-2">
               <Field label="Ονομασία στη σεζόν"><input required name="displayName" defaultValue={String(participation.display_name ?? participation.team_name ?? "")} className={inputClass}/></Field>
-              <Field label="Επιλογή Λογότυπου στη σεζόν">
+              <Field label="Επιλογή Λογότυπου ομάδας">
                 <div className="flex flex-col gap-2">
-                  <input ref={editParticipationLogoInputRef} type="hidden" name="logoUrl" defaultValue={String(participation.logo_url ?? "")} />
-                  <input
+                  <input ref={editParticipationLogoInputRef} type="hidden" name="logoUrl" defaultValue={canonicalTeamLogoUrl} />
+                  <PlatformFileInput
                     ref={editParticipationLogoFileInputRef}
                     type="file"
                     accept="image/jpeg,image/png,image/webp,image/avif"
@@ -611,20 +625,20 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                       if (file) void uploadParticipationLogoFile(file, String(participation.team_id ?? ""));
                     }}
                   />
-                  <button
+                  <PlatformButton
                     type="button"
                     disabled={uploadingLogo}
                     onClick={() => editParticipationLogoFileInputRef.current?.click()}
                     className="inline-flex w-full items-center justify-center rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {uploadingLogo ? "Μεταφόρτωση..." : "Επιλογή Λογότυπου"}
-                  </button>
+                  </PlatformButton>
                   {editParticipationLogoUploadMessage ? <p className="text-xs text-zinc-500">{editParticipationLogoUploadMessage}</p> : null}
                 </div>
               </Field>
               <div className="sm:col-span-2 flex flex-wrap justify-between gap-3">
-                <button disabled={busy} className={buttonClass}>Αποθήκευση συμμετοχής</button>
-                <button
+                <PlatformButton mutation disabled={busy} className={buttonClass}>Αποθήκευση συμμετοχής</PlatformButton>
+                <PlatformButton mutation
                   type="button"
                   disabled={busy || !canRemoveParticipation}
                   onClick={async()=>{
@@ -639,9 +653,9 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                   className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Αφαίρεση ομάδας από τη διοργάνωση
-                </button>
+                </PlatformButton>
               </div>
-            </form>}
+            </PlatformForm>}
           </article>;
         })}
         {!data.participations

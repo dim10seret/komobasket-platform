@@ -587,7 +587,7 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
     const result = engine.process(matchEvent({
       type: EventType.TECHNICAL_FOUL,
       team: TeamSide.AWAY,
-      offender: { kind: FoulOffenderKind.BENCH, personId: "coach-away", role: BenchRole.HEAD_COACH },
+      offender: { kind: FoulOffenderKind.BENCH, personId: "bench-away", role: BenchRole.ACCOMPANYING_DELEGATION },
       category: TechnicalFoulCategory.CATEGORY_1,
       context: { kind: FoulContextKind.NON_CONTACT },
       stoppageId: "bench-technical",
@@ -597,13 +597,54 @@ describe("Gate 1B2A FIBA_2026 foul and team-penalty core", () => {
     expect(result.accepted).toBe(true);
     expect(result.state.away.teamFouls).toBe(0);
     expect(result.state.away.discipline).toMatchObject({
-      headCoachCategory1TechnicalCount: 1,
+      headCoachCategory1TechnicalCount: 0,
+      benchCategory1TechnicalCount: 1,
       headCoachDisqualified: false,
     });
     expect(result.state.penaltyResolution?.freeThrowQueue[0]).toMatchObject({
       attempts: 1,
       shooterPolicy: ShooterPolicy.ANY_OPPONENT,
     });
+  });
+
+  it.each([
+    ["C", ["C"], 1, 0, false],
+    ["C+C", ["C", "C"], 2, 0, true],
+    ["B", ["B"], 0, 1, false],
+    ["B+B", ["B", "B"], 0, 2, false],
+    ["C+B", ["C", "B"], 1, 1, false],
+    ["B+C", ["B", "C"], 1, 1, false],
+    ["C+B+B", ["C", "B", "B"], 1, 2, true],
+    ["B+C+B", ["B", "C", "B"], 1, 2, true],
+    ["B+B+C", ["B", "B", "C"], 1, 2, true],
+    ["B+B+B", ["B", "B", "B"], 0, 3, true],
+  ] as const)("keeps staff technical discipline count-based for %s", (_label, sources, expectedCoach, expectedBench, expectedDisqualified) => {
+    const { engine, initialState } = createEngineFixture();
+    let sequence = 4;
+    for (const source of sources) {
+      expect(engine.process(matchEvent({
+        type: EventType.TECHNICAL_FOUL,
+        team: TeamSide.AWAY,
+        offender: source === "C"
+          ? { kind: FoulOffenderKind.BENCH, personId: "coach-away", role: BenchRole.HEAD_COACH }
+          : { kind: FoulOffenderKind.BENCH, personId: "bench-away", role: BenchRole.ACCOMPANYING_DELEGATION },
+        category: TechnicalFoulCategory.CATEGORY_1,
+        context: { kind: FoulContextKind.NON_CONTACT },
+        stoppageId: `staff-technical-${sequence}`,
+        sequence,
+      }))).toMatchObject({ accepted: true });
+      const penaltyId = engine.getState().penaltyResolution?.freeThrowQueue[0]?.penaltyId ?? "";
+      expect(engine.process(matchEvent({ type: EventType.PENALTY_ADMINISTRATION_ENDED, penaltyId, sequence: sequence + 1 }))).toMatchObject({ accepted: true });
+      sequence += 2;
+    }
+    expect(engine.getState().away.discipline).toMatchObject({
+      headCoachCategory1TechnicalCount: expectedCoach,
+      benchCategory1TechnicalCount: expectedBench,
+      headCoachDisqualified: expectedDisqualified,
+    });
+    const restored = MatchEngine.fromInitialState(initialState);
+    for (const event of engine.getEvents()) expect(restored.process(event).accepted).toBe(true);
+    expect(restored.getState().away.discipline).toEqual(engine.getState().away.discipline);
   });
 
   it.each([

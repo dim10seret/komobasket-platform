@@ -1,5 +1,7 @@
 "use client";
 
+import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
+
 import type { FormEvent, MouseEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -34,6 +36,7 @@ import {
 } from "@/lib/series-carry-over";
 import { deriveSeriesPhaseCompletion } from "@/lib/series-phase-completion";
 import { ProgramGamesSection } from "./ProgramGamesSection";
+import { selectCompetitionLatestMovements } from "@/lib/competition-latest-movements";
 
 export function CompetitionFields({
   competition,
@@ -67,13 +70,13 @@ export function Seasons({data,submit,updateEntity,deleteEntity,busy}:{data:Snaps
 
   return <>
     <Panel title="Διαχείριση σεζόν" description="Δημιούργησε τη νέα αγωνιστική περίοδο και έλεγξε τις ήδη καταχωρημένες σεζόν. Καμία αλλαγή κατάστασης δεν διαγράφει δεδομένα.">
-      <form onSubmit={(e)=>void submit("seasons",e)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <PlatformForm onSubmit={(e)=>void submit("seasons",e)} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Field label="Ονομασία"><input required name="name" pattern="[0-9]{4}-[0-9]{2}" title="Παράδειγμα: 2026-27" placeholder="2026-27" className={inputClass}/></Field>
         <Field label="Έναρξη"><input name="startsOn" type="date" className={inputClass}/></Field>
         <Field label="Λήξη"><input name="endsOn" type="date" className={inputClass}/></Field>
         <Field label="Κατάσταση"><select name="status" className={inputClass}><option value="draft">Under Construction</option><option value="active">Online</option><option value="completed">Complete</option></select></Field>
-        <button disabled={busy} className={buttonClass}>Προσθήκη σεζόν</button>
-      </form>
+        <PlatformButton mutation disabled={busy} className={buttonClass}>Προσθήκη σεζόν</PlatformButton>
+      </PlatformForm>
       <div className="mt-7 grid gap-4 xl:grid-cols-2">
         {data.seasons.map((season) => {
           const id = String(season.id);
@@ -88,16 +91,16 @@ export function Seasons({data,submit,updateEntity,deleteEntity,busy}:{data:Snaps
                 </div>
                 <p className="mt-2 text-sm text-zinc-600">{season.starts_on || season.ends_on ? `${season.starts_on ?? "Χωρίς έναρξη"} — ${season.ends_on ?? "Χωρίς λήξη"}` : "Δεν έχουν οριστεί ημερομηνίες"} · {competitionCount} {competitionCount === 1 ? "διοργάνωση" : "διοργανώσεις"}</p>
               </div>
-              <button type="button" onClick={() => setEditingId(isEditing ? null : id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing ? "Ακύρωση" : "Edit"}</button>
+              <PlatformButton mutation type="button" onClick={() => setEditingId(isEditing ? null : id)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">{isEditing ? "Ακύρωση" : "Edit"}</PlatformButton>
             </div>
-            {isEditing && <form onSubmit={async (event) => { if (await updateEntity("seasons",id,event,"Οι αλλαγές στη σεζόν αποθηκεύτηκαν χωρίς να επηρεαστεί το ιστορικό της.")) setEditingId(null); }} className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2">
+            {isEditing && <PlatformForm onSubmit={async (event) => { if (await updateEntity("seasons",id,event,"Οι αλλαγές στη σεζόν αποθηκεύτηκαν χωρίς να επηρεαστεί το ιστορικό της.")) setEditingId(null); }} className="mt-5 grid gap-3 border-t border-zinc-200 pt-5 sm:grid-cols-2">
               <Field label="Ονομασία"><input required name="name" pattern="[0-9]{4}-[0-9]{2}" title="Παράδειγμα: 2026-27" defaultValue={String(season.name ?? "")} className={inputClass}/></Field>
               <Field label="Κατάσταση"><select name="status" defaultValue={String(season.status ?? "draft")} className={inputClass}><option value="draft">Under Construction</option><option value="active">Online</option><option value="completed">Complete</option></select></Field>
               <Field label="Έναρξη"><input name="startsOn" type="date" defaultValue={String(season.starts_on ?? "")} className={inputClass}/></Field>
               <Field label="Λήξη"><input name="endsOn" type="date" defaultValue={String(season.ends_on ?? "")} className={inputClass}/></Field>
               <div className="flex flex-wrap gap-3 sm:col-span-2">
-                <button disabled={busy} className={buttonClass}>Αποθήκευση αλλαγών</button>
-                <button
+                <PlatformButton mutation disabled={busy} className={buttonClass}>Αποθήκευση αλλαγών</PlatformButton>
+                <PlatformButton mutation
                   type="button"
                   disabled={busy}
                   onClick={async () => {
@@ -108,9 +111,9 @@ export function Seasons({data,submit,updateEntity,deleteEntity,busy}:{data:Snaps
                   className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Διαγραφή Σεζόν
-                </button>
+                </PlatformButton>
               </div>
-            </form>}
+            </PlatformForm>}
           </article>;
         })}
       </div>
@@ -143,6 +146,7 @@ export function CompetitionWorkspaceManager({
   setWorkspaceMode: (value: CompetitionWorkspaceMode) => void;
   onRefreshCompetitionData?: () => Promise<void> | void;
 }) {
+  const { request: fetch, url: platformUrl } = usePlatformContext();
   const [selectedExistingSeasonId, setSelectedExistingSeasonId] = useState("");
   const [showNewCompetitionForm, setShowNewCompetitionForm] = useState(false);
   const [selectedNewSeasonId, setSelectedNewSeasonId] = useState("");
@@ -208,6 +212,10 @@ export function CompetitionWorkspaceManager({
   const [cleanupBusy,setCleanupBusy]=useState(false);
   const [cleanupNotice,setCleanupNotice]=useState("");
   const [cleanupError,setCleanupError]=useState("");
+  const [showLatestMovements, setShowLatestMovements] = useState(false);
+  const [latestMovements, setLatestMovements] = useState<Row[]>([]);
+  const [latestMovementsLoading, setLatestMovementsLoading] = useState(false);
+  const [latestMovementsError, setLatestMovementsError] = useState("");
 
   useEffect(() => {
     if (!selectedCompetitionPhases.length) {
@@ -462,7 +470,35 @@ export function CompetitionWorkspaceManager({
     setWorkspaceMode("settings");
   };
 
+  const openLatestMovements = async () => {
+    const seasonId = String(selectedCompetition?.season_id ?? "");
+    if (!workspaceCompetitionId || !seasonId) return;
+    setShowLatestMovements(true);
+    setLatestMovementsLoading(true);
+    setLatestMovementsError("");
+    try {
+      const request = await fetch(`/api/admin/league?view=competition-latest-movements&organizationId=${encodeURIComponent(data.organizationContext.organizationId)}&seasonId=${encodeURIComponent(seasonId)}&competitionId=${encodeURIComponent(workspaceCompetitionId)}`, { cache: "no-store" });
+      const payload = await request.json();
+      if (!request.ok || payload?.view !== "competition-latest-movements") {
+        throw new Error(payload?.error || "Η φόρτωση των κινήσεων απέτυχε.");
+      }
+      setLatestMovements(selectCompetitionLatestMovements(payload.data ?? [], {
+        organizationId: data.organizationContext.organizationId,
+        seasonId,
+        competitionId: workspaceCompetitionId,
+      }));
+    } catch (error) {
+      setLatestMovements([]);
+      setLatestMovementsError(error instanceof Error ? error.message : "Η φόρτωση των κινήσεων απέτυχε.");
+    } finally {
+      setLatestMovementsLoading(false);
+    }
+  };
+
   const clearCompetitionWorkspace = useCallback(() => {
+    setShowLatestMovements(false);
+    setLatestMovements([]);
+    setLatestMovementsError("");
     setWorkspaceCompetitionId("");
     setWorkspaceMode("settings");
     setEditingPhaseId(null);
@@ -479,16 +515,16 @@ export function CompetitionWorkspaceManager({
                 {data.seasons.map((season) => <option key={String(season.id)} value={String(season.id)}>{season.name}</option>)}
               </select>
             </Field>
-            <button
+            <PlatformButton mutation
               type="button"
               onClick={() => setShowNewCompetitionForm((current) => !current)}
               className={buttonClass}
             >
               + Νέα Διοργάνωση
-            </button>
+            </PlatformButton>
           </div>
           {showNewCompetitionForm && (
-            <form onSubmit={(event)=>void submit("competitions", event)} className="mb-6 grid gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2 xl:grid-cols-4">
+            <PlatformForm onSubmit={(event)=>void submit("competitions", event)} className="mb-6 grid gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2 xl:grid-cols-4">
               <CompetitionFields />
               <Field label="Σεζόν">
                 <select required name="seasonId" value={selectedNewSeasonId} onChange={(event) => setSelectedNewSeasonId(event.target.value)} className={inputClass}>
@@ -503,7 +539,7 @@ export function CompetitionWorkspaceManager({
                   </div>
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                     <span>📷 {newCompetitionLogoUrl ? "Αλλαγή λογότυπου" : "Επιλογή λογότυπου"}</span>
-                    <input
+                    <PlatformFileInput
                       ref={newCompetitionLogoInputRef}
                       type="file"
                       accept="image/*"
@@ -520,10 +556,10 @@ export function CompetitionWorkspaceManager({
               </Field>
               <input type="hidden" name="logoUrl" value={newCompetitionLogoUrl} />
               <div className="sm:col-span-2 xl:col-span-4 flex items-center gap-3">
-                <button disabled={busy} className={buttonClass}>Δημιουργία Διοργάνωσης</button>
-                <button type="button" onClick={() => setShowNewCompetitionForm(false)} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700">Ακύρωση</button>
+                <PlatformButton mutation disabled={busy} className={buttonClass}>Δημιουργία Διοργάνωσης</PlatformButton>
+                <PlatformButton mutation type="button" onClick={() => setShowNewCompetitionForm(false)} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700">Ακύρωση</PlatformButton>
               </div>
-            </form>
+            </PlatformForm>
           )}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -553,7 +589,7 @@ export function CompetitionWorkspaceManager({
                       className="border-b border-zinc-100 transition hover:bg-zinc-50"
                     >
                       <td className="py-3 pr-3">
-                        <button
+                        <PlatformButton
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
@@ -562,7 +598,7 @@ export function CompetitionWorkspaceManager({
                           className="text-left text-lg font-black text-zinc-950 underline-offset-4 transition hover:text-orange-700 hover:underline"
                         >
                           {competition.name}
-                        </button>
+                        </PlatformButton>
                       </td>
                       <td className="py-3 px-3 text-zinc-700">{competition.season_name}</td>
                       <td className="py-3 px-3 text-zinc-700">{competitionTypeDisplay}</td>
@@ -585,21 +621,24 @@ export function CompetitionWorkspaceManager({
 
       {workspaceCompetitionId && selectedCompetition && (
         <Panel title={`Ρύθμιση Διοργάνωσης`}>
-          <button
+          <PlatformButton
             type="button"
             onClick={clearCompetitionWorkspace}
             className="mb-4 inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700 transition hover:border-orange-500"
           >
             ← Διοργανώσεις
-          </button>
+          </PlatformButton>
           <p className="text-sm text-zinc-700">{selectedCompetition.name} — {selectedSeason?.name ?? "—"}</p>
-          <div className="mt-4 mb-4 flex gap-2 border-b border-zinc-200 pb-4">
-            <button type="button" onClick={() => setWorkspaceMode("settings")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "settings" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Ρύθμιση Διοργάνωσης</button>
-            <button type="button" onClick={() => setWorkspaceMode("phases")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "phases" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Φάσεις</button>
-            <button type="button" onClick={() => setWorkspaceMode("program")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "program" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Πρόγραμμα & Αγώνες</button>
+          <div className="mt-4 mb-4 flex flex-wrap gap-2 border-b border-zinc-200 pb-4">
+            <PlatformButton type="button" onClick={() => setWorkspaceMode("settings")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "settings" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Ρύθμιση Διοργάνωσης</PlatformButton>
+            <PlatformButton type="button" onClick={() => setWorkspaceMode("phases")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "phases" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Φάσεις</PlatformButton>
+            <PlatformButton type="button" onClick={() => setWorkspaceMode("program")} className={`rounded-xl border px-3 py-2 text-sm font-black ${workspaceMode === "program" ? "bg-zinc-950 text-white" : "bg-white text-zinc-700"}`}>Πρόγραμμα & Αγώνες</PlatformButton>
+            {selectedSeason && (
+              <PlatformButton type="button" onClick={() => void openLatestMovements()} className="rounded-xl border border-orange-300 bg-orange-50 px-3 py-2 text-sm font-black text-orange-800 transition hover:bg-orange-100">Τελευταίες Κινήσεις</PlatformButton>
+            )}
           </div>
           {workspaceMode === "settings" ? (
-            <form
+            <PlatformForm
               onSubmit={(event)=>{ if (!window.confirm("Θέλεις να αποθηκεύσεις τις αλλαγές στη ρύθμιση της διοργάνωσης;")) return; void updateEntity("competitions", workspaceCompetitionId, event, "Η ρύθμιση της διοργάνωσης αποθηκεύτηκε."); }}
               className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
             >
@@ -612,7 +651,7 @@ export function CompetitionWorkspaceManager({
                   </div>
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                     <span>📷 {editCompetitionLogoUrl ? "Αλλαγή λογότυπου" : "Επιλογή λογότυπου"}</span>
-                    <input
+                    <PlatformFileInput
                       ref={editCompetitionLogoInputRef}
                       type="file"
                       accept="image/*"
@@ -633,15 +672,15 @@ export function CompetitionWorkspaceManager({
                 <input type="hidden" name="seasonId" value={String(selectedCompetition.season_id ?? "")} />
                 <CompetitionFields competition={selectedCompetition} includeName={false} includeStatus />
               <div className="flex items-center gap-3 sm:col-span-2 xl:col-span-4">
-                <button disabled={busy} className={buttonClass}>Αποθήκευση</button>
-                <button
+                <PlatformButton mutation disabled={busy} className={buttonClass}>Αποθήκευση</PlatformButton>
+                <PlatformButton
                   type="button"
                   onClick={() => clearCompetitionWorkspace()}
                   className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-700"
                 >
                   Πίσω
-                </button>
-                <button
+                </PlatformButton>
+                <PlatformButton mutation
                   type="button"
                   disabled={busy}
                   onClick={() => {
@@ -651,7 +690,7 @@ export function CompetitionWorkspaceManager({
                   className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Διαγραφή
-                </button>
+                </PlatformButton>
               </div>
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:col-span-2 xl:col-span-4">
                 <p className="text-sm font-black text-zinc-900">Καθαρισμός δεδομένων διοργάνωσης</p>
@@ -664,7 +703,7 @@ export function CompetitionWorkspaceManager({
                 {cleanupError && <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{cleanupError}</p>}
                 {cleanupNotice && <p className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">{cleanupNotice}</p>}
                 {String(selectedCompetition.lifecycle_status ?? "under_construction") === "under_construction" ? (
-                  <button
+                  <PlatformButton
                     type="button"
                     disabled={busy || cleanupBusy}
                     onClick={async () => {
@@ -699,19 +738,19 @@ export function CompetitionWorkspaceManager({
                     className="mt-3 rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-sm font-black text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Καθαρισμός δεδομένων διοργάνωσης
-                  </button>
+                  </PlatformButton>
                 ) : (
                   <p className="mt-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-bold text-zinc-600">
                     Ο καθαρισμός είναι διαθέσιμος μόνο όταν η διοργάνωση είναι Under Construction και έχει αποθηκευτεί πρώτα.
                   </p>
                 )}
               </div>
-            </form>
+            </PlatformForm>
           ) : workspaceMode === "phases" ? (
             <article className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
               {!showAddPhaseForm && (
                 <div className="mb-4 flex flex-wrap gap-2">
-                  <button
+                  <PlatformButton mutation
                     type="button"
                     onClick={() => {
                       setSeriesContinuationSeed(null);
@@ -724,14 +763,14 @@ export function CompetitionWorkspaceManager({
                     }`}
                   >
                     + Προσθήκη Φάσης
-                  </button>
+                  </PlatformButton>
                 </div>
               )}
               {showAddPhaseForm && (
                 <>
                 <div className="mb-3 flex items-center justify-between gap-3">
                     <p className="text-sm font-black text-zinc-700">Προσθήκη Φάσης</p>
-                    <button
+                    <PlatformButton mutation
                       type="button"
                       onClick={() => {
                         setShowAddPhaseForm(false);
@@ -741,10 +780,10 @@ export function CompetitionWorkspaceManager({
                       className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                     >
                       Ακύρωση
-                    </button>
+                    </PlatformButton>
                   </div>
                   {addPhaseChoice === "new" ? (
-                      <form
+                      <PlatformForm
                         onSubmit={async (event) => {
                           event.preventDefault();
                           const ok = await submit("phases", event);
@@ -788,7 +827,7 @@ export function CompetitionWorkspaceManager({
                             onChange={(event) => setNewPhasePreviousId(event.target.value)}
                             className={inputClass}
                           >
-                            <option value="">Κανονική Περίοδος</option>
+                            <option value="">Καμία</option>
                             {selectedCompetitionPhases.map((phase) => (
                               <option key={String(phase.id)} value={String(phase.id)}>
                                 {phase.name}
@@ -802,7 +841,7 @@ export function CompetitionWorkspaceManager({
                           value={String((Number(selectedCompetitionPhases[selectedCompetitionPhases.length - 1]?.phase_order ?? selectedCompetitionPhases[selectedCompetitionPhases.length - 1]?.order_index ?? 0) + 1))}
                         />
                         <div className="flex flex-wrap gap-3 sm:col-span-2">
-                          <button
+                          <PlatformButton mutation
                             type="button"
                             onClick={() => {
                               setShowAddPhaseForm(false);
@@ -815,12 +854,12 @@ export function CompetitionWorkspaceManager({
                             className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                           >
                             Ακύρωση
-                          </button>
-                          <button type="submit" disabled={busy} className={buttonClass}>
+                          </PlatformButton>
+                          <PlatformButton mutation type="submit" disabled={busy} className={buttonClass}>
                             Δημιουργία Φάσης
-                          </button>
+                          </PlatformButton>
                         </div>
-                      </form>
+                      </PlatformForm>
                   ) : (
                     <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
                       <p className="font-black text-zinc-900">Νέα Φάση</p>
@@ -905,7 +944,7 @@ export function CompetitionWorkspaceManager({
                           {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
                         </span>
                         {!isFinalized && (phaseFormat === "standings" || phaseFormat === "series") && (
-                          <button
+                          <PlatformButton
                             type="button"
                             disabled={phaseFormat === "series" && !seriesCompletion?.competitivelyComplete}
                             title={phaseFormat === "series" && !seriesCompletion?.competitivelyComplete
@@ -923,7 +962,7 @@ export function CompetitionWorkspaceManager({
                             className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-black text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Οριστικοποίηση φάσης
-                          </button>
+                          </PlatformButton>
                         )}
                         {!isFinalized && phaseFormat === "series" && seriesCompletion && !seriesCompletion.competitivelyComplete && (
                           <span className="text-xs font-semibold text-amber-800">
@@ -933,7 +972,7 @@ export function CompetitionWorkspaceManager({
                         {isFinalized ? <span className="text-sm font-black text-zinc-600">{headerSummary}</span> : <span className="text-sm text-zinc-600">{headerSummary}</span>}
                       </div>
                       {isEditingPhase ? (
-                        <form
+                        <PlatformForm
                           onSubmit={async (event) => {
                             if (await updateEntity("phases", phaseIdValue, event, "Η φάση ενημερώθηκε.")) {
                               setEditingPhaseId(null);
@@ -954,7 +993,7 @@ export function CompetitionWorkspaceManager({
                           <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
                             <p className="text-sm font-black text-red-800">Επικίνδυνες ενέργειες</p>
                             <p className="mt-1 text-sm text-red-700">Η διαγραφή επιτρέπεται μόνο όταν δεν υπάρχουν επόμενες φάσεις που εξαρτώνται από αυτή.</p>
-                            <button
+                            <PlatformButton mutation
                               type="button"
                               disabled={busy}
                               onClick={async () => {
@@ -968,9 +1007,9 @@ export function CompetitionWorkspaceManager({
                               className="mt-3 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
                             >
                               Διαγραφή Φάσης
-                            </button>
+                            </PlatformButton>
                           </div>
-                        </form>
+                        </PlatformForm>
                       ) : phaseFormat === "series" ? (
                         <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                           <p className="text-sm font-black text-zinc-900">Διασταυρώσεις</p>
@@ -991,7 +1030,7 @@ export function CompetitionWorkspaceManager({
 
                 return (
                   <article key={`phase-${phaseIdValue}`} className={`rounded-2xl border ${isExpanded ? "border-orange-300 bg-white" : "border-zinc-200 bg-zinc-50"} p-4 sm:p-5`}>
-                    <button
+                    <PlatformButton mutation
                       type="button"
                       onClick={() => {
                         setOpenPhaseId(isExpanded ? null : phaseIdValue);
@@ -1006,20 +1045,20 @@ export function CompetitionWorkspaceManager({
                       <span className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500">
                         {isExpanded ? "Σύμπτυξη" : "Άνοιγμα"}
                       </span>
-                    </button>
+                    </PlatformButton>
                     {isExpanded ? (
                       <div className="mt-4 border-t border-zinc-200 pt-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="space-y-2">
                             <p className="text-sm text-zinc-700">{phaseFormatLabel(phaseFormat)} · σειρά {phaseOrder}</p>
                           </div>
-                          <button
+                          <PlatformButton mutation
                             type="button"
                             onClick={() => setEditingPhaseId(isEditingPhase ? null : phaseIdValue)}
                             className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500"
                           >
                             {isEditingPhase ? "Αρχικό μενού Φάσεων" : "Edit Φάσης"}
-                          </button>
+                          </PlatformButton>
                         </div>
                         {phaseBody}
                       </div>
@@ -1035,7 +1074,7 @@ export function CompetitionWorkspaceManager({
                         <p className="text-xs font-black uppercase tracking-wider text-orange-600">Οριστικοποίηση φάσης</p>
                         <h3 className="mt-1 text-xl font-black text-zinc-950">{finalizePhaseDialog.phaseName}</h3>
                       </div>
-                      <button
+                      <PlatformButton
                         type="button"
                         onClick={() => {
                           setFinalizePhaseDialog(null);
@@ -1044,14 +1083,14 @@ export function CompetitionWorkspaceManager({
                         className="rounded-xl border border-zinc-300 px-3 py-2 text-sm font-black text-zinc-700 transition hover:border-orange-500"
                       >
                         Ακύρωση
-                      </button>
+                      </PlatformButton>
                     </div>
                     <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                       {finalizePhaseDialog.phaseFormat === "series"
                         ? "Όλα τα αποτελέσματα της σειράς έχουν επιλυθεί. Οι ομάδες που προκρίθηκαν θα γίνουν οριστικές για τις επόμενες φάσεις. Τα αποτελέσματα, οι διασταυρώσεις και οι ρυθμίσεις μεταφοράς θα κλειδωθούν."
                         : "Η οριστικοποίηση της φάσης καθιστά την τελική κατάταξη διαθέσιμη στις επόμενες φάσεις και κλειδώνει βασικές ρυθμίσεις της φάσης."}
                     </p>
-                    <form
+                    <PlatformForm
                       className="mt-4"
                       onSubmit={async (event) => {
                         event.preventDefault();
@@ -1076,14 +1115,14 @@ export function CompetitionWorkspaceManager({
                         />
                       </label>
                       <div className="mt-5 flex flex-wrap items-center gap-3">
-                        <button
+                        <PlatformButton mutation
                           type="submit"
                           disabled={String(finalizePhaseConfirmation).trim() !== "ΟΡΙΣΤΙΚΟΠΟΙΗΣΗ" || busy}
                           className="rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Οριστικοποίηση φάσης
-                        </button>
-                        <button
+                        </PlatformButton>
+                        <PlatformButton
                           type="button"
                           onClick={() => {
                             setFinalizePhaseDialog(null);
@@ -1092,9 +1131,9 @@ export function CompetitionWorkspaceManager({
                           className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500"
                         >
                           Ακύρωση
-                        </button>
+                        </PlatformButton>
                       </div>
-                    </form>
+                    </PlatformForm>
                   </div>
                 </div>
               )}
@@ -1108,7 +1147,7 @@ export function CompetitionWorkspaceManager({
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
                   <div className="w-full max-w-xl rounded-2xl bg-white p-4">
                     <div className="text-sm font-black text-red-700">{teamRosterError}</div>
-                    <button type="button" onClick={closeTeamRosterPopup} className="mt-4 rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Κλείσιμο</button>
+                    <PlatformButton type="button" onClick={closeTeamRosterPopup} className="mt-4 rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Κλείσιμο</PlatformButton>
                   </div>
                 </div>
               )}
@@ -1121,8 +1160,8 @@ export function CompetitionWorkspaceManager({
                         <p className="text-sm text-zinc-600">{teamRoster.competitionName} · {teamRoster.seasonName}</p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button type="button" className={`${buttonClass} text-sm`}>Επεξεργασία Ρόστερ</button>
-                        <button type="button" onClick={closeTeamRosterPopup} className="rounded-xl border border-zinc-300 px-3 py-2.5 font-black">Κλείσιμο</button>
+                        <PlatformButton type="button" className={`${buttonClass} text-sm`}>Επεξεργασία Ρόστερ</PlatformButton>
+                        <PlatformButton type="button" onClick={closeTeamRosterPopup} className="rounded-xl border border-zinc-300 px-3 py-2.5 font-black">Κλείσιμο</PlatformButton>
                       </div>
                     </div>
                     {teamRosterNotice ? <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">{teamRosterNotice}</p> : null}
@@ -1143,24 +1182,24 @@ export function CompetitionWorkspaceManager({
                                   {athlete.photo_url ? <img src={athlete.photo_url} alt={`${athlete.first_name ?? ""} ${athlete.last_name ?? ""}`} className="h-8 w-8 rounded-full object-cover" /> : <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-[10px] text-zinc-500">—</span>}
                                 </td>
                                 <td className="px-3 py-2">
-                                  <button
+                                  <PlatformButton
                                     type="button"
                                     className="text-blue-700 underline decoration-blue-300 hover:text-blue-900"
                                     onClick={() => openAthleteEdit(athlete)}
                                     disabled={rosterActionBusy}
                                   >
                                     {athlete.first_name || athlete.display_name || "—"}
-                                  </button>
+                                  </PlatformButton>
                                 </td>
                                 <td className="px-3 py-2">
-                                  <button
+                                  <PlatformButton
                                     type="button"
                                     className="text-blue-700 underline decoration-blue-300 hover:text-blue-900"
                                     onClick={() => openAthleteEdit(athlete)}
                                     disabled={rosterActionBusy}
                                   >
                                     {athlete.last_name || athlete.display_name || "—"}
-                                  </button>
+                                  </PlatformButton>
                                 </td>
                                 <td className="px-3 py-2 text-zinc-700">{parseDateForDisplay(String(athlete.birth_date ?? ""))}</td>
                                 <td className="px-3 py-2 text-zinc-700">{athlete.shirt_number ?? "—"}</td>
@@ -1222,14 +1261,14 @@ export function CompetitionWorkspaceManager({
                           </div>
                           <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                             <span>📷 {editingAthletePhotoPreview || editingAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                            <input type="file" accept="image/*" className="hidden" onChange={(event)=>{ const file = event.currentTarget.files?.[0]; if (!file) return; handleAthletePhotoSelect(file); }} />
+                            <PlatformFileInput type="file" accept="image/*" className="hidden" onChange={(event)=>{ const file = event.currentTarget.files?.[0]; if (!file) return; handleAthletePhotoSelect(file); }} />
                           </label>
                         </div>
                         <p className="mt-2 text-xs text-zinc-500">{editingAthleteUploadBusy ? "Φόρτωση εικόνας..." : (editingAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${editingAthletePhotoFileName}` : editingAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                       </Field>
                       <div className="mt-1 flex gap-2">
-                        <button type="button" className={buttonClass} onClick={() => void saveAthleteEditsFromRoster()} disabled={rosterActionBusy}>Αποθήκευση</button>
-                        <button type="button" onClick={() => { if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview); setEditingAthletePhotoPreview(""); setEditingAthletePhotoFileName(""); setEditingAthlete(null); }} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Ακύρωση</button>
+                        <PlatformButton mutation type="button" className={buttonClass} onClick={() => void saveAthleteEditsFromRoster()} disabled={rosterActionBusy}>Αποθήκευση</PlatformButton>
+                        <PlatformButton mutation type="button" onClick={() => { if (editingAthletePhotoPreview && editingAthletePhotoPreview.startsWith("blob:")) URL.revokeObjectURL(editingAthletePhotoPreview); setEditingAthletePhotoPreview(""); setEditingAthletePhotoFileName(""); setEditingAthlete(null); }} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">Ακύρωση</PlatformButton>
                       </div>
                     </div>
                   </div>
@@ -1249,6 +1288,50 @@ export function CompetitionWorkspaceManager({
             />
           )}
         </Panel>
+      )}
+      {showLatestMovements && selectedCompetition && selectedSeason && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <section className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="latest-movements-title">
+            <header className="flex items-start justify-between gap-4 border-b border-zinc-200 p-5">
+              <div>
+                <h2 id="latest-movements-title" className="text-xl font-black text-zinc-950">Τελευταίες Κινήσεις</h2>
+                <p className="mt-1 text-sm font-bold text-zinc-600">{selectedSeason.name} · {selectedCompetition.name}</p>
+              </div>
+              <PlatformButton type="button" onClick={() => setShowLatestMovements(false)} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700">Κλείσιμο</PlatformButton>
+            </header>
+            <div className="overflow-y-auto p-5">
+              {latestMovementsLoading ? (
+                <p className="rounded-xl bg-zinc-50 p-4 text-sm font-bold text-zinc-600">Φόρτωση κινήσεων...</p>
+              ) : latestMovementsError ? (
+                <p className="rounded-xl bg-red-50 p-4 text-sm font-bold text-red-700">{latestMovementsError}</p>
+              ) : latestMovements.length ? (
+                <div className="space-y-3">
+                  {latestMovements.map((movement) => {
+                    const type = String(movement.movement_type ?? "");
+                    const typeLabel = type === "addition" ? "Προσθήκη" : type === "departure" ? "Αποχώρηση" : "Μεταγραφή";
+                    return (
+                      <article key={String(movement.id)} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-wide text-orange-700">{typeLabel}</p>
+                            <h3 className="mt-1 text-lg font-black text-zinc-950">{String(movement.player_name ?? "—")}</h3>
+                          </div>
+                          <time className="text-sm font-black text-zinc-700">{parseDateForDisplay(String(movement.effective_on ?? ""))}</time>
+                        </div>
+                        <div className="mt-3 grid gap-2 text-sm text-zinc-700 sm:grid-cols-2">
+                          <p><span className="font-black">Από:</span> {String(movement.from_team_name ?? "—")}</p>
+                          <p><span className="font-black">Προς:</span> {String(movement.to_team_name ?? "—")}</p>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="rounded-xl bg-zinc-50 p-4 text-sm text-zinc-500">Δεν υπάρχουν καταγεγραμμένες κινήσεις για αυτή τη διοργάνωση.</p>
+              )}
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

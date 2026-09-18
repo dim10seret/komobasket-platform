@@ -13,7 +13,7 @@ export default function TeamHero({ team, season, playerCount, logo }: TeamHeroPr
       <div className="mx-auto max-w-7xl px-8 py-10">
         <div className="flex flex-col items-center gap-8 lg:flex-row">
           <div className="relative h-40 w-40 overflow-hidden rounded-full bg-white shadow-lg">
-            <Image src={logo} alt={`Λογότυπο ${team}`} fill sizes="160px" className="object-contain p-3" priority />
+            {logo ? <Image src={logo} alt={`Λογότυπο ${team}`} fill sizes="160px" className="object-contain p-3" priority /> : null}
           </div>
 
           <div className="flex-1 text-center lg:text-left">

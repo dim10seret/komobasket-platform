@@ -10,6 +10,7 @@ import {
 } from "../shared/admin-core";
 import { resolveParticipantSlotReference } from "@/lib/participant-slot-resolution";
 import { classifySeriesBracketEntry, resolveSeriesCarryOver, resolveSeriesParticipantSourcePhaseId } from "@/lib/series-carry-over";
+import { getRootPhaseCompetitionTeams } from "@/lib/phase-root-source";
 
 type ParticipantSourceType =
   | "competition_participants"
@@ -497,13 +498,18 @@ export function PhaseParticipantsBuilder({
       .filter((entry) => String(entry.id ?? "") !== String(phase?.id ?? ""));
   }, [data.phases, phaseCompetitionId, phase?.id]);
 
-  const competitionTeams = useMemo(() => getCompetitionTeamsForStandings(data, phaseCompetitionId), [data.participations, phaseCompetitionId]);
+  const isSeriesMode = String(selectedFormat) === "series";
+  const isRootSeries = isSeriesMode && !String(lockedSeriesSourcePhaseId?.trim() || phase?.previous_phase_id || "").trim();
+  const competitionTeams = useMemo(
+    () => isRootSeries ? getRootPhaseCompetitionTeams(data, phaseCompetitionId) : getCompetitionTeamsForStandings(data, phaseCompetitionId),
+    [data.competitions, data.organizationContext.organizationId, data.participations, data.teams, isRootSeries, phaseCompetitionId],
+  );
 
   const [participantSourceType, setParticipantSourceType] = useState<ParticipantSourceType>(() =>
-    normalizeParticipantSourceType(String(config?.participantSourceType || phase?.format === "series" ? "standing_positions" : "competition_participants"), "competition_participants"),
+    isRootSeries ? "competition_participants" : isSeriesMode ? "standing_positions" : normalizeParticipantSourceType(String(config?.participantSourceType ?? ""), "competition_participants"),
   );
   const [participantSourcePhaseId, setParticipantSourcePhaseId] = useState(
-    String(lockedSeriesSourcePhaseId?.trim() || phase?.previous_phase_id || config?.participantSourcePhaseId || ""),
+    String(lockedSeriesSourcePhaseId?.trim() || (phase ? phase.previous_phase_id ?? "" : config?.participantSourcePhaseId ?? "")),
   );
   const [standingFrom, setStandingFrom] = useState(asInt(lockedSeriesRangeFrom ?? config?.standingFrom, 1));
   const [standingTo, setStandingTo] = useState(asInt(lockedSeriesRangeTo ?? config?.standingTo, asInt(config?.standingFrom, 1)));
@@ -517,7 +523,6 @@ export function PhaseParticipantsBuilder({
   const [carryOverMeetingNumbers, setCarryOverMeetingNumbers] = useState<number[]>(() => parseCarryOverMeetingNumbers(parsedConfig.carryOverMeetingNumbers, 1));
   const [winsRequired, setWinsRequired] = useState(String(asInt(phase?.wins_required ?? 2, 2)));
 
-  const isSeriesMode = String(selectedFormat) === "series";
   const sourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === participantSourcePhaseId), [phaseList, participantSourcePhaseId]);
   const sourceIsSeries = String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series";
   const sourceOutputPool = useMemo(() => getSeriesOutputOptions(sourcePhase, data), [data, sourcePhase]);
@@ -543,7 +548,8 @@ export function PhaseParticipantsBuilder({
   }, [standingFrom, standingTo]);
 
   const [sourceValidationMessages, setSourceValidationMessages] = useState<string[]>([]);
-  const isOddSeries = isSeriesMode && availableStandingSlots.length > 1 && availableStandingSlots.length % 2 === 1;
+  const participantSlotCount = isRootSeries ? competitionTeams.length : availableStandingSlots.length;
+  const isOddSeries = isSeriesMode && participantSlotCount > 1 && participantSlotCount % 2 === 1;
   const isStepMode = activeStep !== undefined;
 
   useEffect(() => {
@@ -554,8 +560,8 @@ export function PhaseParticipantsBuilder({
       String(cfg?.participantSourceType || "competition_participants"),
       "competition_participants",
     );
-    setParticipantSourceType(isSeriesMode ? "standing_positions" : normalizedSourceType);
-    setParticipantSourcePhaseId(String(lockedSeriesSourcePhaseId?.trim() || phase?.previous_phase_id || cfg?.participantSourcePhaseId || ""));
+    setParticipantSourceType(isRootSeries ? "competition_participants" : isSeriesMode ? "standing_positions" : normalizedSourceType);
+    setParticipantSourcePhaseId(String(lockedSeriesSourcePhaseId?.trim() || (phase ? phase.previous_phase_id ?? "" : cfg?.participantSourcePhaseId ?? "")));
     setStandingFrom(asInt(lockedSeriesRangeFrom ?? cfg?.standingFrom, 1));
     setStandingTo(asInt(lockedSeriesRangeTo ?? cfg?.standingTo, asInt(cfg?.standingFrom, 1)));
     setSelectedTeamIds(cfg?.selectedTeamIds ?? []);
@@ -566,14 +572,15 @@ export function PhaseParticipantsBuilder({
     setCarryOverEnabled(Boolean(phase?.format === "series" ? Number(phase?.carry_over_enabled ?? 0) === 1 : false));
     setCarryOverSourcePhaseId(String(phase?.carry_over_source_phase_id ?? ""));
     setCarryOverMeetingNumbers(parseCarryOverMeetingNumbers(next.carryOverMeetingNumbers, 1));
-  }, [isSeriesMode, lockedSeriesRangeFrom, lockedSeriesRangeTo, lockedSeriesSourcePhaseId, phase]);
+  }, [isRootSeries, isSeriesMode, lockedSeriesRangeFrom, lockedSeriesRangeTo, lockedSeriesSourcePhaseId, phase]);
 
   useEffect(() => {
     if (!isSeriesMode) return;
-    if (participantSourceType !== "standing_positions") {
-      setParticipantSourceType("standing_positions");
+    const requiredSourceType = isRootSeries ? "competition_participants" : "standing_positions";
+    if (participantSourceType !== requiredSourceType) {
+      setParticipantSourceType(requiredSourceType);
     }
-  }, [isSeriesMode, participantSourceType]);
+  }, [isRootSeries, isSeriesMode, participantSourceType]);
 
   const estimatedParticipantCount = useMemo(() => {
     if (!isSeriesMode) return competitionTeams.length;
@@ -586,6 +593,7 @@ export function PhaseParticipantsBuilder({
 
   const isSeriesStepSourceRangeValid = useMemo(() => {
     if (!isSeriesMode) return true;
+    if (isRootSeries) return true;
     if (!participantSourcePhaseId) return false;
     if (standingFrom < 1) return false;
     if (standingTo < standingFrom) return false;
@@ -595,7 +603,7 @@ export function PhaseParticipantsBuilder({
       if (standingFrom < sourceFrom || standingTo > sourceTo) return false;
     }
     return true;
-  }, [isSeriesMode, participantSourcePhaseId, standingFrom, standingTo]);
+  }, [isRootSeries, isSeriesMode, participantSourcePhaseId, standingFrom, standingTo]);
 
   const persistedMatchups = useMemo(() => parseSlotArray(bracketConfig?.matchups), [bracketConfig?.matchups]);
   const persistedSeriesSourceFrom = asInt(config?.standingFrom, 1);
@@ -722,7 +730,7 @@ export function PhaseParticipantsBuilder({
     return phaseList;
   }, [phaseList]);
 
-  const sourcePoolCount = sourceIsSeries ? sourceOutputPool.length : availableStandingSlots.length;
+  const sourcePoolCount = isRootSeries ? competitionTeams.length : sourceIsSeries ? sourceOutputPool.length : availableStandingSlots.length;
 
   const currentPhaseSourceTokens = useMemo(() => {
     const counts = new Map<string, number>();
@@ -854,7 +862,9 @@ export function PhaseParticipantsBuilder({
 
     return (
       <select
-        value={sourceIsSeries
+        value={isRootSeries
+          ? (slot.type === "bye" ? "__bye__" : slot.teamId)
+          : sourceIsSeries
           ? (slot.type === "bye"
               ? "__bye__"
               : slot.type === "matchup_winner"
@@ -865,6 +875,17 @@ export function PhaseParticipantsBuilder({
           const selected = event.target.value;
           const matchupId = slotRefId.split("-").slice(0, -1).join("-");
           const key: "slotA" | "slotB" = isSlotA ? "slotA" : "slotB";
+
+          if (isRootSeries) {
+            if (selected === "__bye__" && !isSlotA) {
+              changeSlotType(matchupId, key, "bye");
+              changeSlotValue(matchupId, key, "teamId", "");
+              return;
+            }
+            changeSlotType(matchupId, key, "manual");
+            changeSlotValue(matchupId, key, "teamId", selected);
+            return;
+          }
 
           if (sourceIsSeries) {
             if (selected === "__bye__" && !isSlotA) {
@@ -906,7 +927,14 @@ export function PhaseParticipantsBuilder({
         className={inputClass}
       >
         <option value="">Επιλογή</option>
-        {sourceIsSeries
+        {isRootSeries
+          ? competitionTeams.map((team) => {
+            const teamId = String(team.team_id);
+            const token = `manual:${teamId}`;
+            const isSelectedInCurrentSlot = token === currentToken;
+            return <option key={`${slotRefId}-${teamId}`} value={teamId} disabled={!isSelectedInCurrentSlot && isSeriesSlotValueUsedElsewhere(token, slot.id)}>{team.team_name}</option>;
+          })
+          : sourceIsSeries
           ? sourceOutputPool.map((entry) => {
             const normalized = String(entry.value);
             const isSelectedInCurrentSlot = normalized === currentToken;
@@ -937,8 +965,8 @@ export function PhaseParticipantsBuilder({
     const nextIndex = matchups.length + 1;
     setMatchups((current) => [...current, {
       id: `matchup-${Date.now()}-${nextIndex}`,
-      slotA: { id: `slot-a-${nextIndex}`, type: "standing_position", position: "", teamId: "", matchupId: "" },
-      slotB: { id: `slot-b-${nextIndex}`, type: "standing_position", position: "", teamId: "", matchupId: "" },
+      slotA: { id: `slot-a-${nextIndex}`, type: isRootSeries ? "manual" : "standing_position", position: "", teamId: "", matchupId: "" },
+      slotB: { id: `slot-b-${nextIndex}`, type: isRootSeries ? "manual" : "standing_position", position: "", teamId: "", matchupId: "" },
     }]);
   };
 
@@ -949,7 +977,15 @@ export function PhaseParticipantsBuilder({
   const renderSourcePhaseSelection = () => (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 space-y-4">
       <p className="text-xs font-black uppercase tracking-[0.08em] text-orange-600">ΠΗΓΗ ΟΜΑΔΩΝ</p>
-      {isSeriesMode ? (
+      {isSeriesMode && isRootSeries ? (
+        <>
+          <p className="text-sm text-zinc-700">Πηγή: ενεργές συμμετοχές της διοργάνωσης.</p>
+          <div className="flex flex-wrap gap-2">
+            {competitionTeams.map((team) => <span key={team.team_id} className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-sm text-zinc-800">{team.team_name}</span>)}
+            {!competitionTeams.length && <p className="text-sm text-zinc-500">Δεν υπάρχουν ενεργές συμμετοχές στη διοργάνωση.</p>}
+          </div>
+        </>
+      ) : isSeriesMode ? (
         <>
           <Field label="Φάση προέλευσης">
             {seriesContinuationMode || lockedSeriesSourcePhaseId || String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series" ? (
@@ -1057,7 +1093,7 @@ export function PhaseParticipantsBuilder({
           )}
           {isSeriesMode ? (
             <Field label="Διαθεσιμότητα">
-              <input readOnly value={`${sourcePoolCount} διαθέσιμα slots`} className={inputClass} />
+              <input readOnly value={isRootSeries ? `${sourcePoolCount} διαθέσιμες ομάδες` : `${sourcePoolCount} διαθέσιμα slots`} className={inputClass} />
             </Field>
           ) : (
             <Field label="Διαθεσιμότητα">
@@ -1299,8 +1335,8 @@ export function PhaseParticipantsBuilder({
       <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
         <p className="text-xs uppercase tracking-wide text-zinc-500">Σύνοψη</p>
         <div className="mt-2 grid gap-1 text-sm text-zinc-700 md:grid-cols-2">
-          <p><span className="font-black">Πηγή:</span> {isSeriesMode ? "Σειρά αγώνων" : "Όλες οι ομάδες της διοργάνωσης"}</p>
-          {isSeriesMode && <p><span className="font-black">Θέσεις:</span> {`${standingFrom}–${standingTo}`}</p>}
+          <p><span className="font-black">Πηγή:</span> {isRootSeries ? "Ομάδες της διοργάνωσης" : isSeriesMode ? "Σειρά αγώνων" : "Όλες οι ομάδες της διοργάνωσης"}</p>
+          {isSeriesMode && !isRootSeries && <p><span className="font-black">Θέσεις:</span> {`${standingFrom}–${standingTo}`}</p>}
           {isSeriesMode && <p><span className="font-black">Τρόπος:</span> Manual</p>}
           {isSeriesMode && (
             <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>
@@ -1379,7 +1415,7 @@ export function PhaseParticipantsBuilder({
       type="hidden"
       name="participantConfiguration"
       value={JSON.stringify({
-        participantSourceType: isSeriesMode ? "standing_positions" : "competition_participants",
+        participantSourceType: isRootSeries ? "competition_participants" : isSeriesMode ? "standing_positions" : "competition_participants",
         participantSourcePhaseId,
         standingFrom,
         standingTo,

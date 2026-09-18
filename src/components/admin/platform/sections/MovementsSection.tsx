@@ -1,7 +1,12 @@
+"use client";
+
+import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
 import { useEffect, useMemo, useState } from "react";
+import { getCanonicalMovementCompetitionId, getCanonicalMovementCompetitionName, movementMatchesCompetition } from "@/lib/player-movement-lineage";
+import { selectEligibleAdditionPlayers } from "@/lib/player-movement-addition";
 import { Field, Panel, Row, Snapshot, buttonClass, inputClass, parseDateForDisplay } from "../shared/admin-core";
 
-type MovementMode = "departure" | "transfer";
+type MovementMode = "addition" | "departure" | "transfer";
 
 type MovementRow = Row & {
   player_name?: string | null;
@@ -13,17 +18,19 @@ type MovementRow = Row & {
 
 type Props = {
   data: Snapshot;
+  add: (payload: Record<string, unknown>) => Promise<boolean>;
   depart: (payload: Record<string, unknown>) => Promise<boolean>;
   transfer: (payload: Record<string, unknown>) => Promise<boolean>;
   busy: boolean;
 };
 
 const movementTypeLabels: Record<string, string> = {
+  addition: "Προσθήκη",
   departure: "Αποχώρηση",
   transfer: "Μεταγραφή",
 };
 
-function asString(value: string | number | null | undefined) {
+function asString(value: unknown) {
   return String(value ?? "").trim();
 }
 
@@ -47,22 +54,21 @@ function uniqueSortedLabelOptions(rows: Row[], idKey: string, labelKey: string) 
     .sort((a, b) => compareLabel(a.name, b.name));
 }
 
-function getMovementCompetitionId(data: Snapshot, movement: MovementRow) {
-  const seasonId = asString(movement.season_id);
-  const fromTeamId = asString(movement.from_team_id);
-  const toTeamId = asString(movement.to_team_id);
-  const candidate = data.participations.find((row) => asString(row.season_id) === seasonId && asString(row.team_id) === fromTeamId)
-    ?? data.participations.find((row) => asString(row.season_id) === seasonId && asString(row.team_id) === toTeamId);
-  return asString(candidate?.competition_id);
-}
-
 export function Movements({
   data,
+  add,
   depart,
   transfer,
   busy,
 }: Props) {
-  const [mode, setMode] = useState<MovementMode>("departure");
+  const [mode, setMode] = useState<MovementMode>("addition");
+
+  const [additionSeasonId, setAdditionSeasonId] = useState("");
+  const [additionCompetitionId, setAdditionCompetitionId] = useState("");
+  const [additionTeamId, setAdditionTeamId] = useState("");
+  const [additionPlayerId, setAdditionPlayerId] = useState("");
+  const [additionDate, setAdditionDate] = useState("");
+  const [additionNote, setAdditionNote] = useState("");
 
   const [departureSeasonId, setDepartureSeasonId] = useState("");
   const [departureCompetitionId, setDepartureCompetitionId] = useState("");
@@ -96,6 +102,15 @@ export function Movements({
     return uniqueSortedLabelOptions(rows, "competition_id", "competition_name");
   }, [data.participations, departureSeasonId]);
 
+  const additionCompetitionOptions = useMemo(() => {
+    if (!additionSeasonId) return [];
+    return uniqueSortedLabelOptions(
+      data.participations.filter((row) => asString(row.season_id) === additionSeasonId),
+      "competition_id",
+      "competition_name",
+    );
+  }, [additionSeasonId, data.participations]);
+
   const transferCompetitionOptions = useMemo(() => {
     if (!transferSeasonId) return [];
     const rows = data.participations.filter((row) => asString(row.season_id) === transferSeasonId);
@@ -115,6 +130,19 @@ export function Movements({
     );
     return uniqueSortedLabelOptions(rows, "team_id", "team_name");
   }, [data.participations, departureCompetitionId, departureSeasonId]);
+
+  const additionTeamOptions = useMemo(() => {
+    if (!additionSeasonId || !additionCompetitionId) return [];
+    return uniqueSortedLabelOptions(data.participations.filter((row) => (
+      asString(row.season_id) === additionSeasonId
+      && asString(row.competition_id) === additionCompetitionId
+    )), "team_id", "team_name");
+  }, [additionCompetitionId, additionSeasonId, data.participations]);
+
+  const eligibleAdditionPlayers = useMemo(
+    () => selectEligibleAdditionPlayers(data.players, data.rosters, additionSeasonId, additionCompetitionId),
+    [additionCompetitionId, additionSeasonId, data.players, data.rosters],
+  );
 
   const transferFromTeamOptions = useMemo(() => {
     if (!transferSeasonId || !transferCompetitionId) return [];
@@ -159,7 +187,7 @@ export function Movements({
     return (data.movements as MovementRow[])
       .map((row) => {
         const seasonId = asString(row.season_id);
-        const competitionId = getMovementCompetitionId(data, row);
+        const competitionId = getCanonicalMovementCompetitionId(row);
         return {
           id: asString(row.id),
           season_id: seasonId,
@@ -170,16 +198,27 @@ export function Movements({
           from_team_name: asString(row.from_team_name) || "—",
           to_team_name: asString(row.to_team_name) || "—",
           season_name: asString(data.seasons.find((season) => asString(season.id) === seasonId)?.name) || "—",
-          competition_name: asString(data.competitions.find((competition) => asString(competition.id) === competitionId)?.name) || "—",
+          competition_name: getCanonicalMovementCompetitionName(row, data.competitions),
         };
       })
       .filter((row) => {
         if (historySeasonId && row.season_id !== historySeasonId) return false;
-        if (historyCompetitionId && row.competition_id !== historyCompetitionId) return false;
+        if (!movementMatchesCompetition(row, historyCompetitionId)) return false;
         return true;
       })
       .sort((a, b) => compareLabel(b.effective_on, a.effective_on));
   }, [data.competitions, data.movements, data.seasons, historyCompetitionId, historySeasonId]);
+
+  useEffect(() => {
+    setAdditionCompetitionId("");
+    setAdditionTeamId("");
+    setAdditionPlayerId("");
+  }, [additionSeasonId]);
+
+  useEffect(() => {
+    setAdditionTeamId("");
+    setAdditionPlayerId("");
+  }, [additionCompetitionId]);
 
   useEffect(() => {
     setDepartureCompetitionId("");
@@ -235,6 +274,15 @@ export function Movements({
   const selectedDeparturePlayer = departurePlayers.find((row) => asString(row.id) === departureRosterId) ?? null;
   const selectedTransferPlayer = transferPlayers.find((row) => asString(row.player_id) === transferPlayerId) ?? null;
 
+  const resetAddition = () => {
+    setAdditionSeasonId("");
+    setAdditionCompetitionId("");
+    setAdditionTeamId("");
+    setAdditionPlayerId("");
+    setAdditionDate("");
+    setAdditionNote("");
+  };
+
   const resetDeparture = () => {
     setDepartureSeasonId("");
     setDepartureCompetitionId("");
@@ -267,6 +315,19 @@ export function Movements({
     if (ok) resetDeparture();
   };
 
+  const submitAddition = async () => {
+    if (!additionSeasonId || !additionCompetitionId || !additionTeamId || !additionPlayerId) return;
+    const ok = await add({
+      playerId: additionPlayerId,
+      seasonId: additionSeasonId,
+      competitionId: additionCompetitionId,
+      teamId: additionTeamId,
+      effectiveOn: additionDate || null,
+      note: additionNote || null,
+    });
+    if (ok) resetAddition();
+  };
+
   const submitTransfer = async () => {
     if (!selectedTransferPlayer || !transferToTeamId || !transferConfirmed) return;
     const ok = await transfer({
@@ -286,27 +347,86 @@ export function Movements({
     <div className="space-y-5">
       <div className="space-y-2">
         <h2 className="text-3xl font-black text-zinc-950">Μεταγραφές &amp; Αποχωρήσεις</h2>
-        <p className="max-w-3xl text-zinc-600">Διαχείριση αποχωρήσεων και μεταγραφών με διατήρηση του ιστορικού του αθλητή.</p>
+        <p className="max-w-3xl text-zinc-600">Διαχείριση προσθηκών, αποχωρήσεων και μεταγραφών με διατήρηση του ιστορικού του αθλητή.</p>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <button
+        <PlatformButton
+          type="button"
+          onClick={() => setMode("addition")}
+          className={`rounded-full px-4 py-2 text-sm font-black transition ${mode === "addition" ? "bg-zinc-950 text-white" : "border border-zinc-300 bg-white text-zinc-700 hover:border-orange-500"}`}
+        >
+          Προσθήκη
+        </PlatformButton>
+        <PlatformButton
           type="button"
           onClick={() => setMode("departure")}
           className={`rounded-full px-4 py-2 text-sm font-black transition ${mode === "departure" ? "bg-zinc-950 text-white" : "border border-zinc-300 bg-white text-zinc-700 hover:border-orange-500"}`}
         >
           Αποχώρηση
-        </button>
-        <button
+        </PlatformButton>
+        <PlatformButton
           type="button"
           onClick={() => setMode("transfer")}
           className={`rounded-full px-4 py-2 text-sm font-black transition ${mode === "transfer" ? "bg-zinc-950 text-white" : "border border-zinc-300 bg-white text-zinc-700 hover:border-orange-500"}`}
         >
           Μεταγραφή
-        </button>
+        </PlatformButton>
       </div>
 
-      {mode === "departure" ? (
+      {mode === "addition" ? (
+        <Panel title="Προσθήκη" description="Προσθήκη υπάρχοντος αθλητή σε ομάδα της επιλεγμένης διοργάνωσης.">
+          <div className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <Field label="Σεζόν">
+                <select value={additionSeasonId} onChange={(event) => setAdditionSeasonId(event.target.value)} className={inputClass}>
+                  <option value="">Επιλογή</option>
+                  {seasonOptions.map((season) => <option key={season.id} value={season.id}>{season.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Διοργάνωση">
+                <select value={additionCompetitionId} onChange={(event) => setAdditionCompetitionId(event.target.value)} className={inputClass} disabled={!additionSeasonId}>
+                  <option value="">Επιλογή</option>
+                  {additionCompetitionOptions.map((competition) => <option key={competition.id} value={competition.id}>{competition.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Ομάδα">
+                <select value={additionTeamId} onChange={(event) => setAdditionTeamId(event.target.value)} className={inputClass} disabled={!additionCompetitionId}>
+                  <option value="">Επιλογή</option>
+                  {additionTeamOptions.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Αθλητής">
+                <select value={additionPlayerId} onChange={(event) => setAdditionPlayerId(event.target.value)} className={inputClass} disabled={!additionTeamId}>
+                  <option value="">Επιλογή</option>
+                  {eligibleAdditionPlayers.map((player) => (
+                    <option key={asString(player.player_id ?? player.id)} value={asString(player.player_id ?? player.id)}>
+                      {asString(player.display_name) || "—"} {player.birth_date ? `· ${parseDateForDisplay(asString(player.birth_date))}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Ημερομηνία προσθήκης">
+                <input type="date" value={additionDate} onChange={(event) => setAdditionDate(event.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Σημείωση">
+                <input value={additionNote} onChange={(event) => setAdditionNote(event.target.value)} className={inputClass} />
+              </Field>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <PlatformButton mutation type="button" onClick={() => void submitAddition()} disabled={busy || !additionPlayerId || !additionTeamId} className={buttonClass}>
+                Προσθήκη
+              </PlatformButton>
+              <PlatformButton type="button" onClick={resetAddition} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:border-orange-500">
+                Ακύρωση
+              </PlatformButton>
+            </div>
+            {additionTeamId && !eligibleAdditionPlayers.length ? <p className="text-sm text-zinc-500">Δεν υπάρχουν διαθέσιμοι αθλητές για προσθήκη.</p> : null}
+          </div>
+        </Panel>
+      ) : mode === "departure" ? (
         <Panel title="Αποχώρηση" description="Ο αθλητής αποχωρεί από το τρέχον ρόστερ και η ιστορία του διατηρείται.">
           <div className="space-y-5">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -404,21 +524,21 @@ export function Movements({
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <button
+              <PlatformButton mutation
                 type="button"
                 onClick={() => void submitDeparture()}
                 disabled={busy || !departureRosterId || !departureConfirmed}
                 className={buttonClass}
               >
                 Καταχώριση αποχώρησης
-              </button>
-              <button
+              </PlatformButton>
+              <PlatformButton
                 type="button"
                 onClick={resetDeparture}
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:border-orange-500"
               >
                 Ακύρωση
-              </button>
+              </PlatformButton>
             </div>
 
             {departureTeamId && !departurePlayers.length && (
@@ -549,21 +669,21 @@ export function Movements({
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <button
+              <PlatformButton mutation
                 type="button"
                 onClick={() => void submitTransfer()}
                 disabled={busy || !transferPlayerId || !transferToTeamId || !transferConfirmed}
                 className={buttonClass}
               >
                 Μεταγραφή
-              </button>
-              <button
+              </PlatformButton>
+              <PlatformButton
                 type="button"
                 onClick={resetTransfer}
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-700 transition hover:border-orange-500"
               >
                 Ακύρωση
-              </button>
+              </PlatformButton>
             </div>
 
             {transferFromTeamId && !transferPlayers.length && (
@@ -576,7 +696,7 @@ export function Movements({
         </Panel>
       )}
 
-      <Panel title="Ιστορικό Μετακινήσεων" description="Αποχώρηση και μεταγραφή διατηρούν το ιστορικό του αθλητή.">
+      <Panel title="Ιστορικό Μετακινήσεων" description="Προσθήκη, αποχώρηση και μεταγραφή διατηρούν το ιστορικό του αθλητή.">
         <div className="mb-4 grid gap-4 md:grid-cols-2">
           <Field label="Σεζόν">
             <select value={historySeasonId} onChange={(event) => setHistorySeasonId(event.target.value)} className={inputClass}>

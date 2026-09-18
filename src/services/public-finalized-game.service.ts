@@ -8,11 +8,18 @@ export type PublicFinalizedGameReadResult =
   | { kind: "game"; game: PublicFinalizedGameDetail }
   | { kind: "unavailable" };
 
-export async function readPublicFinalizedGame(gameId: string): Promise<PublicFinalizedGameReadResult> {
+export async function readPublicFinalizedGameForOrganization(
+  organizationId: string,
+  gameId: string,
+): Promise<PublicFinalizedGameReadResult> {
   const normalizedGameId = gameId.trim();
   if (!normalizedGameId) return { kind: "unavailable" };
-  const result = await readPlatformMatchReport(normalizedGameId, PUBLIC_KOMOBASKET_ORGANIZATION_ID);
+  const result = await readPlatformMatchReport(normalizedGameId, organizationId);
   return result.kind === "report"
     ? { kind: "game", game: projectPublicFinalizedGame(result.report) }
     : { kind: "unavailable" };
+}
+
+export async function readPublicFinalizedGame(gameId: string): Promise<PublicFinalizedGameReadResult> {
+  return readPublicFinalizedGameForOrganization(PUBLIC_KOMOBASKET_ORGANIZATION_ID, gameId);
 }

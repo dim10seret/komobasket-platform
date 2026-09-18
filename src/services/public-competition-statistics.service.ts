@@ -17,7 +17,11 @@ export type PublicCompetitionStatisticsPageData = {
   statistics: PublicCompetitionStatistics | null;
 };
 
-export async function readPublicCompetitionStatisticsWithDb(database: D1DatabaseBinding, input: { seasonSlug?: string | null; competitionSlug?: string | null } = {}): Promise<PublicCompetitionStatisticsPageData> {
+export async function readPublicCompetitionStatisticsForOrganizationWithDb(
+  database: D1DatabaseBinding,
+  organizationId: string,
+  input: { seasonSlug?: string | null; competitionSlug?: string | null } = {},
+): Promise<PublicCompetitionStatisticsPageData> {
   const catalogue = await database.prepare(`SELECT season.id AS season_id, season.name AS season_name, season.slug AS season_slug, season.starts_on,
       competition.id AS competition_id, competition.name AS competition_name, competition.slug AS competition_slug
     FROM league_competitions competition
@@ -27,7 +31,7 @@ export async function readPublicCompetitionStatisticsWithDb(database: D1Database
       AND season.status IN ('active','completed')
       AND COALESCE(publication.lifecycle_status, CASE competition.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END) IN ('online','complete')
     ORDER BY season.starts_on DESC, season.name DESC, competition.name COLLATE NOCASE, competition.id`)
-    .bind(PUBLIC_KOMOBASKET_ORGANIZATION_ID, CANONICAL_PUBLIC_SEASON_START).all<CatalogueRow>();
+    .bind(organizationId, CANONICAL_PUBLIC_SEASON_START).all<CatalogueRow>();
   const rows = catalogue.results ?? [];
   const seasons = Array.from(new Map(rows.map((row) => [row.season_id, { slug: row.season_slug, name: row.season_name }])).values());
   const selectedSeasonRow = rows.find((row) => row.season_slug === input.seasonSlug) ?? rows[0] ?? null;
@@ -39,7 +43,7 @@ export async function readPublicCompetitionStatisticsWithDb(database: D1Database
   if (!selectedCompetitionRow) return { seasons, competitions, selectedSeason, selectedCompetition, statistics: null };
 
   const [eligibleGames, roundResult] = await Promise.all([
-    readAuthoritativeCompetitionStatisticalGamesWithDb(database, selectedCompetitionRow.competition_id, PUBLIC_KOMOBASKET_ORGANIZATION_ID),
+    readAuthoritativeCompetitionStatisticalGamesWithDb(database, selectedCompetitionRow.competition_id, organizationId),
     database.prepare(`SELECT game.id AS game_id, game.round_number, game.round_label
       FROM league_games game JOIN league_phases phase ON phase.id=game.phase_id
       WHERE game.competition_id=? AND phase.format='standings' AND game.round_number IS NOT NULL
@@ -63,8 +67,22 @@ export async function readPublicCompetitionStatisticsWithDb(database: D1Database
   };
 }
 
-export async function readPublicCompetitionStatistics(input: { seasonSlug?: string | null; competitionSlug?: string | null } = {}) {
+export async function readPublicCompetitionStatisticsWithDb(
+  database: D1DatabaseBinding,
+  input: { seasonSlug?: string | null; competitionSlug?: string | null } = {},
+): Promise<PublicCompetitionStatisticsPageData> {
+  return readPublicCompetitionStatisticsForOrganizationWithDb(database, PUBLIC_KOMOBASKET_ORGANIZATION_ID, input);
+}
+
+export async function readPublicCompetitionStatisticsForOrganization(
+  organizationId: string,
+  input: { seasonSlug?: string | null; competitionSlug?: string | null } = {},
+) {
   const environment = await getKomoBasketCloudflareEnv();
   if (!environment?.NEWS_DB) throw new Error("PUBLIC_COMPETITION_STATISTICS_UNAVAILABLE");
-  return readPublicCompetitionStatisticsWithDb(environment.NEWS_DB, input);
+  return readPublicCompetitionStatisticsForOrganizationWithDb(environment.NEWS_DB, organizationId, input);
+}
+
+export async function readPublicCompetitionStatistics(input: { seasonSlug?: string | null; competitionSlug?: string | null } = {}) {
+  return readPublicCompetitionStatisticsForOrganization(PUBLIC_KOMOBASKET_ORGANIZATION_ID, input);
 }

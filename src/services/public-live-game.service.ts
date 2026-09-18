@@ -83,6 +83,7 @@ export async function readPublicLiveGameWithDb(
   database: D1DatabaseBinding,
   gameId: string,
   options: { ifNoneMatch?: string | null; nowMs?: number } = {},
+  organizationId = PUBLIC_ORGANIZATION_ID,
 ): Promise<PublicLiveGameReadResult> {
   const row = await database.prepare(`
     SELECT g.id AS game_id, home.logo_url AS home_logo_url, away.logo_url AS away_logo_url,
@@ -99,7 +100,7 @@ export async function readPublicLiveGameWithDb(
       LEFT JOIN league_komocontrol_current_game_configurations_v1 configuration ON configuration.run_id=head.run_id
      WHERE g.id=? AND competition.organization_id=?
      LIMIT 1
-  `).bind(gameId, PUBLIC_ORGANIZATION_ID).first<PublicLiveGameRow>();
+  `).bind(gameId, organizationId).first<PublicLiveGameRow>();
   if (!row) throw new PublicLiveGameServiceError("PUBLIC_LIVE_NOT_FOUND");
   if (row.lifecycle !== "live" && row.lifecycle !== "finalized") return { kind: "not-live", gameId };
   if (!row.run_id || row.event_history_revision === null || row.last_accepted_sequence === null || !row.history_hash
@@ -165,9 +166,17 @@ export async function readPublicLiveGame(
   gameId: string,
   options: { ifNoneMatch?: string | null; nowMs?: number } = {},
 ): Promise<PublicLiveGameReadResult> {
+  return readPublicLiveGameForOrganization(PUBLIC_ORGANIZATION_ID, gameId, options);
+}
+
+export async function readPublicLiveGameForOrganization(
+  organizationId: string,
+  gameId: string,
+  options: { ifNoneMatch?: string | null; nowMs?: number } = {},
+): Promise<PublicLiveGameReadResult> {
   const normalizedGameId = gameId.trim();
   if (!normalizedGameId) throw new PublicLiveGameServiceError("PUBLIC_LIVE_NOT_FOUND");
   const environment = await getKomoBasketCloudflareEnv();
   if (!environment?.NEWS_DB) throw new PublicLiveGameServiceError("PUBLIC_LIVE_UNAVAILABLE");
-  return readPublicLiveGameWithDb(environment.NEWS_DB, normalizedGameId, options);
+  return readPublicLiveGameWithDb(environment.NEWS_DB, normalizedGameId, options, organizationId);
 }

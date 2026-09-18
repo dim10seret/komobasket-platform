@@ -68,7 +68,7 @@ export function PublicLiveStatusPanel({ team, onClose }: { team: PublicLiveTeam;
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-2 sm:p-6" role="presentation"><section role="dialog" aria-modal="true" aria-label={`Στατιστικά ${team.teamName}`} className="flex max-h-[94vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-slate-600 bg-slate-950 text-white shadow-2xl" style={team.gameColor ? { borderColor: team.gameColor } : undefined}><header className="flex items-center justify-between gap-4 border-b border-slate-800 p-4"><div><small className="font-black tracking-[0.2em] text-cyan-400">{team.side} · STATUS</small><h2 className="mt-1 text-xl font-black sm:text-3xl">{team.teamName}</h2></div><button type="button" onClick={onClose} className="min-h-11 rounded-xl border border-slate-600 px-4 font-bold hover:bg-slate-800">Κλείσιμο</button></header><div className="overflow-auto"><div className="min-w-[980px]"><div className="grid grid-cols-[3rem_minmax(12rem,1fr)_7rem_repeat(11,4rem)] gap-1 bg-slate-900 px-3 py-3 text-center text-xs font-black text-slate-400"><span>#</span><span className="text-left">Παίκτης</span><span>Κατάσταση</span><span>PTS</span><span>2PTS</span><span>3PTS</span><span>1PTS</span><span>REB</span><span>AST</span><span>STL</span><span>BLK</span><span>TO</span><span>F</span><span>EFF</span></div>{team.players.map((player) => { const statistics = player.statistics; return <div key={player.key} className="grid grid-cols-[3rem_minmax(12rem,1fr)_7rem_repeat(11,4rem)] items-center gap-1 border-t border-slate-800 px-3 py-3 text-center text-sm"><b>{player.shirtNumber}</b><strong className="text-left">{player.displayName}</strong><span className="text-xs text-slate-400">{statusText(player)}</span><span>{statistics.points}</span><span>{statistics.twoPointMade}/{statistics.twoPointAttempts}</span><span>{statistics.threePointMade}/{statistics.threePointAttempts}</span><span>{statistics.freeThrowMade}/{statistics.freeThrowAttempts}</span><span>{statistics.rebounds}</span><span>{statistics.assists}</span><span>{statistics.steals}</span><span>{statistics.blocks}</span><span>{statistics.turnovers}</span><span>{player.fouls.total}</span><span>{statistics.efficiency}</span></div>; })}</div></div></section></div>;
 }
 
-export default function PublicLiveGameView({ initialGame }: { initialGame: PublicLiveGame }) {
+export default function PublicLiveGameView({ initialGame, endpoint = `/api/public/v1/games/${encodeURIComponent(initialGame.gameId)}/live` }: { initialGame: PublicLiveGame; endpoint?: string }) {
   const [game, setGame] = useState(initialGame);
   const [statusSide, setStatusSide] = useState<PublicTeamSide | null>(null);
   const etag = useRef<string | null>(null);
@@ -79,7 +79,7 @@ export default function PublicLiveGameView({ initialGame }: { initialGame: Publi
     const schedule = () => { if (!cancelled) timer = window.setTimeout(refresh, publicLivePollDelay(document.hidden)); };
     const refresh = async () => {
       try {
-        const response = await fetch(`/api/public/v1/games/${encodeURIComponent(game.gameId)}/live`, { headers: etag.current ? { "If-None-Match": etag.current } : undefined, cache: "no-cache" });
+        const response = await fetch(endpoint, { headers: etag.current ? { "If-None-Match": etag.current } : undefined, cache: "no-cache" });
         if (response.status !== 304 && response.ok) {
           const payload = await response.json() as { data?: PublicLiveGame };
           if (payload.data) {
@@ -94,7 +94,7 @@ export default function PublicLiveGameView({ initialGame }: { initialGame: Publi
     document.addEventListener("visibilitychange", visibility);
     schedule();
     return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); document.removeEventListener("visibilitychange", visibility); };
-  }, [game.gameId, game.status]);
+  }, [endpoint, game.gameId, game.status]);
   const selectedTeam = statusSide === "HOME" ? game.home : statusSide === "AWAY" ? game.away : null;
   return <div className="space-y-3"><PublicLiveScoreboard game={game} onTeam={setStatusSide} /><div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(15rem,0.8fr)_minmax(22rem,1.4fr)_minmax(15rem,0.8fr)]"><div className="order-1"><PublicLiveLineup team={game.home} /></div><div className="order-3 lg:order-2"><PublicLivePlayByPlay items={game.playByPlay} /></div><div className="order-2 lg:order-3"><PublicLiveLineup team={game.away} /></div></div>{selectedTeam ? <PublicLiveStatusPanel team={selectedTeam} onClose={() => setStatusSide(null)} /> : null}</div>;
 }

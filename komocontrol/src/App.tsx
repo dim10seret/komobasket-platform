@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { PreGameConfiguration } from "./components/PreGameConfiguration";
+import { version as packageVersion } from "../package.json";
 import { LiveControl } from "./components/LiveControl";
 
 const errorMessages: Record<KomoControlAuthErrorCode, string> = {
@@ -15,6 +16,23 @@ const configurationErrorMessages: Record<KomoControlPreGameConfigurationErrorCod
 function configurationOperationError(code: KomoControlPreGameConfigurationErrorCode | "SESSION_INVALID" | "OFFLINE_OPERATION_DENIED"): string { if (code === "SESSION_INVALID" || code === "OFFLINE_OPERATION_DENIED") return errorMessages[code]; return configurationErrorMessages[code]; }
 
 function displayDate(value: string) { const [year, month, day] = value.split("-"); return `${day}/${month}/${year}`; }
+
+type StartMatchResultShape = { ok: true } | { ok: false; errorCode: string };
+export interface StartMatchSingleFlight { current: boolean; }
+export async function runMatchStartOnce<T extends StartMatchResultShape>(bridge: { startMatch(runId: string): Promise<T>; recoverMatchGameplay(runId: string): Promise<T> }, runId: string, pending: StartMatchSingleFlight): Promise<{ result: T; recovered: boolean } | null> {
+    if (pending.current) return null;
+    pending.current = true;
+    try {
+        const result = await bridge.startMatch(runId);
+        if (!result.ok && result.errorCode === "GAMEPLAY_CONFLICT") {
+            const recovered = await bridge.recoverMatchGameplay(runId);
+            if (recovered.ok) return { result: recovered, recovered: true };
+        }
+        return { result, recovered: false };
+    } finally {
+        pending.current = false;
+    }
+}
 
 export function myGamesPresentation(state: KomoControlMyGamesRunState | undefined): "upcoming" | KomoControlMyGamesRunSyncStatus {
     return state?.syncStatus ?? "upcoming";
@@ -33,11 +51,35 @@ export function sortMyGamesByRunState<T extends { gameId: string }>(games: reado
         .map(({ game }) => game);
 }
 
+export function subscribeToMyGamesSyncState(
+    bridge: Pick<NonNullable<Window["komoControl"]>, "onGameplaySyncStateChanged" | "listMyGamesRunStates">,
+    onRuns: (runs: Record<string, KomoControlMyGamesRunState>) => void,
+    onError: (message: string) => void,
+): () => void {
+    let disposed = false;
+    let revision = 0;
+    const unsubscribe = bridge.onGameplaySyncStateChanged(() => {
+        const requestRevision = ++revision;
+        // Read the local catalogue only. Do not discover games or wake Sync.
+        void bridge.listMyGamesRunStates().then((result) => {
+            if (disposed || requestRevision !== revision) return;
+            if (result.ok) onRuns(Object.fromEntries(result.runs.map((run) => [run.gameId, run])));
+            else onError(runOperationError(result.errorCode));
+        }).catch(() => {
+            if (!disposed && requestRevision === revision) onError("Δεν ήταν δυνατή η ασφαλής ανάγνωση των τοπικών Runs.");
+        });
+    });
+    return () => {
+        disposed = true;
+        unsubscribe();
+    };
+}
+
 function App() {
     const bridge = window.komoControl;
     const [authState, setAuthState] = useState<KomoControlAuthState | null>(null);
     const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-    const [version, setVersion] = useState("0.1.0"); const [localReady, setLocalReady] = useState(false);
+    const [version, setVersion] = useState(packageVersion); const [localReady, setLocalReady] = useState(false);
     const [games, setGames] = useState<KomoControlAvailableGame[]>([]); const [gamesLoading, setGamesLoading] = useState(false); const [gamesLoaded, setGamesLoaded] = useState(false); const [gamesError, setGamesError] = useState<string | null>(null);
     const [myGamesRuns, setMyGamesRuns] = useState<Record<string, KomoControlMyGamesRunState>>({}); const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
     const [offlineStatuses, setOfflineStatuses] = useState<Record<string, KomoControlOfflineGameStatus>>({}); const [downloadingGameId, setDownloadingGameId] = useState<string | null>(null); const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
@@ -46,6 +88,11 @@ function App() {
     const [preGameConfiguration, setPreGameConfiguration] = useState<KomoControlPreGameConfiguration | null>(null); const [preGameBusy, setPreGameBusy] = useState(false); const [preGameError, setPreGameError] = useState<string | null>(null); const [preGameValidation, setPreGameValidation] = useState<KomoControlLiveConfigurationValidationIssue | null>(null); const [preGameSavedRevision, setPreGameSavedRevision] = useState<number | null>(null);
     const [matchGameplay, setMatchGameplay] = useState<KomoControlSafeMatchGameplay | null>(null); const [gameplayBusy, setGameplayBusy] = useState(false); const [gameplayError, setGameplayError] = useState<string | null>(null);
     const [startReadiness, setStartReadiness] = useState<KomoControlStartReadinessIssue | null>(null);
+    const startMatchPending = useRef<StartMatchSingleFlight>({ current: false });
+    useEffect(() => {
+        if (!bridge) return;
+        return subscribeToMyGamesSyncState(bridge, setMyGamesRuns, setGamesError);
+    }, [bridge]);
     useEffect(() => { if (!bridge) return; void Promise.all([bridge.getAuthState(), bridge.getAppInfo(), bridge.getLocalStatus()]).then(([state, info, local]) => { setAuthState(state); setVersion(info.version); setLocalReady(local.ready); }).catch(() => setError(errorMessages.LOCAL_SESSION_ERROR)); }, [bridge]);
     const loadGames = useCallback(async () => { if (!bridge) return; setGamesLoading(true); setGamesError(null); try { const result = await bridge.listAvailableGames(); setAuthState(result.state); if (result.ok) { const local = await bridge.listMyGamesRunStates(); setAuthState(local.state); if (!local.ok) { setMyGamesRuns({}); setGamesError(runOperationError(local.errorCode)); return; } setGames(result.games); setGamesLoaded(true); setMyGamesRuns(Object.fromEntries(local.runs.map((run) => [run.gameId, run]))); const statuses = await Promise.all(result.games.map((game) => bridge.getOfflineGameStatus(game.gameId))); setOfflineStatuses(Object.fromEntries(statuses.map((status) => [status.gameId, status]))); } else { setGamesError(errorMessages[result.errorCode]); if (result.state.kind !== "authenticated") { setGames([]); setGamesLoaded(false); setOfflineStatuses({}); setMyGamesRuns({}); } } } catch { setGamesError(errorMessages.NETWORK_UNAVAILABLE); } finally { setGamesLoading(false); } }, [bridge]);
     const loadLocalRuns = useCallback(async () => { if (!bridge) return; setGamesLoading(true); setGamesError(null); try { const [result, local] = await Promise.all([bridge.listLocalRuns(), bridge.listMyGamesRunStates()]); setAuthState(result.state); if (result.ok && local.ok) { const localGames = result.runs.map((run): KomoControlAvailableGame => ({ gameId: run.gameId, packageId: run.packageId, packageVersion: run.packageVersion, homeTeam: run.homeTeam, awayTeam: run.awayTeam, competition: { id: `local:${run.gameId}`, name: run.competitionName }, seasonName: run.seasonName, phaseName: run.phaseName, roundLabel: run.roundLabel, scheduledDate: run.scheduledDate ?? "", scheduledTime: run.scheduledTime ?? "", scheduledAt: null, venue: run.venue, publishedAt: run.createdAtUtc })); setGames(localGames); setGamesLoaded(true); setMyGamesRuns(Object.fromEntries(local.runs.map((run) => [run.gameId, run]))); setOfflineStatuses(Object.fromEntries(result.runs.map((run) => [run.gameId, { gameId: run.gameId, availableOffline: true, currentVersion: run.packageVersion, downloadedAt: null }]))); } else { const failed = result.ok === false ? result : local.ok === false ? local : null; if (failed === null) return; setGamesError(runOperationError(failed.errorCode)); setGames([]); setGamesLoaded(false); setOfflineStatuses({}); setMyGamesRuns({}); } } catch { setGamesError("Δεν ήταν δυνατή η ασφαλής ανάγνωση των τοπικών Runs."); } finally { setGamesLoading(false); } }, [bridge]);
@@ -57,9 +104,31 @@ function App() {
     async function openMatchSetup(gameId: string) { if (!bridge || openingSetupGameId) return; setOpeningSetupGameId(gameId); setMatchSetupError(null); setRunError(null); setActiveRun(null); setPreGameConfiguration(null); setPreGameError(null); setPreGameSavedRevision(null); setMatchGameplay(null); setGameplayError(null); setStartReadiness(null); try { const result = await bridge.getMatchSetup(gameId); setAuthState(result.state); if (!result.ok) { setMatchSetupError(operationError(result.errorCode)); return; } setMatchSetup(result.setup); const runResult = await bridge.getActiveGameRun(gameId); setAuthState(runResult.state); if (runResult.ok) { setActiveRun(runResult.run); if (runResult.run?.gameplayStarted) await recoverGameplay(runResult.run.runId); } else setRunError(runOperationError(runResult.errorCode)); } catch { setMatchSetupError("Δεν ήταν δυνατή η ασφαλής ανάγνωση του τοπικού πακέτου."); } finally { setOpeningSetupGameId(null); } }
     async function createOrOpenRun() { if (!bridge || !matchSetup || runBusy) return; setRunBusy(true); setRunError(null); try { const result = await bridge.createOrOpenGameRun(matchSetup.gameId); setAuthState(result.state); if (result.ok) setActiveRun(result.run); else setRunError(runOperationError(result.errorCode)); } catch { setRunError("Δεν ήταν δυνατή η ασφαλής δημιουργία του τοπικού Run."); } finally { setRunBusy(false); } }
     async function openPreGameConfiguration() { if (!bridge || !matchSetup || !activeRun || preGameBusy) return; setPreGameBusy(true); setPreGameError(null); setPreGameValidation(null); setPreGameSavedRevision(null); setStartReadiness(null); try { const result = await bridge.getOrCreatePreGameConfiguration(matchSetup.gameId); setAuthState(result.state); if (result.ok) setPreGameConfiguration(result.configuration); else { setPreGameValidation(result.validation ?? null); setPreGameError(result.validation?.message ?? configurationOperationError(result.errorCode)); } } catch { setPreGameError("Δεν ήταν δυνατό να ανοίξει το τοπικό draft."); } finally { setPreGameBusy(false); } }
-    async function savePreGameConfiguration(input: KomoControlPreGameConfigurationSaveDraftInput) { if (!bridge || preGameBusy) return; setPreGameBusy(true); setPreGameError(null); setPreGameValidation(null); setPreGameSavedRevision(null); try { const result = await bridge.savePreGameConfigurationDraft(input); setAuthState(result.state); if (result.ok) { setPreGameConfiguration(result.configuration); setPreGameSavedRevision(result.configuration.revision); } else { setPreGameValidation(result.validation ?? null); setPreGameError(result.validation?.message ?? configurationOperationError(result.errorCode)); } } catch { setPreGameError("Δεν ήταν δυνατή η ασφαλής αποθήκευση του draft."); } finally { setPreGameBusy(false); } }
+    async function savePreGameConfiguration(input: KomoControlPreGameConfigurationSaveDraftInput): Promise<boolean> {
+        if (!bridge || preGameBusy) return false;
+        setPreGameBusy(true);
+        setPreGameError(null);
+        setPreGameValidation(null);
+        setPreGameSavedRevision(null);
+        try {
+            const result = await bridge.savePreGameConfigurationDraft(input);
+            setAuthState(result.state);
+            if (result.ok) {
+                setPreGameConfiguration(result.configuration);
+                setPreGameSavedRevision(result.configuration.revision);
+                return true;
+            }
+            setPreGameValidation(result.validation ?? null);
+            setPreGameError(result.validation?.message ?? configurationOperationError(result.errorCode));
+        } catch {
+            setPreGameError("Δεν ήταν δυνατή η ασφαλής αποθήκευση του draft.");
+        } finally {
+            setPreGameBusy(false);
+        }
+        return false;
+    }
     async function recoverGameplay(runId: string) { if (!bridge || gameplayBusy) return; setGameplayBusy(true); setGameplayError(null); try { const result = await bridge.recoverMatchGameplay(runId); setAuthState(result.state); if (result.ok) setMatchGameplay(result.gameplay); else setGameplayError(`Η τοπική αγωνιστική κατάσταση δεν είναι διαθέσιμη (${result.errorCode}).`); } catch { setGameplayError("Δεν ήταν δυνατή η ασφαλής ανάκτηση του τοπικού αγώνα."); } finally { setGameplayBusy(false); } }
-    async function startMatch() { if (!bridge || !activeRun || gameplayBusy) return; setGameplayBusy(true); setGameplayError(null); setStartReadiness(null); try { const result = await bridge.startMatch(activeRun.runId); setAuthState(result.state); if (result.ok) { setMatchGameplay(result.gameplay); setActiveRun((run) => run ? { ...run, gameplayStarted: true, lastAcceptedSequence: result.gameplay.lastAcceptedSequence } : run); } else { setStartReadiness(result.startReadiness ?? null); setGameplayError(result.startReadiness?.message ?? `Η έναρξη απορρίφθηκε με ασφάλεια (${result.errorCode}).`); } } catch { setGameplayError("Δεν ήταν δυνατή η ασφαλής τοπική έναρξη."); } finally { setGameplayBusy(false); } }
+    async function startMatch() { if (!bridge || !activeRun || gameplayBusy || startMatchPending.current.current) return; setGameplayBusy(true); setGameplayError(null); setStartReadiness(null); try { const outcome = await runMatchStartOnce(bridge, activeRun.runId, startMatchPending.current); if (!outcome) return; const result = outcome.result; setAuthState(result.state); if (result.ok) { setMatchGameplay(result.gameplay); setPreGameConfiguration(null); setPreGameError(null); setPreGameValidation(null); setPreGameSavedRevision(null); setStartReadiness(null); setActiveRun((run) => run ? { ...run, gameplayStarted: true, lastAcceptedSequence: result.gameplay.lastAcceptedSequence } : run); } else { setStartReadiness(result.startReadiness ?? null); setGameplayError(result.startReadiness?.message ?? `Η έναρξη απορρίφθηκε με ασφάλεια (${result.errorCode}).`); } } catch { setGameplayError("Δεν ήταν δυνατή η ασφαλής τοπική έναρξη."); } finally { setGameplayBusy(false); } }
     async function retryFinalizedRun(runId: string) { if (!bridge || retryingRunId) return; setRetryingRunId(runId); setGamesError(null); try { const result = await bridge.retryGameplaySync(runId); setAuthState(result.state); if (!result.ok) setGamesError(`Η νέα προσπάθεια συγχρονισμού απέτυχε (${result.errorCode}).`); else if (result.state.kind === "authenticated" && result.state.connection === "online") await loadGames(); else await loadLocalRuns(); } catch { setGamesError(errorMessages.NETWORK_UNAVAILABLE); } finally { setRetryingRunId(null); } }
     async function returnToMyGames() { setMatchGameplay(null); setMatchSetup(null); setActiveRun(null); if (authState?.kind === "authenticated" && authState.connection === "online") await loadGames(); else await loadLocalRuns(); }
     function gameTitle(game: KomoControlAvailableGame) { const run = myGamesRuns[game.gameId]; return run?.syncStatus === "completed" && run.homeScore !== null && run.awayScore !== null ? <>{game.homeTeam.name} {run.homeScore} <span>–</span> {run.awayScore} {game.awayTeam.name}</> : <>{game.homeTeam.name} <span>—</span> {game.awayTeam.name}</>; }
@@ -68,7 +137,7 @@ function App() {
     if (!bridge) return <main className="auth-shell"><section className="auth-card"><h1>KomoControl</h1><p>Η ασφαλής desktop σύνδεση δεν είναι διαθέσιμη.</p></section></main>;
     if (!authState) return <main className="auth-shell"><section className="auth-card loading-card"><span className="basketball-mark">K</span><p>Έλεγχος ασφαλούς σύνδεσης…</p></section></main>;
     const footer = <footer><span>v{version} · Created by: D. Seretidis</span><span>{localReady ? "Local DB έτοιμη" : "Local DB μη διαθέσιμη"}</span><span>Συσκευή · {authState.deviceIdSuffix}</span></footer>;
-    if ((authState.kind === "authenticated" || authState.kind === "live-continuity") && matchSetup && preGameConfiguration) return <PreGameConfiguration configuration={preGameConfiguration} busy={preGameBusy || gameplayBusy} error={preGameError ?? gameplayError} startReadiness={startReadiness} configurationValidation={preGameValidation} savedRevision={preGameSavedRevision} readOnly={false} footer={footer} onBack={() => { setPreGameConfiguration(null); setPreGameError(null); setPreGameValidation(null); setPreGameSavedRevision(null); setStartReadiness(null); }} onDraftEdited={() => { setPreGameValidation(null); setPreGameSavedRevision(null); setStartReadiness(null); setGameplayError(null); }} onSave={savePreGameConfiguration} onStartMatch={preGameConfiguration.lifecycle === "pre-start" ? startMatch : undefined} />;
+    if ((authState.kind === "authenticated" || authState.kind === "live-continuity") && matchSetup && preGameConfiguration) return <PreGameConfiguration configuration={preGameConfiguration} busy={preGameBusy || gameplayBusy} startPending={gameplayBusy} error={preGameError ?? gameplayError} startReadiness={startReadiness} configurationValidation={preGameValidation} savedRevision={preGameSavedRevision} readOnly={false} footer={footer} onBack={() => { setPreGameConfiguration(null); setPreGameError(null); setPreGameValidation(null); setPreGameSavedRevision(null); setStartReadiness(null); }} onDraftEdited={() => { setPreGameValidation(null); setPreGameSavedRevision(null); setStartReadiness(null); setGameplayError(null); }} onSave={savePreGameConfiguration} onStartMatch={preGameConfiguration.lifecycle === "pre-start" ? startMatch : undefined} />;
     if ((authState.kind === "authenticated" || authState.kind === "live-continuity") && matchGameplay) return <LiveControl gameplay={matchGameplay} authState={authState} footer={footer} onGameplayChange={(next, state) => { setMatchGameplay(next); setAuthState(state); }} onAuthStateChange={setAuthState} onBack={() => void returnToMyGames()} onOpenConfiguration={() => void openPreGameConfiguration()} onLogout={logout} />;
     if ((authState.kind === "authenticated" || authState.kind === "live-continuity") && matchSetup) {
         const renderTeam = (team: KomoControlMatchSetupTeam) => <section className="setup-team" key={team.side}><div className="setup-team-heading"><div className="setup-team-mark">{team.teamName.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</div><div><span>{team.side}</span><h2>{team.teamName}</h2></div></div><h3>Διαθέσιμο ρόστερ · {team.players.length}</h3><div className="setup-roster">{team.players.map((player) => <div className="setup-person" key={player.playerId}><span className="setup-shirt">{player.shirtNumber ?? "—"}</span><span>{player.displayName}</span></div>)}</div>{team.staff.length > 0 ? <><h3>Πάγκος / Staff</h3><div className="setup-roster">{team.staff.map((member) => <div className="setup-person" key={member.staffId}><span>{member.displayName}</span><small>{member.roleLabel ?? member.role}</small></div>)}</div></> : null}</section>;

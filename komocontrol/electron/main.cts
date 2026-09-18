@@ -23,7 +23,12 @@ let localDatabase: LocalDatabase | null = null;
 let authCoordinator: AuthCoordinator | null = null;
 
 const profileName = app.isPackaged ? "KomoControl" : "KomoControl Dev";
+const appUserModelId = "gr.komobasket.komocontrol";
+const applicationIconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "KomoControl.ico")
+    : path.resolve(__dirname, "..", "build", "KomoControl.ico");
 app.setName(profileName);
+if (process.platform === "win32") app.setAppUserModelId(appUserModelId);
 app.setPath("userData", path.join(app.getPath("appData"), profileName));
 
 function rendererRootUrl(): string {
@@ -127,12 +132,20 @@ function preGameConfigurationPresentationDraft(value: unknown): PreGameConfigura
     return { leftSide: presentation.leftSide };
 }
 
+function preGameConfigurationOfficialsDraft(value: unknown): NonNullable<PreGameConfigurationSaveDraftInput["officials"]> {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game officials.");
+    const item = value as Record<string, unknown>;
+    const group = (entry: unknown, keys: readonly string[]) => { if (entry === null || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Invalid pre-game officials."); const source = entry as Record<string, unknown>; const result: Record<string, string | null> = {}; for (const key of keys) { const name = source[key]; if (!(name === null || (typeof name === "string" && name.length <= 120))) throw new Error("Invalid pre-game officials."); result[key] = name; } return result; };
+    const referees = group(item.referees, ["a", "b", "c"]); const table = group(item.table, ["timer", "shotClock", "scoresheet", "commissioner"]);
+    return { referees: { a: referees.a ?? null, b: referees.b ?? null, c: referees.c ?? null }, table: { timer: table.timer ?? null, shotClock: table.shotClock ?? null, scoresheet: table.scoresheet ?? null, commissioner: table.commissioner ?? null } };
+}
+
 function preGameConfigurationSaveInput(value: unknown): PreGameConfigurationSaveDraftInput {
     if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid pre-game configuration request.");
     const input = value as Record<string, unknown>;
     const gameId = gameIdInput(input.gameId);
     if (!Number.isInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 || !Array.isArray(input.teams) || input.teams.length !== 2) throw new Error("Invalid pre-game configuration request.");
-    return { gameId, expectedRevision: Number(input.expectedRevision), teams: [preGameConfigurationTeamDraft(input.teams[0]), preGameConfigurationTeamDraft(input.teams[1])], presentation: preGameConfigurationPresentationDraft(input.presentation) };
+    return { gameId, expectedRevision: Number(input.expectedRevision), teams: [preGameConfigurationTeamDraft(input.teams[0]), preGameConfigurationTeamDraft(input.teams[1])], presentation: preGameConfigurationPresentationDraft(input.presentation), officials: input.officials === undefined ? undefined : preGameConfigurationOfficialsDraft(input.officials) };
 }
 
 function createMainWindow(): void {
@@ -142,6 +155,7 @@ function createMainWindow(): void {
         minWidth: 1024,
         minHeight: 700,
         show: false,
+        icon: applicationIconPath,
         webPreferences: {
             preload: path.join(__dirname, "preload.cjs"),
             contextIsolation: true,

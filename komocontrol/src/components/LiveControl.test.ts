@@ -3,18 +3,85 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { canCompleteLiveFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, INCIDENT_REPORT_MAX_LENGTH, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockCorrectionMaximumSeconds, liveClockSeconds, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, liveStatusPlayerStatistics, nextLivePeriod, normalizeIncidentReport, periodScoreLabel, periodScoreValue, periodText, presentationTeams, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents, validateIncidentReport, validateLiveClockCorrection } from "./LiveControl";
+import { canCompleteLiveFlow, enterShootingFoulFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, INCIDENT_REPORT_MAX_LENGTH, initializeLiveClockEditBuffer, isEditableKeyboardTarget, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockCorrectionMaximumSeconds, liveClockInputFromSelectors, liveClockMinuteOptions, liveClockSeconds, liveClockSecondOptions, liveClockSelectorParts, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, livePrimaryActionsForMode, liveStatusPlayerStatistics, nextLivePeriod, normalizeIncidentReport, periodScoreLabel, periodScoreValue, periodText, presentationTeams, shouldCaptureFinalFreeThrowRebound, shouldCaptureFoulShotAssist, simpleMadeShotIntent, simpleNormalFoulRequiresDrawnBy, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents, updateLiveClockEditBuffer, validateIncidentReport, validateLiveClockCorrection } from "./LiveControl";
 
 const gameplay = {
-    runId: "run", lifecycle: "live", eventHistoryRevision: 1, lastAcceptedSequence: 1, score: { home: 50, away: 45 }, period: { kind: "REGULATION", index: 4 }, periodScores: [{ period: { kind: "REGULATION", index: 1 }, home: 12, away: 8 }, { period: { kind: "REGULATION", index: 2 }, home: 11, away: 10 }, { period: { kind: "REGULATION", index: 3 }, home: 14, away: 12 }, { period: { kind: "REGULATION", index: 4 }, home: 13, away: 15 }], clockSeconds: 300, clockRunning: false, clockStartedAtMs: null, possession: "HOME", alternatingPossession: "AWAY", finished: false, latestEvent: null,
+    runId: "run", gameMode: "FULL", lifecycle: "live", eventHistoryRevision: 1, lastAcceptedSequence: 1, score: { home: 50, away: 45 }, period: { kind: "REGULATION", index: 4 }, periodScores: [{ period: { kind: "REGULATION", index: 1 }, home: 12, away: 8 }, { period: { kind: "REGULATION", index: 2 }, home: 11, away: 10 }, { period: { kind: "REGULATION", index: 3 }, home: 14, away: 12 }, { period: { kind: "REGULATION", index: 4 }, home: 13, away: 15 }], clockSeconds: 300, clockRunning: false, clockStartedAtMs: null, possession: "HOME", alternatingPossession: "AWAY", finished: false, latestEvent: null,
     rules: { startingPlayers: 5, regulationPeriods: 4, regulationPeriodSeconds: 600, overtimeSeconds: 300, resultPolicy: "REQUIRE_WINNER" },
     teams: [
-        { side: "HOME", presentationSide: "RIGHT", teamId: "h", teamName: "Home", gameColor: "#DC2626", score: 50, timeouts: 2, timeoutAllowance: 3, teamFouls: 3, inBonus: false, discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 0, headCoachDisqualified: false, disqualifiedBenchCount: 0 }, captainPlayerId: null, starterPlayerIds: [], players: [], bench: [], statistics: {} },
-        { side: "AWAY", presentationSide: "LEFT", teamId: "a", teamName: "Away", gameColor: "#15803D", score: 45, timeouts: 3, timeoutAllowance: 3, teamFouls: 4, inBonus: false, discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 0, headCoachDisqualified: false, disqualifiedBenchCount: 0 }, captainPlayerId: null, starterPlayerIds: [], players: [], bench: [], statistics: {} },
+        { side: "HOME", presentationSide: "RIGHT", teamId: "h", teamName: "Home", gameColor: "#DC2626", score: 50, timeouts: 2, timeoutAllowance: 3, teamFouls: 3, inBonus: false, nextDefensivePersonalFoulCreatesPenalty: false, discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 0, headCoachDisqualified: false, disqualifiedBenchCount: 0 }, captainPlayerId: null, starterPlayerIds: [], players: [], bench: [], statistics: {} },
+        { side: "AWAY", presentationSide: "LEFT", teamId: "a", teamName: "Away", gameColor: "#15803D", score: 45, timeouts: 3, timeoutAllowance: 3, teamFouls: 4, inBonus: false, nextDefensivePersonalFoulCreatesPenalty: true, discipline: { headCoachCategory1TechnicalCount: 0, benchCategory1TechnicalCount: 0, headCoachDisqualified: false, disqualifiedBenchCount: 0 }, captainPlayerId: null, starterPlayerIds: [], players: [], bench: [], statistics: {} },
     ], penalty: null, sync: { status: "pending", acknowledgedRevision: 0, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: null },
 } as KomoControlSafeMatchGameplay;
 
 describe("Full Stats Live Control presentation contract", () => {
+    it("receives and displays the authoritative recording mode without changing FULL primary actions", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(gameplay.gameMode).toBe("FULL");
+        expect(source).toContain('gameplay.gameMode === "FULL" ? "Πλήρη στατιστικά" : "Απλό φύλλο"');
+        expect(livePrimaryActions.map((action) => action.id)).toEqual(["SHOOT", "FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
+    });
+    it("filters only the SIMPLE primary UI into an even three-by-two action grid", () => {
+        expect(livePrimaryActionsForMode("FULL").map((action) => action.id)).toEqual(["SHOOT", "FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
+        expect(livePrimaryActionsForMode("SIMPLE").map((action) => action.id)).toEqual(["SHOOT", "FOUL", "SUBS", "TIME_OUT", "TECH_FOUL", "OFFENSIVE_FOUL"]);
+        expect(livePrimaryActions.map((action) => action.id)).toContain("TURN_OVER");
+        expect(livePrimaryActions.map((action) => action.id)).toContain("SHOOTING_FOUL");
+        expect(livePrimaryActions.map((action) => action.id)).not.toContain("JUMP_BALL");
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
+        expect(source).toContain('livePrimaryActionsForMode(gameplay.gameMode).map');
+        expect(source).toContain('gameplay.gameMode === "SIMPLE" ? <div className="live-primary-grid is-simple">');
+        expect(styles).toContain('.live-primary-grid.is-simple { grid-template-columns: repeat(3, minmax(0, 1fr)); }');
+    });
+    it("builds canonical terminal made shots for the SIMPLE two-point and three-point capture paths", () => {
+        expect(simpleMadeShotIntent("HOME", "home-7", 2, "stoppage-1")).toEqual({ kind: "shot", team: "HOME", playerId: "home-7", points: 2, made: true, stoppageId: "stoppage-1", scorerEventTerminal: { reason: "NATURAL" } });
+        expect(simpleMadeShotIntent("AWAY", "away-9", 3, "stoppage-2")).toEqual({ kind: "shot", team: "AWAY", playerId: "away-9", points: 3, made: true, stoppageId: "stoppage-2", scorerEventTerminal: { reason: "NATURAL" } });
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('step: action === "SHOOT" ? "shot-points" : firstLiveFlowStep(action)');
+        expect(source).toContain('if (flow.step === "shot-points" && gameplay.gameMode === "SIMPLE")');
+        expect(source).toContain('const next = await appendIntent(simpleMadeShotIntent(side, player.playerId, flow.points ?? 2, flow.stoppageId));');
+        expect(source).toContain('if (next) closeFlow();');
+        expect(source).not.toContain('className="live-context-exception" onClick={() => selectShotPoints(3)}>3PT</button>');
+        expect(source).toContain('Επιλέξτε σημείο προσπάθειας στο γήπεδο');
+    });
+    it("submits a SIMPLE offensive foul after FOULER while preserving the FULL DRAWN BY branch", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('if (flow.action === "OFFENSIVE_FOUL" && gameplay.gameMode === "SIMPLE")');
+        expect(source).toContain('await submitFoul({ side, offender: { kind: "PLAYER", playerId: player.playerId } });');
+        expect(source).toContain('teamControlFoul: value.action === "OFFENSIVE_FOUL"');
+        expect(source).toContain('const nextStep = flow.context === "NON_CONTACT" ? "commit-foul" : flow.context === "SHOOTING" ? "shot-victim" : "victim";');
+        expect(source).toContain('if (flow.step === "victim" && flow.side) return <><h3>DRAWN BY</h3>');
+    });
+    it("uses the authoritative projected penalty capability for SIMPLE ordinary-foul DRAWN BY", () => {
+        expect(simpleNormalFoulRequiresDrawnBy(gameplay.teams[0])).toBe(false);
+        expect(simpleNormalFoulRequiresDrawnBy(gameplay.teams[1])).toBe(true);
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('if (flow.action === "FOUL" && flow.context === "NON_SHOOTING" && gameplay.gameMode === "SIMPLE")');
+        expect(source).toContain('if (simpleNormalFoulRequiresDrawnBy(team(side))) setFlow({ ...flow, side, offender: { kind: "PLAYER", playerId: player.playerId }, step: "victim" });');
+        expect(source).toContain('else await submitFoul({ side, offender: { kind: "PLAYER", playerId: player.playerId } });');
+    });
+    it("skips only SIMPLE statistical continuations after rule-critical foul-shot MADE/MISS", () => {
+        expect(shouldCaptureFoulShotAssist("SIMPLE", true)).toBe(false);
+        expect(shouldCaptureFoulShotAssist("SIMPLE", false)).toBe(false);
+        expect(shouldCaptureFoulShotAssist("FULL", true)).toBe(true);
+        expect(shouldCaptureFoulShotAssist("FULL", false)).toBe(false);
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('if (shouldCaptureFoulShotAssist(gameplay.gameMode, made)) { setFlow({ ...nextFlow, step: "assist-choice" }); return; }');
+        expect(source).toContain('const foul: KomoControlGameplayIntent = { kind: "foul", foulType: flow.foulType');
+        expect(source).toContain('if (flow.step === "shooting-result") return <><h3>MADE / MISS</h3>');
+    });
+    it("closes a SIMPLE final missed live-ball free throw without a rebound or fake event", () => {
+        expect(shouldCaptureFinalFreeThrowRebound("SIMPLE", false, "LIVE_BALL")).toBe(false);
+        expect(shouldCaptureFinalFreeThrowRebound("FULL", false, "LIVE_BALL")).toBe(true);
+        expect(shouldCaptureFinalFreeThrowRebound("FULL", true, "LIVE_BALL")).toBe(false);
+        expect(shouldCaptureFinalFreeThrowRebound("FULL", false, "RESUME_INTERRUPTED")).toBe(false);
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('const requiresRebound = finalAttempt && shouldCaptureFinalFreeThrowRebound(gameplay.gameMode, made, pending.restartKind);');
+        expect(source).toContain('const terminal = finalAttempt && !requiresRebound');
+        expect(source).toContain('const next = finalAttempt && !requiresRebound');
+        expect(source).toContain('else if (requiresRebound) setFlow({ ...flow, action: "REBOUND", step: "rebound-player"');
+        expect(source).not.toContain('gameplay.gameMode === "SIMPLE" ? { kind: "rebound"');
+    });
     it("builds an atomic terminalized TIMEOUT with an independent CLOCK_STOP only while running", () => {
         const running = timeoutGameplayIntents("HOME", "timeout-group", true);
         expect(running).toEqual([
@@ -94,16 +161,25 @@ describe("Full Stats Live Control presentation contract", () => {
     it("keeps the finalization choice and report editor local until an explicit final click", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const finalizationUi = source.slice(source.indexOf('{finalizationEntry ? <div className="live-modal-backdrop'), source.indexOf('{clockEditing ? <div className="live-modal-backdrop'));
+        const confirmPeriodTransition = source.slice(source.indexOf("const confirmPeriodTransition = useCallback"), source.indexOf("const advancePeriod = useCallback"));
         const advancePeriod = source.slice(source.indexOf("const advancePeriod = useCallback"), source.indexOf("const useArrow", source.indexOf("const advancePeriod = useCallback")));
         expect(finalizationUi.match(/>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ<\/button>/g)).toHaveLength(1);
         expect(finalizationUi.match(/>ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ<\/button>/g)).toHaveLength(1);
         expect(finalizationUi).toContain('<textarea autoFocus maxLength={INCIDENT_REPORT_MAX_LENGTH}');
         expect(finalizationUi).toContain('>ΠΙΣΩ</button>');
         expect(finalizationUi).toContain('>ΟΡΙΣΤΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</button>');
-        expect(finalizationUi).toContain('else { event.stopPropagation(); }');
+        expect(finalizationUi).not.toContain('else { event.stopPropagation(); }');
+        expect(finalizationUi).toContain("setIncidentReportDraft(event.target.value)");
         expect(finalizationUi).not.toContain("cancelFlow");
-        expect(advancePeriod).not.toContain('window.confirm("Οριστική τοπική ολοκλήρωση του αγώνα;")');
-        expect(advancePeriod.indexOf('setFinalizationEntry("CHOICE")')).toBeLessThan(advancePeriod.indexOf('appendIntent({ kind: "period-end"'));
+        expect(advancePeriod).not.toContain("window.confirm");
+        expect(advancePeriod).toContain("setPendingPeriodTransition(next)");
+        expect(source).toContain("const confirmPeriodTransition = useCallback");
+        expect(source).toContain('appendIntent({ kind: "period-end", period: gameplay.period })');
+        expect(source).toContain('appendIntent({ kind: "period-start", period: next })');
+        expect(source).toContain('aria-label="Μετάβαση περιόδου"');
+        expect(advancePeriod).not.toContain("appendIntent");
+        expect(advancePeriod).toContain("setPendingPeriodTransition(next)");
+        expect(confirmPeriodTransition.indexOf('appendIntent({ kind: "period-end"')).toBeLessThan(confirmPeriodTransition.indexOf('appendIntent({ kind: "period-start"'));
         const backButton = finalizationUi.slice(finalizationUi.indexOf('>ΠΙΣΩ</button>') - 180, finalizationUi.indexOf('>ΠΙΣΩ</button>') + 20);
         expect(backButton).not.toContain("appendIntent");
         expect(backButton).not.toContain("finalizeMatch");
@@ -144,7 +220,7 @@ describe("Full Stats Live Control presentation contract", () => {
     });
 
     it("exposes exactly eight primary scorer actions without FREE THROW", () => {
-        expect(livePrimaryActions.map((action) => action.label)).toEqual(["SHOOT", "FOUL", "TURN OVER", "SUBS", "TIME OUT", "TECH. FOUL", "JUMP BALL", "OFFENSIVE FOUL"]);
+        expect(livePrimaryActions.map((action) => action.label)).toEqual(["SHOOT", "FOUL", "TURN OVER", "SUBS", "TIME OUT", "TECH. FOUL", "SHOOTING FOUL", "OFFENSIVE FOUL"]);
         expect(livePrimaryActions).toHaveLength(8);
     });
     it("moves authoritative team identity and color together with presentation side", () => {
@@ -161,6 +237,66 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(validateLiveClockCorrection("09:60", 600)).toEqual({ remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." });
         expect(validateLiveClockCorrection("9:3", 600)).toEqual({ remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." });
         expect(validateLiveClockCorrection("10:01", 600)).toEqual({ remainingSeconds: null, error: "Το ρολόι δεν μπορεί να υπερβαίνει τα 10:00." });
+    });
+    it("initializes the modal from the authoritative clock and preserves every intermediate edit buffer", () => {
+        expect(initializeLiveClockEditBuffer(24)).toBe("00:24");
+        const typed = ["", "0", "00", "00:", "00:2", "00:24"].map(updateLiveClockEditBuffer);
+        expect(typed).toEqual(["", "0", "00", "00:", "00:2", "00:24"]);
+    });
+    it("preserves browser-produced Backspace, Delete, paste, and caret edit values without per-keystroke validation", () => {
+        expect(updateLiveClockEditBuffer("00:2")).toBe("00:2");
+        expect(updateLiveClockEditBuffer("00:")).toBe("00:");
+        expect(updateLiveClockEditBuffer("0:24")).toBe("0:24");
+        expect(updateLiveClockEditBuffer("00:24")).toBe("00:24");
+    });
+    it("accepts a valid final buffer only at Apply and retains invalid input for visible feedback", () => {
+        expect(validateLiveClockCorrection(updateLiveClockEditBuffer("01:15"), 600)).toEqual({ remainingSeconds: 75, error: null });
+        expect(validateLiveClockCorrection(updateLiveClockEditBuffer("00:2"), 600)).toEqual({ remainingSeconds: null, error: "Χρησιμοποιήστε μορφή ΛΛ:ΔΔ." });
+    });
+    it("uses native text editing, selects the initial value, and keeps cancel/reopen and FULL/SIMPLE behavior shared", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const editor = source.slice(source.indexOf('{clockEditing ? <div className="live-modal-backdrop">'), source.indexOf("{statusTeam ?", source.indexOf('{clockEditing ? <div className="live-modal-backdrop">')));
+        expect(editor).toContain('autoFocus autoComplete="off" spellCheck={false}');
+        expect(editor).toContain("onFocus={(event) => event.currentTarget.select()}");
+        expect(editor).toContain("setClockInput(updateLiveClockEditBuffer(event.target.value))");
+        expect(editor).toContain("validateLiveClockCorrection(clockInput, maximumClockSeconds)");
+        expect(editor).toContain('appendIntent({ kind: "clock-set", remainingSeconds: validation.remainingSeconds })');
+        expect(editor).toContain("setClockEditing(false)");
+        expect(editor).not.toContain("gameplay.gameMode");
+        expect(source).toContain("setClockInput(initializeLiveClockEditBuffer(displayedClock))");
+    });
+    it("derives current minute and second selectors from the authoritative modal value", () => {
+        expect(liveClockSelectorParts(initializeLiveClockEditBuffer(517), 600)).toEqual({ minutes: 8, seconds: 37 });
+        expect(liveClockSelectorParts(initializeLiveClockEditBuffer(24), 600)).toEqual({ minutes: 0, seconds: 24 });
+    });
+    it("builds the dynamic minute range from regulation and overtime maximums", () => {
+        expect(liveClockMinuteOptions(600)).toEqual(Array.from({ length: 11 }, (_, value) => value));
+        expect(liveClockMinuteOptions(1200)).toEqual(Array.from({ length: 21 }, (_, value) => value));
+        expect(liveClockMinuteOptions(300)).toEqual(Array.from({ length: 6 }, (_, value) => value));
+    });
+    it("offers seconds 00 through 59 except at the authoritative maximum minute", () => {
+        expect(liveClockSecondOptions(600, 8)).toEqual(Array.from({ length: 60 }, (_, value) => value));
+        expect(liveClockSecondOptions(600, 10)).toEqual([0]);
+        expect(liveClockSecondOptions(300, 5)).toEqual([0]);
+    });
+    it("composes selector choices into the shared MM:SS buffer and existing CLOCK_SET seconds", () => {
+        const eightThirtySeven = liveClockInputFromSelectors(8, 37, 600);
+        const zeroTwentyFour = liveClockInputFromSelectors(0, 24, 600);
+        expect(eightThirtySeven).toBe("08:37");
+        expect(validateLiveClockCorrection(eightThirtySeven, 600)).toEqual({ remainingSeconds: 517, error: null });
+        expect(zeroTwentyFour).toBe("00:24");
+        expect(validateLiveClockCorrection(zeroTwentyFour, 600)).toEqual({ remainingSeconds: 24, error: null });
+        expect(liveClockInputFromSelectors(10, 37, 600)).toBe("10:00");
+    });
+    it("renders accessible synchronized selectors without mode branching or a second clock truth", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const editor = source.slice(source.indexOf('{clockEditing ? <div className="live-modal-backdrop">'), source.indexOf("{statusTeam ?", source.indexOf('{clockEditing ? <div className="live-modal-backdrop">')));
+        expect(editor).toContain('aria-label="Λεπτά"');
+        expect(editor).toContain('aria-label="Δευτερόλεπτα"');
+        expect(editor).toContain("setClockInput(liveClockInputFromSelectors");
+        expect(editor).toContain('aria-label="Χρόνος ΛΛ:ΔΔ"');
+        expect(editor).not.toContain("useState");
+        expect(editor).not.toContain("gameplay.gameMode");
     });
     it("exposes one stopped-only correction entry point for touch and right-click", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
@@ -179,6 +315,8 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const keyboard = source.slice(source.indexOf("const handler = (event: KeyboardEvent)"), source.indexOf('window.addEventListener("keydown"', source.indexOf("const handler = (event: KeyboardEvent)")));
         const editor = source.slice(source.indexOf('{clockEditing ? <div className="live-modal-backdrop">'), source.indexOf("{statusTeam ?", source.indexOf('{clockEditing ? <div className="live-modal-backdrop">')));
+        expect(keyboard.indexOf("if (isEditableKeyboardTarget(event.target)) return;")).toBeLessThan(keyboard.indexOf("event.preventDefault()"));
+        expect(keyboard).toContain("if (pendingPeriodTransition) return;");
         expect(keyboard).toContain("if (clockEditing)");
         expect(keyboard).toContain('if (event.key === "Escape")');
         expect(keyboard.indexOf("if (clockEditing)")).toBeLessThan(keyboard.indexOf("cancelFlow()"));
@@ -217,7 +355,7 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(periodScoreLabel({ kind: "OVERTIME", index: 3 })).toBe("OT3");
         expect(periodScoreValue({ period: { kind: "REGULATION", index: 1 }, home: 12, away: 8 })).toBe("12-8");
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
-        const strip = source.slice(source.indexOf('<div className="live-side-strip">'), source.indexOf('<div className="live-control-body">'));
+        const strip = source.slice(source.indexOf('<div className="live-side-strip">'), source.indexOf('<div className={`live-control-body'));
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
         expect(strip).toContain('className="live-period-score-strip"');
         expect(strip).toContain("gameplay.periodScores.map((score)");
@@ -233,9 +371,11 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const playerHandler = source.slice(source.indexOf("const selectRailPlayer"), source.indexOf("const selectTechnicalStaffOffender"));
         const staffHandler = source.slice(source.indexOf("const selectTechnicalStaffOffender"), source.indexOf("const renderFlow ="));
-        const regularRail = source.slice(source.indexOf("const candidates = railPlayers(current);"), source.indexOf("const toggleSubsPlayer"));
+        const regularRailStart = source.search(/const candidates = railPlayers\(current\)\.filter\(\(player\) => player\.fouls\.status === "ELIGIBLE"\);/);
+        expect(regularRailStart).toBeGreaterThan(-1);
+        const regularRail = source.slice(regularRailStart, source.indexOf("const toggleSubsPlayer", regularRailStart));
         const subsRail = source.slice(source.indexOf("const toggleSubsPlayer"), source.indexOf("const renderScoreTeam"));
-        const sideStrip = source.slice(source.indexOf('<div className="live-side-strip">'), source.indexOf('<div className="live-control-body">'));
+        const sideStrip = source.slice(source.indexOf('<div className="live-side-strip">'), source.indexOf('<div className={`live-control-body'));
 
         expect(playerHandler).toContain("if (!flow || busy) return;");
         expect(playerHandler).not.toContain("setStatusTeam");
@@ -321,8 +461,41 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(css).toMatch(/\.live-log-list > button\s*\{[^}]*display:\s*flex;/s);
         expect(css).not.toContain(".live-log-head");
     });
-    it("keeps keyboard shortcuts out of form fields and clock editing", () => {
-        expect(liveKeyboardCommand(" ", false, false)).toBe("clock"); expect(liveKeyboardCommand(" ", false, true)).toBeNull(); expect(liveKeyboardCommand("Enter", true, false)).toBeNull(); expect(liveKeyboardCommand("Escape", true, true)).toBe("cancel");
+    it("classifies native and custom text controls as editable keyboard targets", () => {
+        expect(isEditableKeyboardTarget({ tagName: "INPUT" } as unknown as EventTarget)).toBe(true);
+        expect(isEditableKeyboardTarget({ tagName: "textarea" } as unknown as EventTarget)).toBe(true);
+        expect(isEditableKeyboardTarget({ tagName: "SELECT" } as unknown as EventTarget)).toBe(true);
+        expect(isEditableKeyboardTarget({ tagName: "DIV", isContentEditable: true } as unknown as EventTarget)).toBe(true);
+        expect(isEditableKeyboardTarget({ tagName: "SPAN", closest: () => ({}) } as unknown as EventTarget)).toBe(true);
+        expect(isEditableKeyboardTarget({ tagName: "BUTTON", closest: () => null } as unknown as EventTarget)).toBe(false);
+        expect(isEditableKeyboardTarget({ tagName: "DIV", closest: () => null } as unknown as EventTarget)).toBe(false);
+    });
+    it("keeps exactly one cleaned-up window keydown listener across LiveControl rerenders", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source.match(/window\.addEventListener\("keydown", handler\)/g)).toHaveLength(1);
+        expect(source.match(/window\.removeEventListener\("keydown", handler\)/g)).toHaveLength(1);
+        expect(source).toContain("return () => window.removeEventListener(\"keydown\", handler)");
+        expect(source).toContain("pendingPeriodTransition, saveHistoricalEdit");
+    });
+    it("keeps clock keyboard buffers editable after Period 1→2, 2→3, and 3→4", () => {
+        for (const period of [2, 3, 4]) {
+            let buffer = initializeLiveClockEditBuffer(period === 2 ? 522 : 600);
+            for (const value of ["", "0", "00", "00:", "00:4", "00:42"]) buffer = updateLiveClockEditBuffer(value);
+            expect(buffer).toBe("00:42");
+        }
+    });
+    it("keeps global shortcuts outside editable controls while preserving scorer shortcuts", () => {
+        expect(liveKeyboardCommand(" ", false, false)).toBe("clock");
+        expect(liveKeyboardCommand("Enter", false, false)).toBe("complete");
+        expect(liveKeyboardCommand("Escape", false, false)).toBe("cancel");
+        expect(liveKeyboardCommand(" ", true, false)).toBeNull();
+        expect(liveKeyboardCommand("Enter", true, false)).toBeNull();
+        expect(liveKeyboardCommand("Escape", true, true)).toBeNull();
+        expect(liveKeyboardCommand(" ", false, true)).toBeNull();
+    });
+    it("keeps incident report text, spaces, punctuation, numbers, Greek, and newlines intact", () => {
+        const report = "Στο τέλος του αγώνα σημειώθηκε δοκιμαστικό συμβάν.\nΓραμμή 2!";
+        expect(normalizeIncidentReport(report)).toBe(report);
     });
     it("renders safe event labels from IDs already present in the DTO", () => {
         expect(gameplayEventLabel({ eventId: "e", sequence: 2, occurredAt: 1, type: "TIMEOUT", team: "HOME", scorerEventGroupId: "atomic:e", scorerEventGroupOrdinal: 2, scorerEventGroupingSource: "LEGACY_ATOMIC", scorerEventGroupSafeForReconstruction: false, period: { kind: "REGULATION", index: 1 }, clockSeconds: 500, intent: { kind: "timeout", team: "HOME" } }, gameplay)).toContain("Home");
@@ -505,7 +678,7 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(source).toContain('if (event.key === "Escape" && subsModal.mode === "ORDINARY") setSubsModal(null);');
     });
     it("keeps one guided event open while allowing SUBS to suspend and resume it", () => {
-        for (const action of ["SHOOT", "FOUL", "TURN_OVER", "TIME_OUT", "TECH_FOUL", "JUMP_BALL", "OFFENSIVE_FOUL"] as const) {
+        for (const action of ["SHOOT", "FOUL", "TURN_OVER", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"] as const) {
             expect(livePrimaryActionAvailable(action, "SHOOT")).toBe(false);
         }
         expect(livePrimaryActionAvailable("SHOOT", "SHOOT")).toBe(false);
@@ -522,18 +695,25 @@ describe("Full Stats Live Control presentation contract", () => {
         const startAction = source.slice(source.indexOf('const startAction = useCallback'), source.indexOf('useEffect(() => {', source.indexOf('const startAction = useCallback')));
         expect(startAction).not.toContain('appendIntent');
     });
-    it("forces authoritative on-court ineligible players through the existing atomic SUBS modal", () => {
+    it("requires every legally available replacement while allowing only the uncovered active-game shortfall", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
         expect(source).toContain('player.onCourt && player.fouls.status !== "ELIGIBLE"');
+        expect(source).toContain('player.onCourt && player.fouls.status === "ELIGIBLE"');
+        expect(source).toContain('unavailableOnCourtIds.slice(0, eligibleSubstituteIds.length)');
+        expect(source).toContain('normalGameplayAllowed: projectedOnCourtCount >= 2');
         expect(source).toContain('mode: "MANDATORY"');
         expect(source).toContain('drafts.HOME.selectedOutIds = [...mandatoryReplacementIds.HOME]');
         expect(source).toContain('drafts.AWAY.selectedOutIds = [...mandatoryReplacementIds.AWAY]');
-        expect(source).toContain("mandatoryReplacementIds[side].length > eligibleBench(team(side)).length");
+        expect(source).not.toContain("mandatoryReplacementIds[side].length > eligibleBench(team(side)).length");
         expect(source).toContain('current.mode === "MANDATORY" && source !== "IN"');
         expect(source).toContain('disabled={locked} className={`live-subs-player is-${source.toLowerCase()}${selected ? " is-selected" : ""}`}');
         expect(source).toContain('`${foulIndicator(player.fouls)} · REQUIRED OUT`');
+        expect(source).toContain('Δεν υπάρχει διαθέσιμη αλλαγή — η ομάδα συνεχίζει με');
+        expect(source).toContain('η κανονική ροή αγώνα έχει σταματήσει.');
+        expect(source).toContain('mandatoryReplacementPending || activeLineupBlocked');
         expect(styles).toContain('.live-subs-player.is-out.is-selected');
+        expect(styles).toContain('.live-reduced-lineup-status');
         expect(source).toContain('if (event.key === "Escape" && subsModal.mode === "ORDINARY") setSubsModal(null);');
         expect(source).toContain('subsModal.mode === "ORDINARY" ? <button type="button" className="live-subs-cancel"');
         expect(source).toContain('const intents = [...substitutionIntentsFor("HOME"), ...substitutionIntentsFor("AWAY")];');
@@ -589,17 +769,21 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         expect(source).toContain('if (action === "SHOOT") return "shooter";');
         expect(source).toContain('if (action === "FOUL") return "offender";');
-        expect(source).toContain('setFlow({ ...next, points: 2 });');
+        expect(source).toContain('setFlow(gameplay.gameMode === "SIMPLE" ? { ...next, points: 2 } : next);');
         expect(source).toContain('setFlow({ ...next, foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" });');
         expect(source).toContain('const selectShotPoints = (points: 2 | 3)');
-        expect(source).toContain('onClick={() => selectShotPoints(3)}>3PT</button>');
-        expect(source).toContain('className="live-context-exception" onClick={() => setFlow({ ...flow, context: "SHOOTING", step: "shot-points" })}>SHOOTING FOUL</button>');
+        expect(source).not.toContain('onClick={() => selectShotPoints(3)}>3PT</button>');
+        expect(enterShootingFoulFlow({ action: "FOUL", step: "offender", foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" })).toEqual({ action: "FOUL", step: "shot-points", foulType: "PERSONAL_FOUL", context: "SHOOTING" });
+        expect(source).toContain('action === "SHOOTING_FOUL" ? "FOUL" : action');
+        expect(source).toContain('setFlow(enterShootingFoulFlow({ ...next, foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" }))');
+        expect(source).toContain('gameplay.gameMode === "SIMPLE" && flow.action === "FOUL" && flow.context === "NON_SHOOTING" && !flow.offender');
+        expect(source).toContain('onClick={() => setFlow(enterShootingFoulFlow(flow))}>SHOOTING FOUL</button>');
         expect(source).not.toContain('if (flow.step === "points") return <><h3>SHOT TYPE</h3>');
         expect(source).not.toContain('flow.action === "FOUL" ? "SHOOTING FOUL" : "SHOOTING"');
         expect(source).toContain('flow.context === "SHOOTING" ? "shot-victim" : "victim"');
         expect(source).toContain('if (flow.step === "victim") { await submitFoul({ fouledPlayerId: player.playerId }); return; }');
         expect(source).toContain('const nextFlow = { ...flow, made,');
-        expect(source).toContain('if (made) { setFlow({ ...nextFlow, step: "assist-choice" }); return; }');
+        expect(source).toContain('if (shouldCaptureFoulShotAssist(gameplay.gameMode, made)) { setFlow({ ...nextFlow, step: "assist-choice" }); return; }');
         expect(source).toContain('const foulState = flow.sourceFoulEventId ? await correctSpecific(flow.sourceFoulEventId, foul) : await appendIntent(foul);');
         expect(source).toContain('label: `FT ${attemptIndex}`');
         expect(source).toContain('action: "REBOUND", step: "rebound-player"');
@@ -620,20 +804,23 @@ describe("Full Stats Live Control presentation contract", () => {
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
         expect(source).toContain('const isThreePointShotType = flow.action === "SHOOT" && item.step === "points" && flow.points === 3;');
         expect(source).toContain('const itemClassName = [isThreePointShotType ? "is-three-point" : "", itemTeam ? "is-team-owned" : ""].filter(Boolean).join(" ") || undefined;');
-        expect(source).toContain('setFlow({ ...next, points: 2 });');
-        expect(source).toContain('onClick={() => selectShotPoints(3)}>3PT</button>');
+        expect(source).toContain('setFlow(gameplay.gameMode === "SIMPLE" ? { ...next, points: 2 } : next);');
+        expect(source).not.toContain('onClick={() => selectShotPoints(3)}>3PT</button>');
         expect(styles).toContain('.live-flow-trail button.is-three-point');
     });
     it("clears transient foul state on natural close or Escape before a new event opens", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         expect(source).toContain('const closeFlow = useCallback(() => { setFlow(null); setCorrectionTarget(null); }, []);');
-        expect(source).toContain('const next: Flow = { action, step: firstLiveFlowStep(action), scorerEventId: crypto.randomUUID(), stoppageId: crypto.randomUUID() };');
+        expect(source).toContain('const next: Flow = { action: action === "SHOOTING_FOUL" ? "FOUL" : action, step: action === "SHOOT" ? "shot-points" : firstLiveFlowStep(action), scorerEventId: crypto.randomUUID(), stoppageId: crypto.randomUUID() };');
         expect(source).toContain('if (!next) return;');
         expect(source).toContain('else closeFlow();');
     expect(source).toContain('flow.foulType === "DISQUALIFYING_FOUL" && flow.offender?.kind === "PLAYER"');
     expect(source).toContain('if ((flow?.action === "PENALTY" || openMadeShootingFoul) && flow?.committedEventId && bridge)');
         expect(source).toContain('if (!flow) setFlow({ action: "PENALTY", step: "shooter" });');
-        expect(source).toContain('disabled={busy || Boolean(historyPreview) || Boolean(historyEdit) || Boolean(localCurrentCorrection) || Boolean(subsModal) || (hasPendingPenalty && action.id !== "SUBS") || gameplay.lifecycle !== "live"');
+        expect(source).toContain('Boolean(subsModal) || mandatoryReplacementPending || activeLineupBlocked');
+        expect(source).toContain('(hasPendingPenalty && action.id !== "SUBS")');
+        expect(source).toContain('gameplay.lifecycle !== "live"');
+        expect(source).toContain('!livePrimaryActionAvailable(action.id, flow?.action ?? null)');
         expect(source).toContain('replacementShooterRequired: false, step: "free-throw"');
         expect(source).toContain('if (flow.replacementShooterRequired || !shooterId) return <><h3>CHOOSE SHOOTER</h3>');
     });
@@ -713,9 +900,14 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         expect(source).toContain('if (flow.action === "TECH_FOUL" && flow.foulType === "TECHNICAL_FOUL") {');
         expect(source).toContain('await submitFoul({ side, offender: { kind: "PLAYER", playerId: player.playerId } });');
-        expect(source).toContain('void submitFoul({ side, technicalStaffSource: source, offender: { kind: "BENCH", personId: `coach:${side}`, role: "HEAD_COACH" } });');
+        expect(source).toContain('if (source === "COACH" && team(side).discipline.headCoachDisqualified) return;');
+        expect(source).toContain('? { kind: "BENCH" as const, personId: `coach:${side}`, role: "HEAD_COACH" as const }');
+        expect(source).toContain(': { kind: "BENCH" as const, personId: `bench:${side}`, role: "ACCOMPANYING_DELEGATION" as const };');
+        expect(source).toContain('void submitFoul({ side, technicalStaffSource: source, offender });');
         expect(source).toContain('scorerEventContext: { technicalStaffSource: value.technicalStaffSource }');
         expect(source).toContain('const technicalCategory1 = flow.action === "TECH_FOUL" && flow.foulType === "TECHNICAL_FOUL" && flow.category === "CATEGORY_1";');
+        expect(source).toContain('const directCoachTechnicalUnavailable = flow?.action === "TECH_FOUL"');
+        expect(source).toContain('(Boolean(flow) && !staffSelectionActive) || directCoachTechnicalUnavailable');
         expect(source).not.toContain('const showBenchChoices = flow.foulType === "DISQUALIFYING_FOUL"');
         expect(source).toContain('selectTechnicalStaffOffender(current.side, "COACH")');
         expect(source).toContain('selectTechnicalStaffOffender(current.side, "BENCH")');
@@ -872,7 +1064,7 @@ describe("Full Stats Live Control presentation contract", () => {
     it("shows an open rebounder trail only when a final live-ball free-throw miss reaches rebound selection", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
-        expect(source).toContain('else if (!made && pending.restartKind === "LIVE_BALL") setFlow({ ...flow, action: "REBOUND", step: "rebound-player"');
+        expect(source).toContain('else if (requiresRebound) setFlow({ ...flow, action: "REBOUND", step: "rebound-player"');
         expect(source).toContain('if (flow.action === "REBOUND" && flow.step === "rebound-player") steps.push({ step: "rebound-player", label: "REBOUNDER", value: "" });');
         expect(source).toContain('const preservedReboundTrail = flow.action === "REBOUND" && (flow.trail?.length ?? 0) > 0;');
         expect(source).toContain('preservedReboundTrail || preservedPenaltyTrail ? "is-preserved-trail-card"');

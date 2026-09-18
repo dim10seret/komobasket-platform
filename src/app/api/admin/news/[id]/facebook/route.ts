@@ -1,4 +1,4 @@
-import { requireAdmin } from "@/lib/admin-auth";
+import { requirePlatformSuperAdminRequest } from "@/lib/admin-auth";
 import { newsApiError } from "@/lib/news-api";
 import { publishNewsArticleToFacebook } from "@/services/facebook.service";
 import { listAllNewsArticles } from "@/services/news.service";
@@ -11,7 +11,7 @@ export async function POST(
   request: Request,
   context: RouteContext,
 ) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
 
   if (authorization.response) {
     return authorization.response;

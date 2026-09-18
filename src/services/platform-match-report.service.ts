@@ -3,6 +3,7 @@ import "server-only";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import {
   normalizedIncidentReport,
+  platformMatchReportMode,
   platformMatchReportAvailability,
   type PlatformMatchReport,
   type PlatformMatchReportAvailability,
@@ -32,6 +33,7 @@ type MatchReportDetailRow = MatchReportDatabaseRow & {
   home_team_id: string; home_team_name: string; home_logo_url: string | null;
   away_team_id: string; away_team_name: string; away_logo_url: string | null;
   head_updated_at: string | null; initial_state_json: string | null; initial_state_hash: string | null;
+  package_snapshot_json?: string | null;
   configuration_json: string | null;
   final_state_json: string | null;
 };
@@ -41,6 +43,18 @@ type BatchEventRow = EventRow & { run_id: string };
 
 export type PlatformMatchReportReadResult =
   | { kind: "report"; report: PlatformMatchReport }
+  | { kind: "unavailable"; availability: PlatformMatchReportAvailability };
+
+export type PlatformMatchReportFinalizedSource = {
+  report: PlatformMatchReport;
+  packageSnapshotJson: string;
+  currentConfigurationJson: string;
+  finalStateJson: string;
+  eventJson: string[];
+};
+
+export type PlatformMatchReportFinalizedSourceReadResult =
+  | { kind: "report"; source: PlatformMatchReportFinalizedSource }
   | { kind: "unavailable"; availability: PlatformMatchReportAvailability };
 
 const consistencyColumns = `
@@ -86,28 +100,29 @@ function source(row: MatchReportDatabaseRow): PlatformMatchReportConsistencySour
   };
 }
 
-export async function listPlatformMatchReportAvailabilityWithDb(database: D1DatabaseBinding, organizationId: string) {
+export async function listPlatformMatchReportAvailabilityWithDb(database: D1DatabaseBinding, organizationId: string, competitionId?: string) {
   const result = await database.prepare(`SELECT ${consistencyColumns}
     FROM league_games g
     JOIN league_competitions competition ON competition.id=g.competition_id
     LEFT JOIN league_komocontrol_gameplay_game_claims claim ON claim.game_id=g.id
     LEFT JOIN league_komocontrol_gameplay_heads head ON head.run_id=claim.run_id
     LEFT JOIN league_komocontrol_match_finalizations_v1 finalization ON finalization.run_id=head.run_id
-    WHERE competition.organization_id=?`).bind(organizationId).all<MatchReportDatabaseRow>();
+    WHERE competition.organization_id=?${competitionId ? " AND competition.id=?" : ""}`).bind(...(competitionId ? [organizationId, competitionId] : [organizationId])).all<MatchReportDatabaseRow>();
   return Object.fromEntries((result.results ?? []).map((row) => [row.game_id, platformMatchReportAvailability(source(row))]));
 }
 
-export async function readPlatformMatchReportWithDb(
+export async function readPlatformMatchReportFinalizedSourceWithDb(
   database: D1DatabaseBinding,
   gameId: string,
   organizationId: string,
-): Promise<PlatformMatchReportReadResult> {
+): Promise<PlatformMatchReportFinalizedSourceReadResult> {
   const row = await database.prepare(`SELECT ${consistencyColumns},
       competition.name AS competition_name, season.name AS season_name, phase.name AS phase_name,
       g.round_label, g.scheduled_date, g.scheduled_time, g.venue,
       home.id AS home_team_id, home.name AS home_team_name, home.logo_url AS home_logo_url,
       away.id AS away_team_id, away.name AS away_team_name, away.logo_url AS away_logo_url,
       head.updated_at AS head_updated_at, snapshot.initial_state_json, snapshot.initial_state_hash,
+      game_package.snapshot_json AS package_snapshot_json,
       configuration.configuration_json, finalization.final_state_json
     FROM league_games g
     JOIN league_competitions competition ON competition.id=g.competition_id
@@ -118,13 +133,15 @@ export async function readPlatformMatchReportWithDb(
     LEFT JOIN league_komocontrol_gameplay_game_claims claim ON claim.game_id=g.id
     LEFT JOIN league_komocontrol_gameplay_heads head ON head.run_id=claim.run_id
     LEFT JOIN league_komocontrol_match_engine_snapshots_v1 snapshot ON snapshot.run_id=head.run_id
+    LEFT JOIN league_komocontrol_game_packages game_package ON game_package.id=snapshot.package_id
     LEFT JOIN league_komocontrol_current_game_configurations_v1 configuration ON configuration.run_id=head.run_id
     LEFT JOIN league_komocontrol_match_finalizations_v1 finalization ON finalization.run_id=head.run_id
     WHERE g.id=? AND competition.organization_id=? LIMIT 1`).bind(gameId, organizationId).first<MatchReportDetailRow>();
   if (!row) return { kind: "unavailable", availability: { available: false, hasIncidentReport: false, unavailableReason: "NOT_FINALIZED" } };
   const availability = platformMatchReportAvailability(source(row));
   if (!availability.available) return { kind: "unavailable", availability };
-  if (!row.claim_run_id || !row.head_history_hash || !row.head_updated_at || !row.initial_state_json || !row.initial_state_hash || !row.final_state_json
+  if (!row.claim_run_id || !row.head_history_hash || !row.head_updated_at || !row.initial_state_json || !row.initial_state_hash
+    || !row.package_snapshot_json || !row.final_state_json
     || row.head_history_revision === null || row.head_last_accepted_sequence === null) {
     return { kind: "unavailable", availability: { available: false, hasIncidentReport: false, unavailableReason: "INCONSISTENT_DATA" } };
   }
@@ -151,27 +168,45 @@ export async function readPlatformMatchReportWithDb(
       parseMatchReportState(row.initial_state_json),
       parseMatchReportState(row.final_state_json),
     );
+    const report: PlatformMatchReport = {
+      mode: platformMatchReportMode(row.package_snapshot_json),
+      availability,
+      game: {
+        gameId: row.game_id, competition: row.competition_name, season: row.season_name,
+        phase: row.phase_name, round: row.round_label, scheduledDate: row.scheduled_date,
+        scheduledTime: row.scheduled_time, venue: row.venue?.trim() || null,
+        homeTeam: { teamId: row.home_team_id, name: row.home_team_name, logoUrl: row.home_logo_url },
+        awayTeam: { teamId: row.away_team_id, name: row.away_team_name, logoUrl: row.away_logo_url },
+        finalScore: projection.score,
+        winner: projection.score.home === projection.score.away ? null : projection.score.home > projection.score.away ? "HOME" : "AWAY",
+        periodScores: projection.periodScores,
+      },
+      statistics,
+      incidentReport,
+    };
+    if (!row.configuration_json) throw new Error("MISSING_FINAL_CONFIGURATION");
     return {
       kind: "report",
-      report: {
-        availability,
-        game: {
-          gameId: row.game_id, competition: row.competition_name, season: row.season_name,
-          phase: row.phase_name, round: row.round_label, scheduledDate: row.scheduled_date,
-          scheduledTime: row.scheduled_time, venue: row.venue?.trim() || null,
-          homeTeam: { teamId: row.home_team_id, name: row.home_team_name, logoUrl: row.home_logo_url },
-          awayTeam: { teamId: row.away_team_id, name: row.away_team_name, logoUrl: row.away_logo_url },
-          finalScore: projection.score,
-          winner: projection.score.home === projection.score.away ? null : projection.score.home > projection.score.away ? "HOME" : "AWAY",
-          periodScores: projection.periodScores,
-        },
-        statistics,
-        incidentReport,
+      source: {
+        report,
+        packageSnapshotJson: row.package_snapshot_json,
+        currentConfigurationJson: row.configuration_json,
+        finalStateJson: row.final_state_json,
+        eventJson: events.map((event) => event.eventJson),
       },
     };
   } catch {
     return { kind: "unavailable", availability: { available: false, hasIncidentReport: false, unavailableReason: "INCONSISTENT_DATA" } };
   }
+}
+
+export async function readPlatformMatchReportWithDb(
+  database: D1DatabaseBinding,
+  gameId: string,
+  organizationId: string,
+): Promise<PlatformMatchReportReadResult> {
+  const result = await readPlatformMatchReportFinalizedSourceWithDb(database, gameId, organizationId);
+  return result.kind === "report" ? { kind: "report", report: result.source.report } : result;
 }
 
 export async function readPlatformMatchReport(gameId: string, organizationId: string) {

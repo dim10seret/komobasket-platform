@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { requireAdmin } from "@/lib/admin-auth";
+import { requirePlatformSuperAdminRequest } from "@/lib/admin-auth";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import { newsApiError } from "@/lib/news-api";
 import { setNewsArticleCoverImage } from "@/services/news.service";
@@ -19,7 +19,7 @@ const allowedImageTypes = new Map([
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
 export async function POST(request: Request, context: RouteContext) {
-  const authorization = requireAdmin(request);
+  const authorization = await requirePlatformSuperAdminRequest(request);
   if (authorization.response) return authorization.response;
 
   try {

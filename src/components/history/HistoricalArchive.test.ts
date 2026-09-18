@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 
 const header = readFileSync(new URL("../layout/Header.tsx", import.meta.url), "utf8");
 const archive = readFileSync(new URL("./HistoricalArchive.tsx", import.meta.url), "utf8");
-const page = readFileSync(new URL("../../app/history/page.tsx", import.meta.url), "utf8");
-const schedulePage = readFileSync(new URL("../../app/schedule/page.tsx", import.meta.url), "utf8");
-const resultsPage = readFileSync(new URL("../../app/results/page.tsx", import.meta.url), "utf8");
-const standingsPage = readFileSync(new URL("../../app/standings/page.tsx", import.meta.url), "utf8");
-const teamsPage = readFileSync(new URL("../../app/teams/page.tsx", import.meta.url), "utf8");
-const videosPage = readFileSync(new URL("../../app/videos/page.tsx", import.meta.url), "utf8");
-const galleryPage = readFileSync(new URL("../../app/gallery/page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../../app/(central)/history/page.tsx", import.meta.url), "utf8");
+const schedulePage = readFileSync(new URL("../../app/(central)/schedule/page.tsx", import.meta.url), "utf8");
+const resultsPage = readFileSync(new URL("../../app/(central)/results/page.tsx", import.meta.url), "utf8");
+const standingsPage = readFileSync(new URL("../../app/(central)/standings/page.tsx", import.meta.url), "utf8");
+const teamsPage = readFileSync(new URL("../../app/(central)/teams/page.tsx", import.meta.url), "utf8");
+const videosPage = readFileSync(new URL("../../app/(central)/videos/page.tsx", import.meta.url), "utf8");
+const galleryPage = readFileSync(new URL("../../app/(central)/gallery/page.tsx", import.meta.url), "utf8");
 const schedule = readFileSync(new URL("../schedule/ScheduleGrid.tsx", import.meta.url), "utf8");
 const results = readFileSync(new URL("../results/ResultsGrid.tsx", import.meta.url), "utf8");
 

@@ -1,5 +1,6 @@
 const PASSWORD_ALGORITHM = "pbkdf2-sha256";
-const PASSWORD_ITERATIONS = 600_000;
+const PASSWORD_ITERATIONS = 100_000;
+const LEGACY_PASSWORD_ITERATIONS = 600_000;
 const PASSWORD_SALT_BYTES = 16;
 const PASSWORD_HASH_BITS = 256;
 
@@ -58,7 +59,7 @@ export async function verifyScorerPassword(password: string, storedHash: string)
   if (
     extra.length !== 0
     || algorithm !== PASSWORD_ALGORITHM
-    || iterations !== PASSWORD_ITERATIONS
+    || (iterations !== PASSWORD_ITERATIONS && iterations !== LEGACY_PASSWORD_ITERATIONS)
   ) {
     return false;
   }

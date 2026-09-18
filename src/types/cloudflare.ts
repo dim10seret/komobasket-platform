@@ -40,9 +40,14 @@ export type R2BucketBinding = {
 };
 
 export type KomoBasketCloudflareEnv = {
+  USER_LOGIN_RATE_LIMITER?: {
+    limit: (input: { key: string }) => Promise<{ success: boolean }>;
+  };
   NEWS_DB?: D1DatabaseBinding;
   NEWS_IMAGES?: R2BucketBinding;
   ADMIN_EMAIL?: string;
+  CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
+  CLOUDFLARE_ACCESS_AUD?: string;
 
   FACEBOOK_PAGE_ID?: string;
   FACEBOOK_ACCESS_TOKEN?: string;

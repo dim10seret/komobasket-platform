@@ -4,10 +4,10 @@
 PRAGMA foreign_keys = ON;
 
 ALTER TABLE league_competitions
-  ADD COLUMN IF NOT EXISTS custom_type_label TEXT;
+  ADD COLUMN custom_type_label TEXT;
 
 ALTER TABLE league_competitions
-  ADD COLUMN IF NOT EXISTS logo_url TEXT;
+  ADD COLUMN logo_url TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_league_competitions_custom_type
   ON league_competitions(custom_type_label);

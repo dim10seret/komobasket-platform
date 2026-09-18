@@ -1,5 +1,8 @@
+"use client";
+
+import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
 import type { FormEvent } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Field,
   Panel,
@@ -22,6 +25,88 @@ import {
 } from "../shared/admin-core";
 import { normalizePlayerName } from "@/lib/player-matching";
 
+type AthleteEditSavePlan = {
+  canonicalPatch: Record<string, unknown> | null;
+  rosterPatch: Record<string, unknown> | null;
+};
+
+const normalizeOptionalEditValue = (value: unknown) => String(value ?? "").trim() || null;
+
+export function buildAthleteEditSavePlan(
+  original: {
+    playerId: string;
+    rosterId: string;
+    firstName: unknown;
+    lastName: unknown;
+    birthDate: unknown;
+    photoUrl: unknown;
+    shirtNumber: number | null;
+  },
+  edited: {
+    firstName: unknown;
+    lastName: unknown;
+    birthDate: unknown;
+    photoUrl: unknown;
+    shirtNumber: number | null;
+  },
+): AthleteEditSavePlan {
+  const originalCanonical = {
+    firstName: normalizeOptionalEditValue(original.firstName),
+    lastName: normalizeOptionalEditValue(original.lastName),
+    birthDate: normalizeOptionalEditValue(original.birthDate),
+    photoUrl: normalizeOptionalEditValue(original.photoUrl),
+  };
+  const editedCanonical = {
+    firstName: normalizeOptionalEditValue(edited.firstName),
+    lastName: normalizeOptionalEditValue(edited.lastName),
+    birthDate: normalizeOptionalEditValue(edited.birthDate),
+    photoUrl: normalizeOptionalEditValue(edited.photoUrl),
+  };
+  const canonicalChanged = Object.keys(editedCanonical).some((key) => {
+    const field = key as keyof typeof editedCanonical;
+    return editedCanonical[field] !== originalCanonical[field];
+  });
+  const rosterChanged = edited.shirtNumber !== original.shirtNumber;
+
+  return {
+    canonicalPatch: canonicalChanged ? {
+      action: "updateAthleteCanonical",
+      playerId: original.playerId,
+      ...editedCanonical,
+    } : null,
+    rosterPatch: rosterChanged ? {
+      action: "updateAthleteShirt",
+      rosterId: original.rosterId,
+      shirtNumber: edited.shirtNumber,
+    } : null,
+  };
+}
+
+export async function executeAthleteEditSave(
+  inFlight: { current: boolean },
+  createPlan: () => AthleteEditSavePlan,
+  actions: {
+    patch: (payload: Record<string, unknown>) => Promise<void>;
+    close: () => void;
+    refreshRoster: () => Promise<void>;
+    refreshSnapshot: () => Promise<void>;
+  },
+): Promise<"saved" | "ignored"> {
+  if (inFlight.current) return "ignored";
+  inFlight.current = true;
+  try {
+    const plan = createPlan();
+    if (plan.canonicalPatch) await actions.patch(plan.canonicalPatch);
+    if (plan.rosterPatch) await actions.patch(plan.rosterPatch);
+    actions.close();
+    await actions.refreshRoster();
+    await actions.refreshSnapshot();
+    return "saved";
+  } finally {
+    inFlight.current = false;
+  }
+}
+
 
 export function Players({
   data,
@@ -30,6 +115,7 @@ export function Players({
   data: Snapshot;
   onRefreshSnapshot: () => Promise<void>;
 }) {
+  const { request: fetch, url: platformUrl } = usePlatformContext();
   const [registryPlayers, setRegistryPlayers] = useState<Row[]>(() => [...(data.players ?? [])]);
   const [selectedSeasonId, setSelectedSeasonId] = useState("");
   const [selectedCompetitionId, setSelectedCompetitionId] = useState("");
@@ -40,6 +126,7 @@ export function Players({
   const [teamRosterError, setTeamRosterError] = useState("");
   const [manualRosterInitialized, setManualRosterInitialized] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const athleteEditSaveInFlight = useRef(false);
   const [noticeMessage, setNoticeMessage] = useState("");
 
   const [searchMode, setSearchMode] = useState<RosterActionKind>("athlete");
@@ -108,6 +195,7 @@ export function Players({
   const [editingStaffUploadMessage, setEditingStaffUploadMessage] = useState("");
 
   const [showPlayerRegistry, setShowPlayerRegistry] = useState(false);
+  const [showRegistryCreate, setShowRegistryCreate] = useState(false);
   const [registrySearchText, setRegistrySearchText] = useState("");
   const [registryPageSize, setRegistryPageSize] = useState(20);
   const [registryPage, setRegistryPage] = useState(1);
@@ -746,6 +834,50 @@ export function Players({
     closeAddRosterModal();
   }
 
+  const closeRegistryCreate = () => {
+    setShowRegistryCreate(false);
+    resetAddFormForAthlete();
+  };
+
+  async function createRegistryPlayerRow() {
+    if (!newAthleteFirstName.trim() || !newAthleteLastName.trim()) {
+      setNewAthleteUploadMessage("Απαιτείται όνομα και επώνυμο.");
+      return;
+    }
+    const duplicates = findDuplicateRegistryPlayers(newAthleteFirstName, newAthleteLastName);
+    if (duplicates.length > 0 && !confirmCreateDifferentAthlete) {
+      setNewAthleteDuplicateMatches(duplicates);
+      setNewAthleteUploadMessage("");
+      return;
+    }
+
+    setActionBusy(true);
+    setNewAthleteUploadMessage("");
+    try {
+      const response = await fetch("/api/admin/league", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "createRegistryPlayer",
+          organizationId: data.organizationContext.organizationId,
+          firstName: newAthleteFirstName.trim(),
+          lastName: newAthleteLastName.trim(),
+          birthDate: newAthleteBirthDate || null,
+          photoUrl: newAthletePhotoUrl || null,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Η δημιουργία του αθλητή απέτυχε.");
+      await onRefreshSnapshot();
+      showActionNotice("Ο αθλητής προστέθηκε στο Μητρώο χωρίς σύνδεση με ομάδα.");
+      closeRegistryCreate();
+    } catch (error) {
+      setNewAthleteUploadMessage(error instanceof Error ? error.message : "Η δημιουργία του αθλητή απέτυχε.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   async function addExistingStaffRow(staffId: string) {
     await runRosterPatch("addExistingStaff", {
       action: "addExistingStaff",
@@ -780,26 +912,53 @@ export function Players({
   }
 
   async function saveAthleteEdits() {
-    if (!editingAthlete) return;
-    await runRosterPatch("updateAthleteCanonical", {
-      action: "updateAthleteCanonical",
-      playerId: editingAthlete.player_id,
-      firstName: editingAthleteFirstName.trim() || null,
-      lastName: editingAthleteLastName.trim() || null,
-      birthDate: editingAthleteBirthDate || null,
-      photoUrl: editingAthletePhotoUrl || null,
-    }, "Οι αλλαγές αθλητή αποθηκεύτηκαν.");
-
-    await runRosterPatch("updateAthleteShirt", {
-      action: "updateAthleteShirt",
-      rosterId: editingAthlete.roster_id,
-      shirtNumber: parseShirtNumber(editingAthleteShirtNumber),
-    }, "Τα στοιχεία ρόστερ αποθηκεύτηκαν.");
-
-    clearBlobPreviewUrl(editingAthletePhotoPreview);
-    setEditingAthletePhotoPreview("");
-    setEditingAthletePhotoFileName("");
-    setEditingAthlete(null);
+    if (!editingAthlete || athleteEditSaveInFlight.current) return;
+    setActionBusy(true);
+    setTeamRosterError("");
+    try {
+      const result = await executeAthleteEditSave(
+        athleteEditSaveInFlight,
+        () => buildAthleteEditSavePlan({
+          playerId: editingAthlete.player_id,
+          rosterId: editingAthlete.roster_id,
+          firstName: editingAthlete.first_name,
+          lastName: editingAthlete.last_name,
+          birthDate: editingAthlete.birth_date,
+          photoUrl: editingAthlete.photo_url,
+          shirtNumber: editingAthlete.shirt_number,
+        }, {
+          firstName: editingAthleteFirstName,
+          lastName: editingAthleteLastName,
+          birthDate: editingAthleteBirthDate,
+          photoUrl: editingAthletePhotoUrl,
+          shirtNumber: parseShirtNumber(editingAthleteShirtNumber),
+        }),
+        {
+          patch: async (payload) => {
+            const response = await fetch("/api/admin/league", {
+              method: "PATCH",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const responsePayload = await response.json();
+            if (!response.ok) throw new Error(responsePayload.error || "Η αποθήκευση απέτυχε.");
+          },
+          close: () => {
+            clearBlobPreviewUrl(editingAthletePhotoPreview);
+            setEditingAthletePhotoPreview("");
+            setEditingAthletePhotoFileName("");
+            setEditingAthlete(null);
+          },
+          refreshRoster: refreshSelectedRoster,
+          refreshSnapshot: onRefreshSnapshot,
+        },
+      );
+      if (result === "saved") showActionNotice("Οι αλλαγές αθλητή αποθηκεύτηκαν.");
+    } catch (error) {
+      setTeamRosterError(error instanceof Error ? error.message : "Η αποθήκευση απέτυχε.");
+    } finally {
+      setActionBusy(false);
+    }
   }
 
   async function saveStaffEdits() {
@@ -844,15 +1003,90 @@ export function Players({
 
     <Panel title="Μητρώο Παικτών">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-zinc-600">Κεντρικό μητρώο όλων των παικτών της εφαρμογής, ανεξάρτητα από σεζόν, διοργάνωση ή ομάδα.</p>
-        <button
-          type="button"
-          onClick={() => setShowPlayerRegistry((current) => !current)}
-          className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 hover:text-zinc-950"
-        >
-          {showPlayerRegistry ? "Σύμπτυξη" : "Εμφάνιση"}
-        </button>
+        <p className="text-sm text-zinc-600">Μητρώο παικτών του επιλεγμένου Οργανισμού, ανεξάρτητα από σεζόν, διοργάνωση ή ομάδα.</p>
+        <div className="flex flex-wrap gap-2">
+          <PlatformButton mutation
+            type="button"
+            onClick={() => {
+              resetAddFormForAthlete();
+              setShowPlayerRegistry(true);
+              setShowRegistryCreate(true);
+            }}
+            className="rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-orange-700"
+          >
+            + Προσθήκη παίκτη
+          </PlatformButton>
+          <PlatformButton
+            type="button"
+            onClick={() => setShowPlayerRegistry((current) => !current)}
+            className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:border-orange-500 hover:text-zinc-950"
+          >
+            {showPlayerRegistry ? "Σύμπτυξη" : "Εμφάνιση"}
+          </PlatformButton>
+        </div>
       </div>
+
+      {showRegistryCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-black text-zinc-950">Προσθήκη Παίκτη</h3>
+                <p className="mt-1 text-sm text-zinc-600">Δημιουργία canonical παίκτη χωρίς ομάδα ή ρόστερ.</p>
+              </div>
+              <PlatformButton type="button" onClick={closeRegistryCreate} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800">Κλείσιμο</PlatformButton>
+            </div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <Field label="Όνομα">
+                <input value={newAthleteFirstName} onChange={(event) => setNewAthleteFirstName(event.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Επώνυμο">
+                <input value={newAthleteLastName} onChange={(event) => setNewAthleteLastName(event.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Ημερομηνία γέννησης">
+                <input type="date" value={newAthleteBirthDate} onChange={(event) => setNewAthleteBirthDate(event.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Φωτογραφία">
+                <div className="mt-1 flex items-center gap-3">
+                  <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">
+                    {(newAthletePhotoPreview || newAthletePhotoUrl)
+                      ? <img src={newAthletePhotoPreview || newAthletePhotoUrl} alt="Προεπισκόπηση φωτογραφίας" className="h-full w-full object-cover" />
+                      : <div className="flex h-full w-full items-center justify-center text-xs text-zinc-500">—</div>}
+                  </div>
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
+                    <span>{newAthletePhotoPreview || newAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
+                    <PlatformFileInput
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        if (file) handleNewAthletePhotoSelect(file);
+                      }}
+                    />
+                  </label>
+                </div>
+              </Field>
+            </div>
+            {newAthleteDuplicateMatches.length > 0 && (
+              <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                <p className="font-black">Βρέθηκε παίκτης με το ίδιο ονοματεπώνυμο.</p>
+                <label className="mt-2 flex items-start gap-2 font-bold">
+                  <input type="checkbox" checked={confirmCreateDifferentAthlete} onChange={(event) => setConfirmCreateDifferentAthlete(event.target.checked)} />
+                  Επιβεβαιώνω ότι πρόκειται για διαφορετικό παίκτη.
+                </label>
+              </div>
+            )}
+            {newAthleteUploadMessage && <p className="mt-3 text-sm font-bold text-red-600">{newAthleteUploadMessage}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <PlatformButton type="button" onClick={closeRegistryCreate} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800">Ακύρωση</PlatformButton>
+              <PlatformButton mutation type="button" onClick={() => void createRegistryPlayerRow()} disabled={actionBusy || newAthleteUploadBusy} className="rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-black text-white disabled:opacity-50">
+                Προσθήκη παίκτη
+              </PlatformButton>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showPlayerRegistry && (
         <div className="mt-5 space-y-4">
@@ -870,9 +1104,9 @@ export function Players({
                       </span>
                     </p>
                   </div>
-                  <button type="button" onClick={closeRegistryEdit} className="rounded-xl border border-zinc-300 px-3 py-2 font-black">
+                  <PlatformButton type="button" onClick={closeRegistryEdit} className="rounded-xl border border-zinc-300 px-3 py-2 font-black">
                     Ακύρωση
-                  </button>
+                  </PlatformButton>
                 </div>
                 {registryEditingNotice ? <p className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700">{registryEditingNotice}</p> : null}
                 <div className="mt-4 grid gap-4">
@@ -894,7 +1128,7 @@ export function Players({
                       </div>
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                         <span>📷 {registryEditingPhotoPreview || registryEditingPhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                        <input
+                        <PlatformFileInput
                           type="file"
                           accept="image/*"
                           className="hidden"
@@ -909,12 +1143,12 @@ export function Players({
                     <p className="mt-2 text-xs text-zinc-500">{registryEditingUploadBusy ? "Φόρτωση εικόνας..." : (registryEditingPhotoFileName ? `Επιλεγμένο αρχείο: ${registryEditingPhotoFileName}` : "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                   </Field>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" className={buttonClass} onClick={() => void saveRegistryPlayerEdits()} disabled={registryEditingBusy}>
+                    <PlatformButton mutation type="button" className={buttonClass} onClick={() => void saveRegistryPlayerEdits()} disabled={registryEditingBusy}>
                       Αποθήκευση
-                    </button>
-                    <button type="button" onClick={closeRegistryEdit} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">
+                    </PlatformButton>
+                    <PlatformButton type="button" onClick={closeRegistryEdit} className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black">
                       Ακύρωση
-                    </button>
+                    </PlatformButton>
                   </div>
                 </div>
               </div>
@@ -975,13 +1209,13 @@ export function Players({
                       return (
                         <tr key={playerId} className="border-b border-zinc-100 last:border-0">
                           <td className="px-3 py-3">
-                            <button
+                            <PlatformButton mutation
                               type="button"
                               onClick={() => openRegistryEdit(player)}
                               className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-black text-zinc-800 transition hover:border-orange-500 hover:text-zinc-950"
                             >
                               ✏️
-                            </button>
+                            </PlatformButton>
                           </td>
                           <td className="px-3 py-3 font-black">{(safeRegistryPage - 1) * registryPageSize + index + 1}</td>
                           <td className="px-3 py-3">
@@ -1000,23 +1234,23 @@ export function Players({
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
-                <button
+                <PlatformButton
                   type="button"
                   disabled={safeRegistryPage <= 1}
                   onClick={() => setRegistryPage((current) => Math.max(1, current - 1))}
                   className="rounded-xl border border-zinc-300 bg-white px-3 py-2 font-black text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Προηγούμενη
-                </button>
+                </PlatformButton>
                 <span className="font-black">Σελίδα {safeRegistryPage} από {totalRegistryPages}</span>
-                <button
+                <PlatformButton
                   type="button"
                   disabled={safeRegistryPage >= totalRegistryPages}
                   onClick={() => setRegistryPage((current) => Math.min(totalRegistryPages, current + 1))}
                   className="rounded-xl border border-zinc-300 bg-white px-3 py-2 font-black text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Επόμενη
-                </button>
+                </PlatformButton>
               </div>
             </>
           )}
@@ -1082,7 +1316,7 @@ export function Players({
           <p className="text-sm text-zinc-600">{selectedTeamRoster.competitionName} · {selectedTeamRoster.seasonName}</p>
           <p className="mt-2 text-sm font-bold text-zinc-700">{targetAthleteCount} Αθλητές · {targetStaffCount} Staff</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
+            <PlatformButton mutation
               type="button"
               onClick={() => {
                 setShowAddRosterModal(true);
@@ -1096,8 +1330,8 @@ export function Players({
               disabled={actionBusy}
             >
               + Προσθήκη
-            </button>
-            <button
+            </PlatformButton>
+            <PlatformButton mutation
               type="button"
               onClick={() => {
                 setShowAddRosterModal(true);
@@ -1111,7 +1345,7 @@ export function Players({
               disabled={actionBusy}
             >
               + Μαζική Προσθήκη
-            </button>
+            </PlatformButton>
           </div>
         </Panel>
 
@@ -1121,10 +1355,10 @@ export function Players({
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500"><tr>
                   <th className="px-3 py-3">#</th><th className="px-3 py-3">Φωτό</th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("first_name")} className="text-left hover:text-zinc-900">Όνομα{athleteSort.key === "first_name" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("last_name")} className="text-left hover:text-zinc-900">Επώνυμο{athleteSort.key === "last_name" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("birth_date")} className="text-left hover:text-zinc-900">Ημ. Γέννησης{athleteSort.key === "birth_date" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortAthleteColumn("shirt_number")} className="text-left hover:text-zinc-900">Νο. Φανέλας{athleteSort.key === "shirt_number" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortAthleteColumn("first_name")} className="text-left hover:text-zinc-900">Όνομα{athleteSort.key === "first_name" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortAthleteColumn("last_name")} className="text-left hover:text-zinc-900">Επώνυμο{athleteSort.key === "last_name" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortAthleteColumn("birth_date")} className="text-left hover:text-zinc-900">Ημ. Γέννησης{athleteSort.key === "birth_date" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortAthleteColumn("shirt_number")} className="text-left hover:text-zinc-900">Νο. Φανέλας{athleteSort.key === "shirt_number" ? (athleteSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
                   <th className="px-3 py-3">Ενέργειες</th>
                 </tr></thead>
                 <tbody>
@@ -1144,7 +1378,7 @@ export function Players({
                       <td className="px-3 py-3">{athlete.shirt_number ?? "—"}</td>
                       <td className="px-3 py-3">
                         <div className="flex gap-2">
-                          <button
+                          <PlatformButton mutation
                             type="button"
                             onClick={() => {
                               setEditingAthlete(athlete);
@@ -1160,8 +1394,8 @@ export function Players({
                             className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-bold"
                           >
                             Επεξεργασία
-                          </button>
-                          <button
+                          </PlatformButton>
+                          <PlatformButton
                             type="button"
                             onClick={() => {
                               if (!window.confirm("Θέλεις να αφαιρέσεις τον αθλητή από το ρόστερ;")) return;
@@ -1173,7 +1407,7 @@ export function Players({
                             className="rounded-xl border border-red-300 px-3 py-1.5 text-xs font-bold text-red-700"
                           >
                             Αφαίρεση
-                          </button>
+                          </PlatformButton>
                         </div>
                       </td>
                     </tr>;
@@ -1190,9 +1424,9 @@ export function Players({
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500"><tr>
                   <th className="px-3 py-3">Φωτό</th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortStaffColumn("staff_first_name")} className="text-left hover:text-zinc-900">Όνομα{staffSort.key === "staff_first_name" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortStaffColumn("staff_last_name")} className="text-left hover:text-zinc-900">Επώνυμο{staffSort.key === "staff_last_name" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
-                  <th className="px-3 py-3"><button type="button" onClick={() => sortStaffColumn("staff_role")} className="text-left hover:text-zinc-900">Ρόλος{staffSort.key === "staff_role" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortStaffColumn("staff_first_name")} className="text-left hover:text-zinc-900">Όνομα{staffSort.key === "staff_first_name" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortStaffColumn("staff_last_name")} className="text-left hover:text-zinc-900">Επώνυμο{staffSort.key === "staff_last_name" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
+                  <th className="px-3 py-3"><PlatformButton type="button" onClick={() => sortStaffColumn("staff_role")} className="text-left hover:text-zinc-900">Ρόλος{staffSort.key === "staff_role" ? (staffSort.direction === "asc" ? " ↑" : " ↓") : ""}</PlatformButton></th>
                   <th className="px-3 py-3">Ενέργειες</th>
                 </tr></thead>
                 <tbody>
@@ -1212,7 +1446,7 @@ export function Players({
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex gap-2">
-                          <button
+                          <PlatformButton mutation
                             type="button"
                             onClick={() => {
                               setEditingStaff(member);
@@ -1229,8 +1463,8 @@ export function Players({
                             className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-bold"
                           >
                             Επεξεργασία
-                          </button>
-                          <button
+                          </PlatformButton>
+                          <PlatformButton
                             type="button"
                             onClick={() => {
                               if (!window.confirm("Θέλεις να αφαιρέσεις το μέλος Staff από το ρόστερ;")) return;
@@ -1242,7 +1476,7 @@ export function Players({
                             className="rounded-xl border border-red-300 px-3 py-1.5 text-xs font-bold text-red-700"
                           >
                             Αφαίρεση
-                          </button>
+                          </PlatformButton>
                         </div>
                       </td>
                     </tr>;
@@ -1260,7 +1494,7 @@ export function Players({
               <p className="mt-2 text-sm text-zinc-700">Βρέθηκε προηγούμενο ρόστερ: {String(selectedTeamRoster.previousRoster.seasonName ?? "—")}</p>
               <p className="mt-1 text-sm text-zinc-700">{selectedTeamRoster.previousRoster.previousAthleteCount} Αθλητές · {selectedTeamRoster.previousRoster.previousStaffCount} Staff</p>
               <div className="mt-4 flex flex-wrap gap-2">
-                <button
+                <PlatformButton
                   type="button"
                   onClick={async () => {
                     if (!window.confirm(`Θέλεις να χρησιμοποιήσεις το ρόστερ της ${selectedTeamRoster.previousRoster.seasonName} ως βάση;`)) return;
@@ -1276,8 +1510,8 @@ export function Players({
                   className="rounded-xl bg-zinc-950 px-4 py-2.5 text-sm font-black text-white disabled:opacity-50"
                 >
                   Χρήση ρόστερ {String(selectedTeamRoster.previousRoster.seasonName ?? "")} ως βάση
-                </button>
-                <button
+                </PlatformButton>
+                <PlatformButton
                   type="button"
                   onClick={() => {
                     if (!window.confirm("Θες να ξεκινήσεις το ρόστερ κενό;")) return;
@@ -1288,13 +1522,13 @@ export function Players({
                   className="rounded-xl bg-zinc-950 px-4 py-2.5 text-sm font-black text-white disabled:opacity-50"
                 >
                   Έναρξη με κενό ρόστερ
-                </button>
+                </PlatformButton>
               </div>
             </> : <>
               <p className="text-sm text-zinc-700">Δεν υπάρχει προηγούμενο ρόστερ για αυτή την ομάδα.</p>
               <p className="mt-1 text-sm text-zinc-700">Το νέο ρόστερ θα ξεκινήσει κενό.</p>
               <div className="mt-4">
-                <button
+                <PlatformButton
                   type="button"
                   onClick={() => {
                     if (!window.confirm("Θες να ξεκινήσεις το ρόστερ κενό;")) return;
@@ -1305,7 +1539,7 @@ export function Players({
                   className="rounded-xl bg-zinc-950 px-4 py-2.5 text-sm font-black text-white disabled:opacity-50"
                 >
                   Έναρξη με κενό ρόστερ
-                </button>
+                </PlatformButton>
               </div>
             </>}
           </Panel>
@@ -1316,29 +1550,29 @@ export function Players({
             <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-4 sm:p-6">
               <div className="mb-5 flex items-center justify-between">
                 <h3 className="text-lg font-black text-zinc-950">{addMode === "bulk" ? "Μαζική Προσθήκη στο Ρόστερ" : "Προσθήκη στο ρόστερ"}</h3>
-                <button type="button" onClick={() => void closeAddRosterModal()} className="rounded-xl border border-zinc-300 px-3 py-2">Κλείσιμο</button>
+                <PlatformButton type="button" onClick={() => void closeAddRosterModal()} className="rounded-xl border border-zinc-300 px-3 py-2">Κλείσιμο</PlatformButton>
               </div>
               <div className="mb-5 flex flex-wrap gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-1">
-                <button
+                <PlatformButton
                   type="button"
                   onClick={() => setSearchMode("athlete")}
                   className={`rounded-lg px-4 py-2 text-sm font-black ${searchMode === "athlete" ? "bg-zinc-950 text-white" : "bg-transparent text-zinc-700"}`}
                 >
                   Αθλητής
-                </button>
-                <button
+                </PlatformButton>
+                <PlatformButton
                   type="button"
                   onClick={() => setSearchMode("staff")}
                   className={`rounded-lg px-4 py-2 text-sm font-black ${searchMode === "staff" ? "bg-zinc-950 text-white" : "bg-transparent text-zinc-700"}`}
                 >
                   Staff
-                </button>
+                </PlatformButton>
               </div>
 
               {addMode !== "bulk" && (
                 <div className="mb-5 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => { setAddMode("existing"); clearBulkRosterSelection(); setBulkRosterEntries([]); }} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "existing" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Υπάρχον</button>
-                  <button type="button" onClick={() => { setAddMode("new"); clearBulkRosterSelection(); setBulkRosterEntries([]); }} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "new" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Νέο</button>
+                  <PlatformButton type="button" onClick={() => { setAddMode("existing"); clearBulkRosterSelection(); setBulkRosterEntries([]); }} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "existing" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Υπάρχον</PlatformButton>
+                  <PlatformButton type="button" onClick={() => { setAddMode("new"); clearBulkRosterSelection(); setBulkRosterEntries([]); }} className={`rounded-lg px-4 py-2 text-sm font-bold ${addMode === "new" ? "bg-zinc-950 text-white" : "bg-zinc-100"}`}>Νέο</PlatformButton>
                 </div>
               )}
 
@@ -1347,7 +1581,7 @@ export function Players({
                   <Field label="Αναζήτηση αθλητή">
                     <div className="flex gap-2">
                       <input value={searchText} onChange={(event)=>setSearchText(event.target.value)} className={`${inputClass} flex-1`} />
-                      <button type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</button>
+                      <PlatformButton type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</PlatformButton>
                     </div>
                   </Field>
                   {searchError && <p className="text-sm font-bold text-red-600">{searchError}</p>}
@@ -1372,7 +1606,7 @@ export function Players({
                           </ul>
                         </div>
                         <div className="mt-3">
-                          <button
+                          <PlatformButton
                             type="button"
                             className={buttonClass}
                             onClick={() => {
@@ -1382,7 +1616,7 @@ export function Players({
                             disabled={actionBusy}
                           >
                             Χρήση υπάρχοντος αθλητή
-                          </button>
+                          </PlatformButton>
                         </div>
                       </article>
                     ))}
@@ -1393,14 +1627,14 @@ export function Players({
                     <p className="font-black">Δεν βρήκα αυτόν που θέλω</p>
                     <p className="mt-1 text-sm text-zinc-600">Εάν ο αθλητής δεν υπάρχει στη λίστα, δημιούργησε νέο αθλητή.</p>
                     <div className="mt-3">
-                      <button
+                      <PlatformButton
                         type="button"
                         className={buttonClass}
                         onClick={() => setAddMode("new")}
                         disabled={actionBusy}
                       >
                           Δημιουργία νέου αθλητή
-                      </button>
+                      </PlatformButton>
                     </div>
                   </div>
                   )}
@@ -1415,14 +1649,14 @@ export function Players({
                       <p className="mt-1 text-lg font-black text-zinc-950">{athleteResultDisplayName(selectedRosterAthlete)}</p>
                       <p className="mt-1 text-sm text-zinc-600">{formatAthleteDob(selectedRosterAthlete.birth_date)}</p>
                     </div>
-                    <button
+                    <PlatformButton
                       type="button"
                       className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
                       onClick={clearSelectedRosterAthlete}
                       disabled={actionBusy}
                     >
                       Αλλαγή αθλητή
-                    </button>
+                    </PlatformButton>
                   </div>
                   <Field label="No. Φανέλας (προαιρετικό)">
                     <input
@@ -1431,14 +1665,14 @@ export function Players({
                       className={inputClass}
                     />
                   </Field>
-                  <button
+                  <PlatformButton mutation
                     type="button"
                     className={buttonClass}
                     onClick={() => void addExistingAthleteRow(selectedRosterAthlete.player_id, selectedRosterAthleteShirtNumber)}
                     disabled={actionBusy}
                   >
                     Συνέχεια
-                  </button>
+                  </PlatformButton>
                 </div>
               )}
 
@@ -1447,7 +1681,7 @@ export function Players({
                   <Field label="Αναζήτηση αθλητή">
                     <div className="flex gap-2">
                       <input value={searchText} onChange={(event)=>setSearchText(event.target.value)} className={`${inputClass} flex-1`} />
-                      <button type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</button>
+                      <PlatformButton type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</PlatformButton>
                     </div>
                   </Field>
                   {searchError && <p className="text-sm font-bold text-red-600">{searchError}</p>}
@@ -1485,7 +1719,7 @@ export function Players({
                           );
                         })()}
                         <div className="mt-3">
-                          <button
+                          <PlatformButton
                             type="button"
                             className={buttonClass}
                             onClick={() => {
@@ -1504,7 +1738,7 @@ export function Players({
                             disabled={actionBusy}
                           >
                             Χρήση υπάρχοντος αθλητή
-                          </button>
+                          </PlatformButton>
                         </div>
                       </article>
                     ))}
@@ -1521,14 +1755,14 @@ export function Players({
                       <p className="mt-1 text-lg font-black text-zinc-950">{athleteResultDisplayName(bulkRosterSelectedAthlete)}</p>
                       <p className="mt-1 text-sm text-zinc-600">{formatAthleteDob(bulkRosterSelectedAthlete.birth_date)}</p>
                     </div>
-                    <button
+                    <PlatformButton
                       type="button"
                       className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:bg-zinc-100"
                       onClick={clearBulkRosterSelection}
                       disabled={actionBusy}
                     >
                       Αλλαγή αθλητή
-                    </button>
+                    </PlatformButton>
                   </div>
                   <Field label="No. Φανέλας (προαιρετικό)">
                     <input
@@ -1537,14 +1771,14 @@ export function Players({
                       className={inputClass}
                     />
                   </Field>
-                  <button
+                  <PlatformButton
                     type="button"
                     className={buttonClass}
                     onClick={stageBulkRosterAthlete}
                     disabled={actionBusy}
                   >
                     Προσθήκη στη λίστα
-                  </button>
+                  </PlatformButton>
                 </div>
               )}
 
@@ -1577,13 +1811,13 @@ export function Players({
                                 <td className="px-3 py-2">{formatRegistryBirthDate(entry.birthDate)}</td>
                                 <td className="px-3 py-2">{entry.shirtNumber || "—"}</td>
                                 <td className="px-3 py-2">
-                                  <button
+                                  <PlatformButton mutation
                                     type="button"
                                     className="rounded-xl border border-zinc-300 px-3 py-1.5 text-xs font-black text-zinc-800 transition hover:bg-zinc-100"
                                     onClick={() => removeBulkRosterEntry(entry.playerId)}
                                   >
                                     Αφαίρεση
-                                  </button>
+                                  </PlatformButton>
                                 </td>
                               </tr>
                             ))}
@@ -1594,14 +1828,14 @@ export function Players({
                       <p className="mt-3 text-sm text-zinc-500">Δεν έχουν προστεθεί αθλητές στη λίστα.</p>
                     )}
                   </div>
-                  <button
+                  <PlatformButton mutation
                     type="button"
                     className={buttonClass}
                     onClick={() => void submitBulkRosterEntries()}
                     disabled={actionBusy || !bulkRosterEntries.length}
                   >
                     Προσθήκη στο Ρόστερ ({bulkRosterEntries.length})
-                  </button>
+                  </PlatformButton>
                 </div>
               )}
 
@@ -1632,7 +1866,7 @@ export function Players({
                               {formatRegistryBirthDate(match.birth_date)} · {String(match.photo_url ?? "") ? "📷" : "—"}
                             </p>
                             <div className="mt-3 flex flex-wrap gap-2">
-                              <button
+                              <PlatformButton
                                 type="button"
                                 className={buttonClass}
                                 onClick={() => {
@@ -1658,15 +1892,15 @@ export function Players({
                                 disabled={actionBusy}
                               >
                                 Χρήση υπάρχοντος αθλητή
-                              </button>
-                              <button
+                              </PlatformButton>
+                              <PlatformButton
                                 type="button"
                                 className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black text-zinc-800 transition hover:bg-zinc-100"
                                 onClick={() => setConfirmCreateDifferentAthlete(true)}
                                 disabled={actionBusy}
                               >
                                 Δημιουργία διαφορετικού αθλητή
-                              </button>
+                              </PlatformButton>
                             </div>
                           </article>
                         ))}
@@ -1687,7 +1921,7 @@ export function Players({
                       </div>
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                         <span>📷 {newAthletePhotoPreview || newAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                        <input
+                        <PlatformFileInput
                           type="file"
                           accept="image/*"
                           className="hidden"
@@ -1701,14 +1935,14 @@ export function Players({
                     </div>
                     <p className="mt-2 text-xs text-zinc-500">{newAthleteUploadBusy ? "Φόρτωση εικόνας..." : (newAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${newAthletePhotoFileName}` : newAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                   </Field>
-                  <button
+                  <PlatformButton mutation
                     type="button"
                     className={buttonClass}
                     onClick={() => void createAthleteWithRosterRow()}
                     disabled={actionBusy}
                   >
                     {confirmCreateDifferentAthlete && newAthleteDuplicateMatches.length > 0 ? "Δημιουργία διαφορετικού αθλητή" : "Δημιουργία νέου αθλητή"}
-                  </button>
+                  </PlatformButton>
                 </div>
               )}
 
@@ -1717,7 +1951,7 @@ export function Players({
                   <Field label="Αναζήτηση Staff">
                     <div className="flex gap-2">
                       <input value={searchText} onChange={(event)=>setSearchText(event.target.value)} className={`${inputClass} flex-1`} />
-                      <button type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</button>
+                      <PlatformButton type="button" onClick={() => void runExistingSearch()} disabled={isSearching} className={buttonClass}>{isSearching ? "Αναζήτηση..." : "Αναζήτηση"}</PlatformButton>
                     </div>
                   </Field>
                   <Field label="Ρόλος">
@@ -1737,14 +1971,14 @@ export function Players({
                           {parseDateForDisplay(candidate.birth_date)} · {candidate.last_team_name ?? "—"} · {candidate.last_season_name ?? "—"}
                         </p>
                         <div className="mt-3">
-                          <button
+                          <PlatformButton mutation
                             type="button"
                             className={buttonClass}
                             onClick={() => void addExistingStaffRow((candidate as SearchStaffResult).staff_id)}
                             disabled={actionBusy}
                           >
                             Χρήση υπάρχοντος Staff
-                          </button>
+                          </PlatformButton>
                         </div>
                       </article>
                     ))}
@@ -1781,7 +2015,7 @@ export function Players({
                       </div>
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                         <span>📷 {newStaffPhotoPreview || newStaffPhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                        <input
+                        <PlatformFileInput
                           type="file"
                           accept="image/*"
                           className="hidden"
@@ -1795,14 +2029,14 @@ export function Players({
                     </div>
                     <p className="mt-2 text-xs text-zinc-500">{newStaffUploadBusy ? "Φόρτωση εικόνας..." : (newStaffPhotoFileName ? `Επιλεγμένο αρχείο: ${newStaffPhotoFileName}` : newStaffUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                   </Field>
-                  <button
+                  <PlatformButton mutation
                     type="button"
                     className={buttonClass}
                     onClick={() => void createStaffWithRosterRow()}
                     disabled={actionBusy}
                   >
                     Δημιουργία νέου Staff
-                  </button>
+                  </PlatformButton>
                 </div>
               )}
             </div>
@@ -1835,7 +2069,7 @@ export function Players({
                     </div>
                     <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                       <span>📷 {editingAthletePhotoPreview || editingAthletePhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                      <input
+                      <PlatformFileInput
                         type="file"
                         accept="image/*"
                         className="hidden"
@@ -1850,10 +2084,10 @@ export function Players({
                   <p className="mt-2 text-xs text-zinc-500">{editingAthleteUploadBusy ? "Φόρτωση εικόνας..." : (editingAthletePhotoFileName ? `Επιλεγμένο αρχείο: ${editingAthletePhotoFileName}` : editingAthleteUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                 </Field>
                 <div className="mt-1 flex gap-2">
-                  <button type="button" className={buttonClass} onClick={() => void saveAthleteEdits()} disabled={actionBusy}>
+                  <PlatformButton mutation type="button" className={buttonClass} onClick={() => void saveAthleteEdits()} disabled={actionBusy}>
                     Αποθήκευση
-                  </button>
-                  <button
+                  </PlatformButton>
+                  <PlatformButton mutation
                     type="button"
                     onClick={() => {
                       clearBlobPreviewUrl(editingAthletePhotoPreview);
@@ -1864,7 +2098,7 @@ export function Players({
                     className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black"
                   >
                     Ακύρωση
-                  </button>
+                  </PlatformButton>
                 </div>
               </div>
             </div>
@@ -1902,7 +2136,7 @@ export function Players({
                     </div>
                     <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-2.5 text-sm font-black text-zinc-800 transition hover:bg-zinc-100">
                       <span>📷 {editingStaffPhotoPreview || editingStaffPhotoUrl ? "Αλλαγή φωτογραφίας" : "Επιλογή φωτογραφίας"}</span>
-                      <input
+                      <PlatformFileInput
                         type="file"
                         accept="image/*"
                         className="hidden"
@@ -1917,10 +2151,10 @@ export function Players({
                   <p className="mt-2 text-xs text-zinc-500">{editingStaffUploadBusy ? "Φόρτωση εικόνας..." : (editingStaffPhotoFileName ? `Επιλεγμένο αρχείο: ${editingStaffPhotoFileName}` : editingStaffUploadMessage || "Επίλεξε φωτογραφία από τον υπολογιστή.")}</p>
                 </Field>
                 <div className="mt-1 flex gap-2">
-                  <button type="button" className={buttonClass} onClick={() => void saveStaffEdits()} disabled={actionBusy}>
+                  <PlatformButton mutation type="button" className={buttonClass} onClick={() => void saveStaffEdits()} disabled={actionBusy}>
                     Αποθήκευση
-                  </button>
-                  <button
+                  </PlatformButton>
+                  <PlatformButton mutation
                     type="button"
                     onClick={() => {
                       clearBlobPreviewUrl(editingStaffPhotoPreview);
@@ -1931,7 +2165,7 @@ export function Players({
                     className="rounded-xl border border-zinc-300 px-4 py-2.5 font-black"
                   >
                     Ακύρωση
-                  </button>
+                  </PlatformButton>
                 </div>
               </div>
             </div>

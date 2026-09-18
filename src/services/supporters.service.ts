@@ -83,11 +83,44 @@ function requireLogo(value: unknown): string {
   return requiredText(value, "Λογότυπο");
 }
 
-export async function createSupporter(input: Record<string, unknown>): Promise<Supporter> {
+function normalizeSupporterLogoUrl(value: unknown, organizationId: string) {
+  const logoUrl = requireLogo(value);
+  if (organizationId === KOMOBASKET_ORGANIZATION_ID) return logoUrl;
+  const encodedId = encodeURIComponent(organizationId);
+  const ownedPrefixes = [
+    `/api/supporter-logos/supporter-logos/${encodedId}/`,
+    `/uploads/supporter-logos/${encodedId}/`,
+  ];
+  const managedRoots = ["/api/supporter-logos/supporter-logos/", "/uploads/supporter-logos/"];
+  if (logoUrl.startsWith("/")) {
+    if (!ownedPrefixes.some((prefix) => logoUrl.startsWith(prefix))) {
+      throw new Error("Το λογότυπο υποστηρικτή δεν ανήκει στον επιλεγμένο Οργανισμό.");
+    }
+    return logoUrl;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(logoUrl);
+  } catch {
+    throw new Error("Το λογότυπο πρέπει να είναι έγκυρο URL ή ασφαλές uploaded asset.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Το λογότυπο πρέπει να χρησιμοποιεί http ή https.");
+  }
+  if (managedRoots.some((prefix) => parsed.pathname.startsWith(prefix)) && !ownedPrefixes.some((prefix) => parsed.pathname.startsWith(prefix))) {
+    throw new Error("Το λογότυπο υποστηρικτή δεν ανήκει στον επιλεγμένο Οργανισμό.");
+  }
+  return parsed.toString();
+}
+
+export async function createSupporter(
+  input: Record<string, unknown>,
+  organizationId = KOMOBASKET_ORGANIZATION_ID,
+): Promise<Supporter> {
   const db = await getDb();
   const id = `supporter_${crypto.randomUUID()}`;
   const name = requiredText(input.name, "Όνομα");
-  const logoUrl = requireLogo(input.logoUrl);
+  const logoUrl = normalizeSupporterLogoUrl(input.logoUrl, organizationId);
   const status = normalizeStatus(input.status);
   await db.prepare(
     `INSERT INTO league_supporters
@@ -95,7 +128,7 @@ export async function createSupporter(input: Record<string, unknown>): Promise<S
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     id,
-    KOMOBASKET_ORGANIZATION_ID,
+    organizationId,
     name,
     logoUrl,
     optionalText(input.description),
@@ -108,9 +141,13 @@ export async function createSupporter(input: Record<string, unknown>): Promise<S
   return created;
 }
 
-export async function updateSupporter(id: string, input: Record<string, unknown>): Promise<Supporter> {
+export async function updateSupporter(
+  id: string,
+  input: Record<string, unknown>,
+  organizationId = KOMOBASKET_ORGANIZATION_ID,
+): Promise<Supporter> {
   const db = await getDb();
-  const current = await db.prepare("SELECT * FROM league_supporters WHERE id=? AND organization_id=?").bind(id, KOMOBASKET_ORGANIZATION_ID).first<Supporter>();
+  const current = await db.prepare("SELECT * FROM league_supporters WHERE id=? AND organization_id=?").bind(id, organizationId).first<Supporter>();
   if (!current) throw new Error("Ο υποστηρικτής δεν είναι διαθέσιμος.");
   await db.prepare(
     `UPDATE league_supporters
@@ -118,21 +155,21 @@ export async function updateSupporter(id: string, input: Record<string, unknown>
      WHERE id=? AND organization_id=?`,
   ).bind(
     requiredText(input.name ?? current.name, "Όνομα"),
-    requireLogo(input.logoUrl ?? current.logo_url),
+    normalizeSupporterLogoUrl(input.logoUrl ?? current.logo_url, organizationId),
     optionalText(input.description ?? current.description),
     normalizeWebsiteUrl(input.websiteUrl ?? current.website_url),
     normalizeDisplayOrder(input.displayOrder ?? current.display_order),
     normalizeStatus(input.status ?? current.status),
     id,
-    KOMOBASKET_ORGANIZATION_ID,
+    organizationId,
   ).run();
-  const updated = await db.prepare("SELECT id, organization_id, name, logo_url, description, website_url, display_order, status, created_at, updated_at FROM league_supporters WHERE id=? AND organization_id=?").bind(id, KOMOBASKET_ORGANIZATION_ID).first<Supporter>();
+  const updated = await db.prepare("SELECT id, organization_id, name, logo_url, description, website_url, display_order, status, created_at, updated_at FROM league_supporters WHERE id=? AND organization_id=?").bind(id, organizationId).first<Supporter>();
   if (!updated) throw new Error("Ο υποστηρικτής δεν ενημερώθηκε.");
   return updated;
 }
 
-export async function deleteSupporter(id: string): Promise<void> {
+export async function deleteSupporter(id: string, organizationId = KOMOBASKET_ORGANIZATION_ID): Promise<void> {
   const db = await getDb();
-  const result = await db.prepare("DELETE FROM league_supporters WHERE id=? AND organization_id=?").bind(id, KOMOBASKET_ORGANIZATION_ID).run() as { meta?: { changes?: number } };
+  const result = await db.prepare("DELETE FROM league_supporters WHERE id=? AND organization_id=?").bind(id, organizationId).run() as { meta?: { changes?: number } };
   if (!result.meta?.changes) throw new Error("Ο υποστηρικτής δεν είναι διαθέσιμος.");
 }

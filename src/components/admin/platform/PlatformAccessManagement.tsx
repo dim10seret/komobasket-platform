@@ -21,6 +21,8 @@ type ManagedUser = {
   display_name: string | null;
   status: "active" | "disabled";
   is_super_admin: number;
+  credential_configured: number;
+  password_set_at: string | null;
 };
 
 type ManagedMembership = {
@@ -40,7 +42,7 @@ const membershipStatusLabels = {
 } as const;
 
 async function managementRequest(
-  resource: "users" | "memberships",
+  resource: "users" | "memberships" | "user-credentials",
   method: "POST" | "PATCH",
   body: Record<string, unknown>,
 ) {
@@ -84,6 +86,8 @@ export function PlatformAccessManagement() {
   const [error, setError] = useState("");
   const [showAddUser, setShowAddUser] = useState(false);
   const [accessUser, setAccessUser] = useState<ManagedUser | null>(null);
+  const [passwordUser, setPasswordUser] = useState<ManagedUser | null>(null);
+  const [passwordError, setPasswordError] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,15 +151,92 @@ export function PlatformAccessManagement() {
     event.preventDefault();
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form).entries());
-    await runMutation("create-user", async () => {
-      await managementRequest("users", "POST", {
+    const password = String(values.password ?? "");
+    const confirmPassword = String(values.confirmPassword ?? "");
+    const passwordRequested = password.length > 0 || confirmPassword.length > 0;
+    if (passwordRequested && password !== confirmPassword) {
+      setError("Οι δύο κωδικοί πρέπει να είναι ίδιοι.");
+      return;
+    }
+    if (passwordRequested && (password.length < 10 || password.length > 128 || password.trim().length === 0)) {
+      setError("Ο κωδικός πρέπει να περιέχει από 10 έως 128 χαρακτήρες.");
+      return;
+    }
+
+    setBusy("create-user");
+    setError("");
+    setNotice("");
+    try {
+      const payload = await managementRequest("users", "POST", {
         email: String(values.email ?? "").trim(),
         displayName: String(values.displayName ?? "").trim(),
         status: "active",
       });
-      setShowAddUser(false);
+      const createdUser = payload.user as ManagedUser | undefined;
+      if (passwordRequested && createdUser?.id) {
+        try {
+          await managementRequest("user-credentials", "POST", {
+            userId: createdUser.id,
+            password,
+            confirmPassword,
+          });
+        } catch {
+          form.reset();
+          setShowAddUser(false);
+          await load();
+          setError("Ο χρήστης δημιουργήθηκε, αλλά ο κωδικός δεν ορίστηκε. Χρησιμοποιήστε «Ορισμός κωδικού» στην κάρτα του.");
+          return;
+        }
+      }
       form.reset();
-    }, "Ο χρήστης δημιουργήθηκε χωρίς αυτόματη πρόσβαση σε Οργανισμό.");
+      setShowAddUser(false);
+      await load();
+      setNotice(passwordRequested
+        ? "Ο χρήστης και ο αρχικός κωδικός δημιουργήθηκαν."
+        : "Ο χρήστης δημιουργήθηκε χωρίς κωδικό ή αυτόματη πρόσβαση σε Οργανισμό.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Η δημιουργία χρήστη απέτυχε.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveUserPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!passwordUser || passwordUser.is_super_admin === 1) return;
+    setPasswordError("");
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form).entries());
+    const password = String(values.password ?? "");
+    const confirmPassword = String(values.confirmPassword ?? "");
+    if (password !== confirmPassword) {
+      setPasswordError("Οι δύο κωδικοί πρέπει να είναι ίδιοι.");
+      return;
+    }
+    if (password.length < 10 || password.length > 128 || password.trim().length === 0) {
+      setPasswordError("Ο κωδικός πρέπει να περιέχει από 10 έως 128 χαρακτήρες.");
+      return;
+    }
+    setBusy(`password-${passwordUser.id}`);
+    setError("");
+    setNotice("");
+    try {
+      await managementRequest("user-credentials", "POST", {
+        userId: passwordUser.id,
+        password,
+        confirmPassword,
+      });
+      form.reset();
+      setPasswordUser(null);
+      await load();
+      setNotice(passwordUser.credential_configured === 1
+        ? "Ο κωδικός άλλαξε και οι προηγούμενες συνεδρίες ανακλήθηκαν."
+        : "Ο κωδικός ορίστηκε.");
+    } catch {
+      setPasswordError("Ο κωδικός δεν αποθηκεύτηκε. Παρακαλούμε δοκιμάστε ξανά.");
+    } finally {
+      setBusy("");
+    }
   }
 
   async function createMembership(event: FormEvent<HTMLFormElement>) {
@@ -259,6 +340,10 @@ export function PlatformAccessManagement() {
               </div>
             ) : (
               <div className="mt-6 border-t border-zinc-100 pt-5">
+                <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-zinc-50 p-4">
+                  <div><p className="text-xs font-black uppercase tracking-wide text-zinc-500">Κωδικός</p><p className="mt-1 font-black text-zinc-900">{user.credential_configured === 1 ? "Έχει οριστεί" : "Δεν έχει οριστεί"}</p></div>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => { setPasswordError(""); setPasswordUser(user); }} className="rounded-xl border border-orange-300 bg-white px-4 py-2.5 text-sm font-black text-orange-700 hover:border-orange-500 hover:bg-orange-50 disabled:opacity-50">{user.credential_configured === 1 ? "Αλλαγή κωδικού" : "Ορισμός κωδικού"}</button>
+                </div>
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <p className="font-black text-zinc-900">Πρόσβαση σε Οργανισμούς</p>
                   <button type="button" disabled={availableOrganizations.length === 0} onClick={() => setAccessUser(user)} className="rounded-xl border border-orange-200 px-3 py-2 text-sm font-black text-orange-700 disabled:cursor-not-allowed disabled:opacity-40">+ Προσθήκη πρόσβασης</button>
@@ -287,8 +372,20 @@ export function PlatformAccessManagement() {
       <form onSubmit={(event) => void createUser(event)} className="space-y-4">
         <label className="block text-sm font-black text-zinc-700">Email *<input name="email" type="email" required autoFocus className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
         <label className="block text-sm font-black text-zinc-700">Όνομα εμφάνισης (προαιρετικό)<input name="displayName" className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
+        <label className="block text-sm font-black text-zinc-700">Κωδικός (προαιρετικός)<input name="password" type="password" minLength={10} maxLength={128} autoComplete="new-password" className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
+        <label className="block text-sm font-black text-zinc-700">Επιβεβαίωση κωδικού<input name="confirmPassword" type="password" minLength={10} maxLength={128} autoComplete="new-password" className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
         <p className="rounded-2xl bg-zinc-50 p-4 text-sm leading-6 text-zinc-600">Ο νέος χρήστης θα είναι ενεργός, χωρίς αυτόματη πρόσβαση σε Οργανισμό.</p>
         <button type="submit" disabled={busy === "create-user"} className="w-full rounded-xl bg-orange-600 px-4 py-3 font-black text-white disabled:opacity-50">Δημιουργία χρήστη</button>
+      </form>
+    </Modal>}
+
+    {passwordUser && passwordUser.is_super_admin !== 1 && <Modal title={passwordUser.credential_configured === 1 ? "Αλλαγή κωδικού" : "Ορισμός κωδικού"} onClose={() => { setPasswordError(""); setPasswordUser(null); }}>
+      <form onSubmit={(event) => void saveUserPassword(event)} className="space-y-4">
+        <div className="rounded-2xl bg-zinc-50 p-4"><p className="font-black text-zinc-950">{passwordUser.display_name || passwordUser.email}</p><p className="mt-1 break-all text-sm text-zinc-600">{passwordUser.email}</p></div>
+        <label className="block text-sm font-black text-zinc-700">Νέος κωδικός<input name="password" type="password" required minLength={10} maxLength={128} autoComplete="new-password" onChange={() => setPasswordError("")} autoFocus className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
+        <label className="block text-sm font-black text-zinc-700">Επιβεβαίωση κωδικού<input name="confirmPassword" type="password" required minLength={10} maxLength={128} autoComplete="new-password" onChange={() => setPasswordError("")} className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /></label>
+        {passwordError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{passwordError}</p>}
+        <button type="submit" disabled={busy === `password-${passwordUser.id}`} className="w-full rounded-xl bg-orange-600 px-4 py-3 font-black text-white disabled:opacity-50">Αποθήκευση</button>
       </form>
     </Modal>}
 
