@@ -9,7 +9,7 @@
   "d1_quick_check": "ok",
   "d1_fk_violations": 0,
   "previous_production_tag": "production-site-20260918-root-phase",
-  "git_commit": "PENDING_SOURCE_CHECKPOINT",
+  "git_commit": "4fdeb5c556a8ad87554cdb18c6d104a446b6f7c5",
   "git_tag": "production-site-20260919-game-sheet-v1",
   "site_source_manifest": "site-source-sha256.txt"
 }
