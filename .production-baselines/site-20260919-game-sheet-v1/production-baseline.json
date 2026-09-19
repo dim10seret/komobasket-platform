@@ -1,0 +1,15 @@
+{
+  "product": "KomoBasket Site",
+  "environment": "production",
+  "cloudflare_deployment_id": "0366509c-07b5-4d4d-8960-c3409de5b55a",
+  "cloudflare_version_id": "2cf8a05d-5529-4db7-bde5-93cfbe766b31",
+  "traffic_percent": 100,
+  "d1_migrations_applied": 34,
+  "d1_migrations_pending": 0,
+  "d1_quick_check": "ok",
+  "d1_fk_violations": 0,
+  "previous_production_tag": "production-site-20260918-root-phase",
+  "git_commit": "PENDING_SOURCE_CHECKPOINT",
+  "git_tag": "production-site-20260919-game-sheet-v1",
+  "site_source_manifest": "site-source-sha256.txt"
+}
