@@ -389,7 +389,10 @@ export class AuthCoordinator {
             const owner = this.owner(context);
             const current = await this.matchGameplayManager.recover(runId, owner);
             const sync = this.matchGameplayManager.syncState(runId);
-            if (current.lifecycle !== "finalized" || !sync || safeGameplay(current, sync).sync.status === "synced") {
+            const projectedSyncStatus = sync ? safeGameplay(current, sync).sync.status : null;
+            const finalizedRetry = current.lifecycle === "finalized" && projectedSyncStatus !== "synced";
+            const activeRunConflictRetry = current.lifecycle === "live" && sync?.lastErrorCode === "SYNC_RUN_CONFLICT" && projectedSyncStatus === "conflict";
+            if (!sync || (!finalizedRetry && !activeRunConflictRetry)) {
                 return { ok: false, errorCode: "SYNC_INVALID", state: this.state };
             }
             await this.syncWorker.retry(runId, this.currentAuthorization.opaqueToken, owner);

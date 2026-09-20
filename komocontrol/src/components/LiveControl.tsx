@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { reconstructHistoricalScorerEventEdit, reconstructScorerEventGroup, type HistoricalScorerEventPreview } from "./live-control-history-preview";
-import { applyCourtShotSelection, isFullCourtShotSelectionFlow, liveCourtThreePointSvgPath, normalizedCourtPosition, type NormalizedCourtPosition } from "./live-control-court";
+import { applyCourtShotSelection, isCourtShotSelectionFlow, liveCourtThreePointSvgPath, normalizedCourtPosition, shotTypeFromCourtPosition, type NormalizedCourtPosition } from "./live-control-court";
+
+export function claimShootingResultCommit(lock: { current: string | null }, flowKey: string): boolean {
+    if (lock.current === flowKey) return false;
+    lock.current = flowKey;
+    return true;
+}
+
+export function releaseShootingResultCommit(lock: { current: string | null }, flowKey: string): boolean {
+    if (lock.current !== flowKey) return false;
+    lock.current = null;
+    return true;
+}
 
 type Side = KomoControlTeamSide;
 type ActionId = "SHOOT" | "FOUL" | "TURN_OVER" | "SUBS" | "TIME_OUT" | "TECH_FOUL" | "SHOOTING_FOUL" | "JUMP_BALL" | "OFFENSIVE_FOUL";
@@ -30,9 +42,14 @@ const fullPrimaryActionColumns: readonly (readonly ActionId[])[] = [
     ["TURN_OVER", "TECH_FOUL", "OFFENSIVE_FOUL", "SUBS"],
 ];
 
+export const simplePrimaryActionColumns: readonly (readonly ActionId[])[] = [
+    ["FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"],
+    ["SUBS", "TECH_FOUL", "TIME_OUT"],
+];
+
 export function livePrimaryActionsForMode(gameMode: KomoControlSafeMatchGameplay["gameMode"]): typeof livePrimaryActions[number][] {
     return gameMode === "SIMPLE"
-        ? livePrimaryActions.filter((action) => action.id !== "TURN_OVER" && action.id !== "SHOOTING_FOUL")
+        ? simplePrimaryActionColumns.flat().map((id) => livePrimaryActions.find((action) => action.id === id)!)
         : [...livePrimaryActions];
 }
 
@@ -102,8 +119,40 @@ export function currentFullActiveStep(gameMode: KomoControlSafeMatchGameplay["ga
     return null;
 }
 
+export function shouldShowSimpleActiveStep(gameMode: KomoControlSafeMatchGameplay["gameMode"], flow: Flow | null): boolean {
+    return gameMode === "SIMPLE" && shouldShowFullActiveStep("FULL", flow);
+}
+
+export function simpleFoulStepPrompt(flow: Flow | null): string | null {
+    if (!flow) return null;
+    const supportedFoulFlow = flow.action === "FOUL"
+        || flow.action === "TECH_FOUL"
+        || (flow.action === "PENALTY" && Boolean(flow.sourceFoulEventId));
+    if (!supportedFoulFlow) return null;
+    if (flow.context === "SHOOTING" && flow.step === "shot-points") return "Επιλέξτε σημείο στο τέρεν";
+    if (flow.step === "offender" && (flow.action === "FOUL" || flow.context === "SHOOTING")) return "Ποιος έκανε το φάουλ;";
+    if ((flow.step === "victim" || flow.step === "shot-victim") && flow.context !== "NON_CONTACT") return "Ποιος κέρδισε το φάουλ;";
+    return null;
+}
+
+export function currentSimpleActiveStep(gameMode: KomoControlSafeMatchGameplay["gameMode"], flow: Flow | null, assistRailRequested = false): FullActiveStepContent | null {
+    if (!shouldShowSimpleActiveStep(gameMode, flow)) return null;
+    const prompt = simpleFoulStepPrompt(flow);
+    if (prompt) return { kind: "instruction", text: prompt };
+    return currentFullActiveStep("FULL", flow, assistRailRequested);
+}
+
 export function enterShootingFoulFlow(flow: Flow): Flow {
     return { ...flow, context: "SHOOTING", step: "shot-points" };
+}
+
+export function applyActiveCourtFlowSelection(flow: Flow | null, shotLocation: NormalizedCourtPosition): Flow | null {
+    if (!isCourtShotSelectionFlow(flow)) return flow;
+    const selected = applyCourtShotSelection(flow, shotLocation);
+    const baseIntent = selected.baseIntent?.kind === "shot"
+        ? { ...selected.baseIntent, points: selected.points }
+        : selected.baseIntent;
+    return { ...selected, baseIntent };
 }
 
 export function livePrimaryActionAvailable(action: ActionId, activeAction: string | null): boolean {
@@ -417,6 +466,14 @@ export interface Flow {
     trail?: FlowTrailEntry[];
 }
 
+export function shootingFoulResultTrailLocked(flow: Flow | null, step: string, frozen: true | undefined): boolean {
+    if (!flow || step !== "shooting-result" || !frozen) return false;
+    if (flow.action === "PENALTY") return Boolean(flow.sourceFoulEventId);
+    return (flow.action === "FOUL" || flow.action === "TECH_FOUL")
+        && flow.context === "SHOOTING"
+        && Boolean(flow.committedEventId);
+}
+
 interface SubsTeamDraft {
     initialOnCourtIds: string[];
     selectedOutIds: string[];
@@ -461,6 +518,14 @@ export function liveSyncFooterPresentation(gameplay: KomoControlSafeMatchGamepla
     if (gameplay.sync.status === "synced") return { label: "LOCAL SAVED · SYNCED", className: "synced", canReconnect: false, detail };
     if (gameplay.sync.status === "retry-needed") return { label: "LOCAL SAVED · RETRY NEEDED", className: "retry-needed", canReconnect: false, detail };
     return { label: "LOCAL SAVED · SYNC PENDING", className: "pending", canReconnect: false, detail };
+}
+
+export function activeSyncRunConflictRetryAvailable(gameplay: Pick<KomoControlSafeMatchGameplay, "lifecycle" | "sync">): boolean {
+    return gameplay.lifecycle === "live" && gameplay.sync.status === "conflict" && gameplay.sync.lastErrorCode === "SYNC_RUN_CONFLICT";
+}
+
+export function finalizedSyncRunConflictRetryAvailable(gameplay: Pick<KomoControlSafeMatchGameplay, "lifecycle" | "sync">): boolean {
+    return gameplay.lifecycle === "finalized" && gameplay.sync.status === "conflict" && gameplay.sync.lastErrorCode === "SYNC_RUN_CONFLICT";
 }
 
 export type FinalSubmissionPhase = "sending" | "success" | "failure" | "auth-required" | "conflict";
@@ -534,6 +599,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const [reconnectError, setReconnectError] = useState<string | null>(null);
     const [finalSubmissionBusy, setFinalSubmissionBusy] = useState(false);
     const [finalSubmissionError, setFinalSubmissionError] = useState<string | null>(null);
+    const syncRetryInFlightRef = useRef(false);
     const [history, setHistory] = useState<KomoControlGameplayHistoryItem[]>([]);
     const [historyLoaded, setHistoryLoaded] = useState(false);
     const [historyCursor, setHistoryCursor] = useState<number | null>(null);
@@ -570,6 +636,8 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const clockMinuteOptions = liveClockMinuteOptions(maximumClockSeconds);
     const clockSecondOptions = liveClockSecondOptions(maximumClockSeconds, clockSelectorParts?.minutes ?? 0);
     const syncFooter = liveSyncFooterPresentation(gameplay, authState);
+    const activeRunConflictRetry = activeSyncRunConflictRetryAvailable(gameplay);
+    const finalizedRunConflictRetry = finalizedSyncRunConflictRetryAvailable(gameplay);
     const finalSubmission = finalSubmissionPhase(gameplay, authState, finalSubmissionBusy);
     const team = useCallback((side: Side) => gameplay.teams.find((candidate) => candidate.side === side)!, [gameplay]);
     const activeLineupDecisions: Record<Side, ActiveGameLineupDecision> = {
@@ -704,21 +772,31 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         finally { setReconnectBusy(false); }
     }, [bridge, gameplay.runId, onAuthStateChange, onGameplayChange, reconnectBusy, reconnectPassword, reconnectUsername]);
 
-    const retryFinalizedSync = useCallback(async () => {
-        if (!bridge || finalSubmissionBusy || gameplay.lifecycle !== "finalized" || gameplay.sync.status === "conflict") return;
+    const retryGameplaySync = useCallback(async () => {
+        const finalizedRetry = gameplay.lifecycle === "finalized" && (gameplay.sync.status !== "conflict" || finalizedRunConflictRetry);
+        if (!bridge || finalSubmissionBusy || syncRetryInFlightRef.current || (!finalizedRetry && !activeRunConflictRetry)) return;
+        syncRetryInFlightRef.current = true;
         setFinalSubmissionBusy(true); setFinalSubmissionError(null);
+        if (activeRunConflictRetry) setError(null);
         try {
             const result = await bridge.retryGameplaySync(gameplay.runId);
             onAuthStateChange(result.state);
             if (!result.ok) {
                 const messages: Record<string, string> = { SESSION_INVALID: "Η συνεδρία scorer έχει λήξει. Επανασυνδεθείτε για να συνεχιστεί η αποστολή.", SYNC_INTEGRITY_CONFLICT: "Εντοπίστηκε σύγκρουση ακεραιότητας. Δεν έγινε νέα αποστολή.", SYNC_RUN_CONFLICT: "Το απομακρυσμένο Run βρίσκεται σε σύγκρουση. Δεν έγινε νέα αποστολή.", SYNC_UNAVAILABLE: "Ο server ή το δίκτυο δεν είναι διαθέσιμο." };
-                setFinalSubmissionError(messages[result.errorCode] ?? `Η νέα προσπάθεια δεν ολοκληρώθηκε (${result.errorCode}).`);
+                const message = messages[result.errorCode] ?? `Η νέα προσπάθεια δεν ολοκληρώθηκε (${result.errorCode}).`;
+                if (activeRunConflictRetry) setError(message); else setFinalSubmissionError(message);
                 return;
             }
+            if (activeRunConflictRetry) setError(null);
             onGameplayChange(result.gameplay, result.state);
-        } catch { setFinalSubmissionError("Ο server ή το δίκτυο δεν είναι διαθέσιμο."); }
-        finally { setFinalSubmissionBusy(false); }
-    }, [bridge, finalSubmissionBusy, gameplay.lifecycle, gameplay.runId, gameplay.sync.status, onAuthStateChange, onGameplayChange]);
+        } catch {
+            if (activeRunConflictRetry) setError("Ο server ή το δίκτυο δεν είναι διαθέσιμο.");
+            else setFinalSubmissionError("Ο server ή το δίκτυο δεν είναι διαθέσιμο.");
+        } finally {
+            syncRetryInFlightRef.current = false;
+            setFinalSubmissionBusy(false);
+        }
+    }, [activeRunConflictRetry, bridge, finalSubmissionBusy, finalizedRunConflictRetry, gameplay.lifecycle, gameplay.runId, gameplay.sync.status, onAuthStateChange, onGameplayChange]);
 
     const closeHistoricalWorkspace = useCallback(() => {
         setHistoryPreview(null); setHistoryPreviewContext(null); setHistoryEdit(null); setHistoryDeleteConfirm(false);
@@ -869,7 +947,11 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
 
     const hasPendingPenalty = (gameplay.penalty?.activePenaltyIds.length ?? 0) > 0;
     const closeFlow = useCallback(() => { setFlow(null); setCorrectionTarget(null); }, []);
+    const shootingResultInFlightRef = useRef<string | null>(null);
+    const [shootingResultInFlightKey, setShootingResultInFlightKey] = useState<string | null>(null);
+    const shootingResultInFlight = Boolean(flow?.stoppageId) && shootingResultInFlightKey === flow?.stoppageId;
     const cancelFlow = useCallback(() => {
+        if (gameplay.gameMode === "SIMPLE" && flow?.stoppageId && shootingResultInFlightRef.current === flow.stoppageId) return;
         const openMadeShootingFoul = flow?.context === "SHOOTING" && flow.made === true && flow.committedEventId && !flow.sourceFoulEventId && (flow.action === "FOUL" || (flow.action === "TECH_FOUL" && (isSevereContactFoul(flow.foulType) || (flow.foulType === "DISQUALIFYING_FOUL" && flow.offender?.kind === "PLAYER"))));
         if ((flow?.action === "PENALTY" || openMadeShootingFoul) && flow?.committedEventId && bridge) {
             void bridge.removeGameplayEvent(gameplay.runId, flow.committedEventId, true).then((result) => {
@@ -903,7 +985,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         }
         const next: Flow = { action: action === "SHOOTING_FOUL" ? "FOUL" : action, step: action === "SHOOT" ? "shot-points" : firstLiveFlowStep(action), scorerEventId: crypto.randomUUID(), stoppageId: crypto.randomUUID() };
         if (action === "SHOOT") {
-            setFlow(gameplay.gameMode === "SIMPLE" ? { ...next, points: 2 } : next);
+            if (gameplay.gameMode === "FULL") setFlow(next);
         } else if (action === "SHOOTING_FOUL") {
             setFlow(enterShootingFoulFlow({ ...next, foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" }));
         } else if (action === "FOUL") {
@@ -1027,19 +1109,30 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
     const recordShootingFoul = useCallback(async (made: boolean) => {
         if (!flow?.side || !flow.fouledPlayerId || !flow.points || !flow.offender || !flow.foulType || !flow.stoppageId) return;
         if (correctionTarget) { setError("Η διόρθωση shooting foul γίνεται από τα επιμέρους Shot/Foul συμβάντα του Game Log."); return; }
-        const shootingSide = opposite(flow.side);
-        const shot: KomoControlGameplayIntent = { kind: "shot", team: shootingSide, playerId: flow.fouledPlayerId, points: flow.points, made, stoppageId: flow.stoppageId };
-        const shotState = flow.committedEventId ? await correctSpecific(flow.committedEventId, shot) : await appendIntent(shot); const shotId = flow.committedEventId ?? shotState?.latestEvent?.eventId;
-        if (!shotId) return;
-        const nextFlow = { ...flow, made, ...(made ? {} : { assistPlayerId: undefined }), baseIntent: shot, committedEventId: shotId };
-        if (shouldCaptureFoulShotAssist(gameplay.gameMode, made)) { setFlow({ ...nextFlow, step: "assist-choice" }); return; }
-        const foul: KomoControlGameplayIntent = { kind: "foul", foulType: flow.foulType, team: flow.side, stoppageId: flow.stoppageId, offender: flow.offender, context: { kind: "SHOOTING" }, fouledPlayerId: flow.fouledPlayerId, relatedShotEventId: shotId, ...(flow.category ? { category: flow.category } : {}) };
-        const foulState = flow.sourceFoulEventId ? await correctSpecific(flow.sourceFoulEventId, foul) : await appendIntent(foul);
-        if (!foulState) return;
-        const sourceFoulEventId = flow.sourceFoulEventId ?? foulState.latestEvent?.eventId;
-        if (!sourceFoulEventId) return;
-        const completedFlow = { ...nextFlow, sourceFoulEventId };
-        maybePenalty(foulState, foulTrail(completedFlow), completedFlow);
+        const shootingResultLockKey = flow.stoppageId;
+        if (shootingResultLockKey && !claimShootingResultCommit(shootingResultInFlightRef, shootingResultLockKey)) return;
+        if (shootingResultLockKey) setShootingResultInFlightKey(shootingResultLockKey);
+        let durableShotCommitted = Boolean(flow.committedEventId);
+        try {
+            const shootingSide = opposite(flow.side);
+            const shot: KomoControlGameplayIntent = { kind: "shot", team: shootingSide, playerId: flow.fouledPlayerId, points: flow.points, made, stoppageId: flow.stoppageId };
+            const shotState = flow.committedEventId ? await correctSpecific(flow.committedEventId, shot) : await appendIntent(shot); const shotId = flow.committedEventId ?? shotState?.latestEvent?.eventId;
+            if (!shotId) return;
+            durableShotCommitted = true;
+            const nextFlow = { ...flow, made, ...(made ? {} : { assistPlayerId: undefined }), baseIntent: shot, committedEventId: shotId };
+            if (shouldCaptureFoulShotAssist(gameplay.gameMode, made)) { setFlow({ ...nextFlow, step: "assist-choice" }); return; }
+            const foul: KomoControlGameplayIntent = { kind: "foul", foulType: flow.foulType, team: flow.side, stoppageId: flow.stoppageId, offender: flow.offender, context: { kind: "SHOOTING" }, fouledPlayerId: flow.fouledPlayerId, relatedShotEventId: shotId, ...(flow.category ? { category: flow.category } : {}) };
+            const foulState = flow.sourceFoulEventId ? await correctSpecific(flow.sourceFoulEventId, foul) : await appendIntent(foul);
+            if (!foulState) return;
+            const sourceFoulEventId = flow.sourceFoulEventId ?? foulState.latestEvent?.eventId;
+            if (!sourceFoulEventId) return;
+            const completedFlow = { ...nextFlow, sourceFoulEventId };
+            maybePenalty(foulState, foulTrail(completedFlow), completedFlow);
+        } finally {
+            if (shootingResultLockKey && !durableShotCommitted && releaseShootingResultCommit(shootingResultInFlightRef, shootingResultLockKey)) {
+                setShootingResultInFlightKey((current) => current === shootingResultLockKey ? null : current);
+            }
+        }
     }, [appendIntent, correctionTarget, flow, gameplay.gameMode, maybePenalty]);
 
     const finishTurnoverWithoutSteal = useCallback(async () => {
@@ -1341,25 +1434,37 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         setLocalCurrentCorrection(null);
         return true;
     };
-    const selectShotPoints = (points: 2 | 3) => setFlow((current) => {
-        if (!current || current.action !== "SHOOT" || current.committedEventId) return current;
-        const baseIntent = current.baseIntent?.kind === "shot"
-            ? { ...current.baseIntent, points }
-            : current.baseIntent;
-        return { ...current, points, baseIntent, step: "shooter" };
-    });
-    const courtSelectionActive = isFullCourtShotSelectionFlow(gameplay.gameMode, flow);
+    const activeCourtSelectionFlow = isCourtShotSelectionFlow(flow);
+    const simpleCourtSelectionActive = gameplay.gameMode === "SIMPLE"
+        && flow === null
+        && !busy
+        && !historyPreview
+        && !historyEdit
+        && !localCurrentCorrection
+        && !subsModal
+        && !mandatoryReplacementPending
+        && !activeLineupBlocked
+        && !hasPendingPenalty
+        && gameplay.lifecycle === "live";
+    const courtSelectionActive = activeCourtSelectionFlow || simpleCourtSelectionActive;
     const selectCourtPosition = (event: MouseEvent<HTMLButtonElement>) => {
         if (!courtSelectionActive) return;
         const shotLocation = normalizedCourtPosition(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect());
-        setFlow((current) => {
-            if (!isFullCourtShotSelectionFlow(gameplay.gameMode, current)) return current;
-            const selected = applyCourtShotSelection(current, shotLocation);
-            const baseIntent = selected.baseIntent?.kind === "shot"
-                ? { ...selected.baseIntent, points: selected.points }
-                : selected.baseIntent;
-            return { ...selected, baseIntent };
-        });
+        if (activeCourtSelectionFlow) {
+            setFlow((current) => applyActiveCourtFlowSelection(current, shotLocation));
+            return;
+        }
+        if (gameplay.gameMode === "SIMPLE") {
+            setFlow({
+                action: "SHOOT",
+                step: "shooter",
+                points: shotTypeFromCourtPosition(shotLocation),
+                shotLocation,
+                scorerEventId: crypto.randomUUID(),
+                stoppageId: crypto.randomUUID(),
+            });
+            return;
+        }
     };
     const flowPlayerLabel = (playerId: string | undefined) => {
         const player = playerById(gameplay, playerId);
@@ -1402,7 +1507,7 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
             if (flow.context) steps.push({ step: "context", label: "FOUL", value: isSevereContactFoul(flow.foulType) ? (flow.context === "SHOOTING" ? (flow.foulType === "FLAGRANT_FOUL" ? "SHOOTING FL" : "SHOOTING DI") : severeFoulLabel(flow.foulType)) : flow.foulType === "DISQUALIFYING_FOUL" ? (flow.context === "SHOOTING" ? "SHOOTING DI" : "DISQUALIFYING") : flow.context === "SHOOTING" ? "SHOOTING FOUL" : "FOUL" });
             if (flow.points) steps.push({ step: "shot-points", label: "SHOT TYPE", value: `${flow.points}PT` });
             if (flow.action === "FOUL" && flow.step === "offender") steps.push({ step: "offender", label: "FOULER", value: "" });
-            if (flow.made !== undefined) steps.push({ step: "shooting-result", label: "RESULT", value: flow.made ? "MADE" : "MISS", sourceEventId: flow.committedEventId });
+            if (flow.made !== undefined) steps.push({ step: "shooting-result", label: "RESULT", value: flow.made ? "MADE" : "MISS", frozen: true, sourceEventId: flow.committedEventId });
             if (flow.assistPlayerId) steps.push({ step: "assist", label: "ASSIST", value: flowPlayerLabel(flow.assistPlayerId) });
         }
         if (awaitingSevereOrDisqualifyingOffender) steps.push({ step: "offender", label: "FOULER", value: "" });
@@ -1444,16 +1549,18 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
             const itemTeam = trailTeam(item);
             const itemClassName = [isThreePointShotType ? "is-three-point" : "", itemTeam ? "is-team-owned" : ""].filter(Boolean).join(" ") || undefined;
             const correctionKind = item.correctionKind ?? (item.label === "RESULT" ? "SHOT_RESULT" : item.label.startsWith("FT") ? "FREE_THROW_RESULT" : undefined);
-            const durableCorrection = Boolean(item.sourceEventId && correctionKind);
+            const lockedShootingFoulResult = shootingFoulResultTrailLocked(flow, item.step, item.frozen);
+            const durableCorrection = Boolean(!lockedShootingFoulResult && item.sourceEventId && correctionKind);
             const localCorrection = Boolean(!item.sourceEventId && correctionKind && item.playerId);
             const activeLocalCorrection = Boolean(localCurrentCorrection && correctionKind === localCurrentCorrection.targetKind && item.playerId === localCurrentCorrection.currentPlayerId);
             const correctItem = () => {
+                if (lockedShootingFoulResult) return;
                 if (durableCorrection) void openCurrentCorrection(item.sourceEventId!, correctionKind!);
                 else if (localCorrection) openLocalCurrentPlayerCorrection(item, correctionKind!);
                 else reopenFlowStep(item.step);
             };
-            return item.frozen && !durableCorrection && !localCorrection && (!editableShootingFoulTrail || item.step === "context")
-                ? <span className={[preservedReboundTrail || preservedPenaltyTrail ? "is-preserved-trail-card" : "", itemClassName].filter(Boolean).join(" ") || undefined} style={itemTeam ? teamColorStyle(itemTeam) : undefined} key={`${item.step}-${index}`}><small>{item.label}</small><strong>{item.value}</strong></span>
+            return lockedShootingFoulResult || item.frozen && !durableCorrection && !localCorrection && (!editableShootingFoulTrail || item.step === "context")
+                ? <span className={[lockedShootingFoulResult ? "is-locked-shooting-result" : "", preservedReboundTrail || preservedPenaltyTrail ? "is-preserved-trail-card" : "", itemClassName].filter(Boolean).join(" ") || undefined} style={itemTeam ? teamColorStyle(itemTeam) : undefined} key={`${item.step}-${index}`}><small>{item.label}</small><strong>{item.value}</strong></span>
                 : <button type="button" className={itemClassName} style={itemTeam ? teamColorStyle(itemTeam) : undefined} key={`${item.step}-${index}`} onClick={correctItem}><small>{item.label}</small><strong>{activeLocalCorrection ? "" : item.value}</strong></button>;
         })}</div> : null;
     };
@@ -1611,9 +1718,8 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
         if (flow.step === "commit-team" && flow.side) return <><h3>{flow.action === "TIME_OUT" ? "TIMEOUT" : "JUMP BALL"}</h3><ChoiceGrid><Choice onClick={async () => { const next = flow.action === "TIME_OUT" ? await appendTimeout(flow.side!, flow.scorerEventId!) : await appendIntent({ kind: "jump-ball", possession: flow.side! }); if (next) closeFlow(); }}>ΚΑΤΑΧΩΡΙΣΗ</Choice></ChoiceGrid></>;
         if (flow.action === "SHOOT") {
             if (flow.step === "shot-points" && gameplay.gameMode === "FULL") return <><h3>SHOT TYPE</h3><p className="live-court-instruction">Επιλέξτε σημείο προσπάθειας στο γήπεδο</p></>;
-            if (flow.step === "shot-points" && gameplay.gameMode === "SIMPLE") return <><h3>SHOT TYPE</h3><ChoiceGrid><Choice active={flow.points === 2} onClick={() => selectShotPoints(2)}>2PT</Choice><Choice active={flow.points === 3} onClick={() => selectShotPoints(3)}>3PT</Choice></ChoiceGrid></>;
             if (flow.step === "shooter") return <><h3>SHOOTER{gameplay.gameMode === "SIMPLE" ? ` · ${flow.points ?? 2}PT` : ""}</h3><p className="live-player-prompt">Επιλέξτε αριθμό από τα rails</p></>;
-            if (flow.step === "shot-result") return <><h3>MADE / MISS</h3><ChoiceGrid stacked><Choice active={flow.made === true} onClick={() => void finishShot(true)}>MADE</Choice><Choice active={flow.made === false} onClick={() => void finishShot(false)}>MISS</Choice></ChoiceGrid></>;
+            if (flow.step === "shot-result") return <><h3>Μπήκε το καλάθι;</h3><ChoiceGrid stacked><Choice active={flow.made === true} onClick={() => void finishShot(true)}>MADE</Choice><Choice active={flow.made === false} onClick={() => void finishShot(false)}>MISS</Choice></ChoiceGrid></>;
             if (flow.step === "assist" && flow.side) return <><h3>ASSIST</h3><p className="live-player-prompt">Επιλέξτε αριθμό από τα rails</p><button type="button" className="live-context-exception" onClick={() => void finishAssist()}>NO ASSIST</button></>;
             if (flow.step === "rebound-player") return <><h3>MISS</h3><p className="live-player-prompt">Επιλέξτε αριθμό ή TEAM από τα rails</p>{!flow.blockerId ? <button type="button" className="live-context-exception" onClick={() => setFlow({ ...flow, step: "blocker" })}>BLOCK</button> : null}</>;
             if (flow.step === "blocker" && flow.shotSide) return <><h3>BLOCKER</h3><p className="live-player-prompt">Επιλέξτε αντίπαλο αριθμό</p></>;
@@ -1631,13 +1737,13 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
                 const technicalCategory1 = flow.action === "TECH_FOUL" && flow.foulType === "TECHNICAL_FOUL" && flow.category === "CATEGORY_1";
                 const defaultDisqualifying = flow.action === "TECH_FOUL" && flow.foulType === "DISQUALIFYING_FOUL" && flow.context === "NON_SHOOTING" && !flow.offender;
                 const playerContactFoul = isSevereContactFoul(flow.foulType) || defaultDisqualifying;
-                return <><h3>{flow.action === "FOUL" || playerContactFoul || flow.foulType === "DISQUALIFYING_FOUL" ? "FOULER" : "FOUL"}</h3><p className="live-player-prompt">{technicalCategory1 || defaultDisqualifying ? "Επιλέξτε αριθμό, COACH ή BENCH από τα rails" : "Επιλέξτε αριθμό από τα rails"}</p>{gameplay.gameMode === "SIMPLE" && flow.action === "FOUL" && flow.context === "NON_SHOOTING" && !flow.offender ? <button type="button" className="live-context-exception" onClick={() => setFlow(enterShootingFoulFlow(flow))}>SHOOTING FOUL</button> : null}{!flow.offender && (isSevereContactFoul(flow.foulType) || defaultDisqualifying) && flow.context === "NON_SHOOTING" ? <button type="button" className="live-skip" onClick={() => setFlow({ ...flow, context: "SHOOTING", step: "shot-points" })}>{flow.foulType === "FLAGRANT_FOUL" ? "SHOOTING FL" : "SHOOTING DI"}</button> : null}</>;
+                const simplePrompt = gameplay.gameMode === "SIMPLE" ? simpleFoulStepPrompt(flow) : null;
+                return <><h3>{flow.action === "FOUL" || playerContactFoul || flow.foulType === "DISQUALIFYING_FOUL" ? "FOULER" : "FOUL"}</h3><p className="live-player-prompt">{simplePrompt ?? (technicalCategory1 || defaultDisqualifying ? "Επιλέξτε αριθμό, COACH ή BENCH από τα rails" : "Επιλέξτε αριθμό από τα rails")}</p>{!flow.offender && (isSevereContactFoul(flow.foulType) || defaultDisqualifying) && flow.context === "NON_SHOOTING" ? <button type="button" className="live-skip" onClick={() => setFlow({ ...flow, context: "SHOOTING", step: "shot-points" })}>{flow.foulType === "FLAGRANT_FOUL" ? "SHOOTING FL" : "SHOOTING DI"}</button> : null}</>;
             }
-            if (flow.step === "victim" && flow.side) return <><h3>DRAWN BY</h3><p className="live-player-prompt">Επιλέξτε αντίπαλο αριθμό</p></>;
-            if (flow.step === "shot-points" && gameplay.gameMode === "FULL") return <><h3>SHOT TYPE</h3><p className="live-court-instruction">Επιλέξτε σημείο προσπάθειας στο γήπεδο</p></>;
-            if (flow.step === "shot-points") return <><h3>SHOT TYPE</h3><ChoiceGrid><Choice onClick={() => setFlow({ ...flow, points: 2, step: "offender" })}>2PT</Choice><Choice onClick={() => setFlow({ ...flow, points: 3, step: "offender" })}>3PT</Choice></ChoiceGrid></>;
-            if (flow.step === "shot-victim" && flow.side) return <><h3>DRAWN BY</h3><p className="live-player-prompt">Επιλέξτε αντίπαλο αριθμό</p></>;
-            if (flow.step === "shooting-result") return <><h3>MADE / MISS</h3><ChoiceGrid stacked><Choice onClick={() => void recordShootingFoul(true)}>MADE</Choice><Choice onClick={() => void recordShootingFoul(false)}>MISS</Choice></ChoiceGrid></>;
+            if (flow.step === "victim" && flow.side) return <><h3>DRAWN BY</h3><p className="live-player-prompt">{gameplay.gameMode === "SIMPLE" ? simpleFoulStepPrompt(flow) : "Επιλέξτε αντίπαλο αριθμό"}</p></>;
+            if (flow.step === "shot-points") return <>{gameplay.gameMode === "FULL" ? <h3>SHOT TYPE</h3> : null}<p className="live-court-instruction">{gameplay.gameMode === "SIMPLE" ? "Επιλέξτε σημείο στο τέρεν" : "Επιλέξτε σημείο προσπάθειας στο γήπεδο"}</p></>;
+            if (flow.step === "shot-victim" && flow.side) return <><h3>DRAWN BY</h3><p className="live-player-prompt">{gameplay.gameMode === "SIMPLE" ? simpleFoulStepPrompt(flow) : "Επιλέξτε αντίπαλο αριθμό"}</p></>;
+            if (flow.step === "shooting-result") return <><h3>{gameplay.gameMode === "SIMPLE" && flow.context === "SHOOTING" ? "Το καλάθι μπήκε;" : "Μπήκε το καλάθι;"}</h3><ChoiceGrid stacked><Choice disabled={shootingResultInFlight} onClick={() => void recordShootingFoul(true)}>MADE</Choice><Choice disabled={shootingResultInFlight} onClick={() => void recordShootingFoul(false)}>MISS</Choice></ChoiceGrid></>;
             if (flow.context === "SHOOTING" && flow.step === "assist-choice") return <><h3>ASSIST</h3><ChoiceGrid stacked><Choice onClick={() => setFlow({ ...flow, step: "assist" })}>ASSIST</Choice><Choice onClick={() => void finishAssist()}>NO ASSIST</Choice></ChoiceGrid></>;
             if (flow.context === "SHOOTING" && flow.step === "assist") return <><h3>ASSIST</h3><p className="live-player-prompt">Επιλέξτε αριθμό από τα rails</p></>;
             if (flow.step === "commit-foul") return <ChoiceGrid><Choice onClick={() => void submitFoul({ foulType: flow.foulType ?? "PERSONAL_FOUL", context: flow.context ?? "NON_SHOOTING" })}>Καταχώριση ποινής</Choice></ChoiceGrid>;
@@ -1646,11 +1752,10 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
             const penalty = gameplay.penalty; const pending = penalty?.entitlements.find((item) => penalty.activePenaltyIds.includes(item.penaltyId));
             if (!penalty || !pending) return <div className="live-workspace-idle">Δεν υπάρχει εκκρεμής ποινή.</div>;
             if (flow.sourceFoulEventId) {
-                if (flow.step === "shot-points" && gameplay.gameMode === "FULL") return <><h3>SHOT TYPE</h3><p className="live-court-instruction">Επιλέξτε σημείο προσπάθειας στο γήπεδο</p></>;
-                if (flow.step === "shot-points") return <><h3>SHOT TYPE</h3><ChoiceGrid><Choice active={flow.points === 2} onClick={() => setFlow({ ...flow, points: 2, step: "offender" })}>2PT</Choice><Choice active={flow.points === 3} onClick={() => setFlow({ ...flow, points: 3, step: "offender" })}>3PT</Choice></ChoiceGrid></>;
-                if (flow.step === "offender") return <><h3>FOULER</h3><p className="live-player-prompt">Επιλέξτε αριθμό από τα rails</p></>;
-                if (flow.step === "shot-victim") return <><h3>DRAWN BY</h3><p className="live-player-prompt">Επιλέξτε αντίπαλο αριθμό</p></>;
-                if (flow.step === "shooting-result") return <><h3>MADE / MISS</h3><ChoiceGrid stacked><Choice active={flow.made === true} onClick={() => void recordShootingFoul(true)}>MADE</Choice><Choice active={flow.made === false} onClick={() => void recordShootingFoul(false)}>MISS</Choice></ChoiceGrid></>;
+                if (flow.step === "shot-points") return <>{gameplay.gameMode === "FULL" ? <h3>SHOT TYPE</h3> : null}<p className="live-court-instruction">{gameplay.gameMode === "SIMPLE" ? "Επιλέξτε σημείο στο τέρεν" : "Επιλέξτε σημείο προσπάθειας στο γήπεδο"}</p></>;
+                if (flow.step === "offender") return <><h3>FOULER</h3><p className="live-player-prompt">{gameplay.gameMode === "SIMPLE" ? simpleFoulStepPrompt(flow) : "Επιλέξτε αριθμό από τα rails"}</p></>;
+                if (flow.step === "shot-victim") return <><h3>DRAWN BY</h3><p className="live-player-prompt">{gameplay.gameMode === "SIMPLE" ? simpleFoulStepPrompt(flow) : "Επιλέξτε αντίπαλο αριθμό"}</p></>;
+                if (flow.step === "shooting-result") return <><h3>{gameplay.gameMode === "SIMPLE" && flow.context === "SHOOTING" ? "Το καλάθι μπήκε;" : "Μπήκε το καλάθι;"}</h3><ChoiceGrid stacked><Choice active={flow.made === true} disabled={shootingResultInFlight} onClick={() => void recordShootingFoul(true)}>MADE</Choice><Choice active={flow.made === false} disabled={shootingResultInFlight} onClick={() => void recordShootingFoul(false)}>MISS</Choice></ChoiceGrid></>;
                 if (flow.step === "assist-choice") return <><h3>ASSIST</h3><ChoiceGrid stacked><Choice onClick={() => setFlow({ ...flow, step: "assist" })}>ASSIST</Choice><Choice onClick={() => void finishAssist()}>NO ASSIST</Choice></ChoiceGrid></>;
                 if (flow.step === "assist") return <><h3>ASSIST</h3><p className="live-player-prompt">Επιλέξτε αριθμό από τα rails</p></>;
                 if (flow.step === "shooter") return <><h3>FREE THROW</h3><p className="live-player-prompt">Επιλέξτε αριθμό από το δικαιούχο rail</p></>;
@@ -1789,15 +1894,19 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
 
     const renderPrimaryAction = (action: typeof livePrimaryActions[number]) => <button key={action.id} type="button" disabled={busy || Boolean(historyPreview) || Boolean(historyEdit) || Boolean(localCurrentCorrection) || Boolean(subsModal) || mandatoryReplacementPending || activeLineupBlocked || (hasPendingPenalty && action.id !== "SUBS") || gameplay.lifecycle !== "live" || !livePrimaryActionAvailable(action.id, flow?.action ?? null)} onClick={() => startAction(action.id)}><span>{action.glyph}</span><strong>{action.label}</strong></button>;
     const courtThreePointPath = liveCourtThreePointSvgPath();
+    const renderShotCourt = () => <button key="SHOOT" type="button" className={`live-shot-court${courtSelectionActive ? " is-armed" : ""}`} disabled={!courtSelectionActive} onClick={selectCourtPosition} aria-label={courtSelectionActive ? "Επιλέξτε σημείο προσπάθειας στο γήπεδο" : "Γήπεδο μπάσκετ"}><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><rect x="1.5" y="1.5" width="97" height="97" rx="1"/><path d="M 6 2 V 98 M 94 2 V 98 M 6 7 H 94 M 6 93 H 94"/><path d="M 35 7 V 42 H 65 V 7 M 35 42 H 65"/><path d="M 42 10 H 58"/><circle cx="50" cy="14" r="3.5"/><circle cx="50" cy="42" r="12"/><path d="M 38 93 A 12 12 0 0 1 62 93"/><path className="live-court-three-line" d={courtThreePointPath}/></svg>{flow?.shotLocation ? <span className="live-shot-marker" style={{ left: `${flow.shotLocation.x * 100}%`, top: `${flow.shotLocation.y * 100}%` }} aria-hidden="true"/> : null}<span className="live-court-label">{courtSelectionActive ? "ΕΠΙΛΟΓΗ ΣΗΜΕΙΟΥ" : flow?.shotLocation && flow.points ? `${flow.points}PT` : ""}</span></button>;
 
-    const activeStepContent = currentFullActiveStep(gameplay.gameMode, flow, assistPromptFlow === flow);
-    const activeStepVisible = activeStepContent !== null
+    const activeStepContent = gameplay.gameMode === "FULL"
+        ? currentFullActiveStep(gameplay.gameMode, flow, assistPromptFlow === flow)
+        : currentSimpleActiveStep(gameplay.gameMode, flow, assistPromptFlow === flow);
+    const activeStepVisible = gameplay.gameMode === "FULL"
+        && activeStepContent !== null
         && !historyPreview && !historyEdit && !localCurrentCorrection;
     const renderCurrentFlowStep = () => {
         if (!activeStepContent || !flow) return null;
         if (activeStepContent.kind === "instruction") return <p className="live-active-step-instruction">{activeStepContent.text}</p>;
-        if (activeStepContent.kind === "shot-result") return <div className="live-active-step-choices"><button type="button" disabled={busy} onClick={() => void finishShot(true)}>MADE</button><button type="button" disabled={busy} onClick={() => void finishShot(false)}>MISS</button></div>;
-        if (activeStepContent.kind === "foul-result") return <div className="live-active-step-choices"><button type="button" disabled={busy} onClick={() => void recordShootingFoul(true)}>MADE</button><button type="button" disabled={busy} onClick={() => void recordShootingFoul(false)}>MISS</button></div>;
+        if (activeStepContent.kind === "shot-result") return <><p className="live-active-step-instruction">Μπήκε το καλάθι;</p><div className="live-active-step-choices"><button type="button" disabled={busy} onClick={() => void finishShot(true)}>MADE</button><button type="button" disabled={busy} onClick={() => void finishShot(false)}>MISS</button></div></>;
+        if (activeStepContent.kind === "foul-result") return <><p className="live-active-step-instruction">Μπήκε το καλάθι;</p><div className="live-active-step-choices"><button type="button" disabled={busy || shootingResultInFlight} onClick={() => void recordShootingFoul(true)}>MADE</button><button type="button" disabled={busy || shootingResultInFlight} onClick={() => void recordShootingFoul(false)}>MISS</button></div></>;
         if (activeStepContent.kind === "shot-assist-choice") return <div className="live-active-step-choices"><button type="button" onClick={() => setAssistPromptFlow(flow)}>ASSIST</button><button type="button" disabled={busy} onClick={() => void finishAssist()}>NO ASSIST</button></div>;
         if (activeStepContent.kind === "foul-assist-choice") return <div className="live-active-step-choices"><button type="button" onClick={() => setFlow({ ...flow, step: "assist" })}>ASSIST</button><button type="button" disabled={busy} onClick={() => void finishAssist()}>NO ASSIST</button></div>;
         if (activeStepContent.kind === "turnover-steal") return <><p className="live-active-step-instruction">Ποιος έκλεψε την μπάλα</p><div className="live-active-step-choices"><button type="button" disabled={busy} onClick={() => void finishTurnoverWithoutSteal()}>ΧΩΡΙΣ STEAL</button></div></>;
@@ -1818,17 +1927,17 @@ export function LiveControl({ gameplay, authState, footer, onGameplayChange, onA
                 {renderRail(leftTeam)}
                 <section className="live-control-main">
                     {activeStepVisible ? <section className="live-active-step-panel" aria-label="Τρέχον βήμα" aria-live="polite">{renderCurrentFlowStep()}</section> : null}
-                    {gameplay.gameMode === "SIMPLE" ? <div className="live-primary-grid is-simple">{livePrimaryActionsForMode(gameplay.gameMode).map(renderPrimaryAction)}</div> : <div className="live-primary-grid is-full"><div className="live-primary-actions">{fullPrimaryActionColumns[0].map((id) => renderPrimaryAction(livePrimaryActions.find((action) => action.id === id)!))}</div><button type="button" className={`live-shot-court${courtSelectionActive ? " is-armed" : ""}`} disabled={!courtSelectionActive} onClick={selectCourtPosition} aria-label={courtSelectionActive ? "Επιλέξτε σημείο προσπάθειας στο γήπεδο" : "Γήπεδο μπάσκετ"}><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><rect x="1.5" y="1.5" width="97" height="97" rx="1"/><path d="M 6 2 V 98 M 94 2 V 98 M 6 7 H 94 M 6 93 H 94"/><path d="M 35 7 V 42 H 65 V 7 M 35 42 H 65"/><path d="M 42 10 H 58"/><circle cx="50" cy="14" r="3.5"/><circle cx="50" cy="42" r="12"/><path d="M 38 93 A 12 12 0 0 1 62 93"/><path className="live-court-three-line" d={courtThreePointPath}/></svg>{flow?.shotLocation ? <span className="live-shot-marker" style={{ left: `${flow.shotLocation.x * 100}%`, top: `${flow.shotLocation.y * 100}%` }} aria-hidden="true"/> : null}<span className="live-court-label">{courtSelectionActive ? "ΕΠΙΛΟΓΗ ΣΗΜΕΙΟΥ" : flow?.shotLocation && flow.points ? `${flow.points}PT` : ""}</span></button><div className="live-primary-actions">{fullPrimaryActionColumns[1].map((id) => renderPrimaryAction(livePrimaryActions.find((action) => action.id === id)!))}</div></div>}
-                    <section className={`live-event-workspace${historyPreview || historyEdit ? " is-history-preview" : ""}${historyEdit ? " is-history-edit" : ""}`}><div className="live-workspace-heading"><div><small>{historyEdit ? historyEdit.mode === "CURRENT" ? historyEdit.preview.title : "ΕΠΕΞΕΡΓΑΣΙΑ ΣΥΜΒΑΝΤΟΣ" : historyPreview ? "ΠΡΟΒΟΛΗ ΣΥΜΒΑΝΤΟΣ" : correctionTarget ? `ΔΙΟΡΘΩΣΗ #${correctionTarget.sequence}` : flow ? flow.foulType === "DISQUALIFYING_FOUL" ? "DISQUALIFYING" : flow.action === "PENALTY" && flow.sourceFoulEventId ? "SHOOTING FOUL" : flow.action.replaceAll("_", " ") : "ΝΕΟ ΣΥΜΒΑΝ"}</small></div>{historyEdit ? <span className="live-key-hint">{historyEdit.mode === "CURRENT" ? "ENTER · ολοκλήρωση   ESC · ακύρωση" : "ENTER · αποθήκευση   ESC · ακύρωση"}</span> : historyPreview ? <span className="live-key-hint">ESC · κλείσιμο</span> : flow ? <span className="live-key-hint">ENTER · προαιρετικό &nbsp; ESC · ακύρωση</span> : null}</div>{historyEdit ? renderHistoryEdit() : historyPreview ? renderHistoryPreview() : <>{activeTimeoutCountdown ? <div className="live-timeout-countdown" role="timer" aria-label={`TIME OUT ${team(activeTimeoutCountdown.team).teamName}`}><small>TIME OUT — {team(activeTimeoutCountdown.team).teamName}</small><strong>{formatLiveClock(timeoutCountdownSeconds(activeTimeoutCountdown.startedAtMs, nowMs))}</strong></div> : null}{renderFlowTrail()}{renderFlow()}</>}</section>
+                    {gameplay.gameMode === "SIMPLE" ? <div className="live-primary-grid is-full is-simple-court"><div className="live-primary-actions is-simple">{simplePrimaryActionColumns[0].map((id) => renderPrimaryAction(livePrimaryActions.find((action) => action.id === id)!))}</div>{renderShotCourt()}<div className="live-primary-actions is-simple">{simplePrimaryActionColumns[1].map((id) => renderPrimaryAction(livePrimaryActions.find((action) => action.id === id)!))}</div></div> : <div className="live-primary-grid is-full"><div className="live-primary-actions">{fullPrimaryActionColumns[0].map((id) => renderPrimaryAction(livePrimaryActions.find((action) => action.id === id)!))}</div>{renderShotCourt()}<div className="live-primary-actions">{fullPrimaryActionColumns[1].map((id) => renderPrimaryAction(livePrimaryActions.find((action) => action.id === id)!))}</div></div>}
+                    <section className={`live-event-workspace${gameplay.gameMode === "FULL" && flow && !historyPreview && !historyEdit && !localCurrentCorrection && !correctionTarget ? " is-full-active-event" : ""}${historyPreview || historyEdit ? " is-history-preview" : ""}${historyEdit ? " is-history-edit" : ""}`}><div className="live-workspace-heading"><div><small>{historyEdit ? historyEdit.mode === "CURRENT" ? historyEdit.preview.title : "ΕΠΕΞΕΡΓΑΣΙΑ ΣΥΜΒΑΝΤΟΣ" : historyPreview ? "ΠΡΟΒΟΛΗ ΣΥΜΒΑΝΤΟΣ" : correctionTarget ? `ΔΙΟΡΘΩΣΗ #${correctionTarget.sequence}` : flow ? flow.foulType === "DISQUALIFYING_FOUL" ? "DISQUALIFYING" : flow.action === "PENALTY" && flow.sourceFoulEventId ? "SHOOTING FOUL" : flow.action.replaceAll("_", " ") : "ΝΕΟ ΣΥΜΒΑΝ"}</small></div>{historyEdit ? <span className="live-key-hint">{historyEdit.mode === "CURRENT" ? "ENTER · ολοκλήρωση   ESC · ακύρωση" : "ENTER · αποθήκευση   ESC · ακύρωση"}</span> : historyPreview ? <span className="live-key-hint">ESC · κλείσιμο</span> : flow ? <span className="live-key-hint">ENTER · προαιρετικό &nbsp; ESC · ακύρωση</span> : null}</div>{historyEdit ? renderHistoryEdit() : historyPreview ? renderHistoryPreview() : <>{activeTimeoutCountdown ? <div className="live-timeout-countdown" role="timer" aria-label={`TIME OUT ${team(activeTimeoutCountdown.team).teamName}`}><small>TIME OUT — {team(activeTimeoutCountdown.team).teamName}</small><strong>{formatLiveClock(timeoutCountdownSeconds(activeTimeoutCountdown.startedAtMs, nowMs))}</strong></div> : null}{gameplay.gameMode === "FULL" ? renderFlowTrail() : null}{renderFlow()}</>}</section>
                     {error ? <div className="live-error" role="alert">{error}</div> : null}
                 </section>
                 {renderRail(rightTeam)}
             </div>
-            <div className="live-control-status"><span className={`live-sync is-${syncFooter.className}`} title={syncFooter.detail}>{syncFooter.label}</span>{gameplay.sync.status !== "synced" ? <span className="live-sync-revision" title={syncFooter.detail}>REV {gameplay.eventHistoryRevision} · ACK {gameplay.sync.acknowledgedRevision}</span> : null}{syncFooter.canReconnect ? <button type="button" className="live-reconnect-button" onClick={openReconnect}>ΕΠΑΝΑΣΥΝΔΕΣΗ</button> : null}<span>{gameplay.gameMode === "FULL" ? "Πλήρη στατιστικά" : "Απλό φύλλο"}</span><span>Run · {gameplay.runId.slice(-8)}</span><button type="button" onClick={onOpenConfiguration} disabled={busy || gameplay.lifecycle !== "live"}>Προετοιμασία</button><button type="button" onClick={onBack}>Οι αγώνες μου</button><button type="button" onClick={() => void onLogout()}>Αποσύνδεση</button>{footer}</div>
+            <div className="live-control-status"><span className={`live-sync is-${syncFooter.className}`} title={syncFooter.detail}>{syncFooter.label}</span>{gameplay.sync.status !== "synced" ? <span className="live-sync-revision" title={syncFooter.detail}>REV {gameplay.eventHistoryRevision} · ACK {gameplay.sync.acknowledgedRevision}</span> : null}{syncFooter.canReconnect ? <button type="button" className="live-reconnect-button" onClick={openReconnect}>ΕΠΑΝΑΣΥΝΔΕΣΗ</button> : null}{activeRunConflictRetry ? <button type="button" className="live-reconnect-button" disabled={finalSubmissionBusy} onClick={() => void retryGameplaySync()}>{finalSubmissionBusy ? "ΑΠΟΣΤΟΛΗ..." : "ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ"}</button> : null}<span>{gameplay.gameMode === "FULL" ? "Πλήρη στατιστικά" : "Απλό φύλλο"}</span><span>Run · {gameplay.runId.slice(-8)}</span><button type="button" onClick={onOpenConfiguration} disabled={busy || gameplay.lifecycle !== "live"}>Προετοιμασία</button><button type="button" onClick={onBack}>Οι αγώνες μου</button><button type="button" onClick={() => void onLogout()}>Αποσύνδεση</button>{footer}</div>
         </section>
         {reconnectOpen ? <form className="live-reconnect-panel" onSubmit={(event) => { event.preventDefault(); void reconnect(); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setReconnectOpen(false); setReconnectError(null); } }}><header><div><small>ONLINE SYNC</small><strong>Επανασύνδεση scorer</strong></div><button type="button" onClick={() => { setReconnectOpen(false); setReconnectError(null); }}>×</button></header><label>Όνομα χρήστη<input autoFocus autoComplete="username" value={reconnectUsername} onChange={(event) => setReconnectUsername(event.target.value)} /></label><label>Κωδικός<input type="password" autoComplete="current-password" value={reconnectPassword} onChange={(event) => setReconnectPassword(event.target.value)} /></label><p>{gameplay.lifecycle === "finalized" ? "Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά." : "Ο αγώνας παραμένει ενεργός και αποθηκεύεται τοπικά."}</p>{reconnectError ? <div className="live-reconnect-error" role="alert">{reconnectError}</div> : null}<div><button type="button" onClick={() => { setReconnectOpen(false); setReconnectError(null); }}>Ακύρωση</button><button type="submit" disabled={reconnectBusy || !reconnectUsername.trim() || !reconnectPassword}>{reconnectBusy ? "Σύνδεση…" : "ΕΠΑΝΑΣΥΝΔΕΣΗ"}</button></div></form> : null}
         {pendingPeriodTransition ? <div className="live-modal-backdrop" role="presentation"><section className="live-modal live-period-transition" role="dialog" aria-modal="true" aria-label="Μετάβαση περιόδου" onKeyDown={(event) => { if (event.key === "Escape" || event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (event.key === "Escape") setPendingPeriodTransition(null); else void confirmPeriodTransition(); } }}><h2>Μετάβαση σε {periodText(pendingPeriodTransition)};</h2><p>Η τρέχουσα περίοδος θα ολοκληρωθεί και θα ξεκινήσει η επόμενη.</p><div><button autoFocus type="button" disabled={busy} onClick={() => setPendingPeriodTransition(null)}>Ακύρωση</button><button type="button" className="live-apply" disabled={busy} onClick={() => void confirmPeriodTransition()}>Συνέχεια</button></div></section></div> : null}
-        {finalSubmission ? <div className="live-modal-backdrop live-final-submission-backdrop"><section className={`live-final-submission is-${finalSubmission}`} role="dialog" aria-modal="true" aria-live="polite"><small>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</small>{finalSubmission === "sending" ? <><span className="live-final-submission-mark" aria-hidden="true">↥</span><h2>ΑΠΟΣΤΟΛΗ ΑΓΩΝΑ...</h2><p>Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.</p></> : finalSubmission === "success" ? <><span className="live-final-submission-mark" aria-hidden="true">✓</span><h2>Η ΑΠΟΣΤΟΛΗ ΟΛΟΚΛΗΡΩΘΗΚΕ</h2><p>Ο αγώνας συγχρονίστηκε επιτυχώς με τον server.</p></> : finalSubmission === "conflict" ? <><span className="live-final-submission-mark" aria-hidden="true">!</span><h2>ΣΥΓΚΡΟΥΣΗ ΣΥΓΧΡΟΝΙΣΜΟΥ</h2><p>Ο αγώνας παραμένει αποθηκευμένος τοπικά. Δεν θα γίνει αυτόματη αντικατάσταση των απομακρυσμένων δεδομένων.</p></> : <><span className="live-final-submission-mark" aria-hidden="true">!</span><h2>Η ΑΠΟΣΤΟΛΗ ΔΕΝ ΟΛΟΚΛΗΡΩΘΗΚΕ</h2><p>Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.</p>{finalSubmission === "auth-required" ? <p>Απαιτείται επανασύνδεση scorer πριν από τη νέα προσπάθεια.</p> : null}</>}{finalSubmissionError ? <div className="live-final-submission-error" role="alert">{finalSubmissionError}</div> : null}<div className="live-final-submission-actions">{finalSubmission === "failure" ? <button type="button" className="is-primary" disabled={finalSubmissionBusy} onClick={() => void retryFinalizedSync()}>{finalSubmissionBusy ? "ΑΠΟΣΤΟΛΗ..." : "ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ"}</button> : null}{finalSubmission === "auth-required" ? <button type="button" className="is-primary" onClick={openReconnect}>ΕΠΑΝΑΣΥΝΔΕΣΗ</button> : null}<button type="button" onClick={onBack}>ΟΙ ΑΓΩΝΕΣ ΜΟΥ</button></div><span className="live-final-submission-revision">REV {gameplay.eventHistoryRevision} · ACK {gameplay.sync.acknowledgedRevision}</span></section></div> : null}
+        {finalSubmission ? <div className="live-modal-backdrop live-final-submission-backdrop"><section className={`live-final-submission is-${finalSubmission}`} role="dialog" aria-modal="true" aria-live="polite"><small>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</small>{finalSubmission === "sending" ? <><span className="live-final-submission-mark" aria-hidden="true">↥</span><h2>ΑΠΟΣΤΟΛΗ ΑΓΩΝΑ...</h2><p>Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.</p></> : finalSubmission === "success" ? <><span className="live-final-submission-mark" aria-hidden="true">✓</span><h2>Η ΑΠΟΣΤΟΛΗ ΟΛΟΚΛΗΡΩΘΗΚΕ</h2><p>Ο αγώνας συγχρονίστηκε επιτυχώς με τον server.</p></> : finalSubmission === "conflict" ? <><span className="live-final-submission-mark" aria-hidden="true">!</span><h2>ΣΥΓΚΡΟΥΣΗ ΣΥΓΧΡΟΝΙΣΜΟΥ</h2><p>Ο αγώνας παραμένει αποθηκευμένος τοπικά. Δεν θα γίνει αυτόματη αντικατάσταση των απομακρυσμένων δεδομένων.</p></> : <><span className="live-final-submission-mark" aria-hidden="true">!</span><h2>Η ΑΠΟΣΤΟΛΗ ΔΕΝ ΟΛΟΚΛΗΡΩΘΗΚΕ</h2><p>Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.</p>{finalSubmission === "auth-required" ? <p>Απαιτείται επανασύνδεση scorer πριν από τη νέα προσπάθεια.</p> : null}</>}{finalSubmissionError ? <div className="live-final-submission-error" role="alert">{finalSubmissionError}</div> : null}<div className="live-final-submission-actions">{finalSubmission === "failure" || finalizedRunConflictRetry ? <button type="button" className="is-primary" disabled={finalSubmissionBusy} onClick={() => void retryGameplaySync()}>{finalSubmissionBusy ? "ΑΠΟΣΤΟΛΗ..." : "ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ"}</button> : null}{finalSubmission === "auth-required" ? <button type="button" className="is-primary" onClick={openReconnect}>ΕΠΑΝΑΣΥΝΔΕΣΗ</button> : null}<button type="button" onClick={onBack}>ΟΙ ΑΓΩΝΕΣ ΜΟΥ</button></div><span className="live-final-submission-revision">REV {gameplay.eventHistoryRevision} · ACK {gameplay.sync.acknowledgedRevision}</span></section></div> : null}
         {subsModal ? <div className="live-modal-backdrop" role="presentation"><section className="live-subs-modal" role="dialog" aria-modal="true" aria-label="SUBS" onKeyDown={(event) => { if (event.key === "Escape" || event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (event.key === "Escape" && subsModal.mode === "ORDINARY") setSubsModal(null); } }}><header><div><small>SUBS</small><h2>{subsModal.mode === "MANDATORY" ? "ΥΠΟΧΡΕΩΤΙΚΗ ΑΛΛΑΓΗ" : "ΑΛΛΑΓΕΣ"}</h2></div><span>{subsModal.mode === "MANDATORY" ? "Επιλέξτε αντικαταστάτη" : "ESC · ακύρωση"}</span></header><div className="live-subs-modal-grid">{renderSubsTeam("HOME")}<div className="live-subs-modal-actions"><button type="button" className="live-apply" disabled={busy} onClick={() => void commitSubs()}>OK</button>{subsModal.mode === "ORDINARY" ? <button type="button" className="live-subs-cancel" disabled={busy} onClick={() => setSubsModal(null)}>CANCEL</button> : null}{subsModal.error ? <p className="live-subs-error">{subsModal.error}</p> : null}</div>{renderSubsTeam("AWAY")}</div></section></div> : null}
         {finalizationEntry ? <div className="live-modal-backdrop live-finalization-entry-backdrop" role="presentation"><section className={`live-finalization-entry${finalizationEntry === "REPORT" ? " is-report" : ""}`} role="dialog" aria-modal="true" aria-label={finalizationEntry === "REPORT" ? "ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ" : "ΟΛΟΚΛΗΡΩΣΗ ΑΓΩΝΑ"} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setFinalizationEntryError(null); setFinalizationEntry(finalizationEntry === "REPORT" ? "CHOICE" : null); } }}><small>ΤΕΛΟΣ ΑΓΩΝΑ</small>{finalizationEntry === "CHOICE" ? <><h2>ΟΛΟΚΛΗΡΩΣΗ ΑΓΩΝΑ</h2><p>Επιλέξτε αν ο αγώνας θα ολοκληρωθεί χωρίς ή με αναφορά συμβάντων.</p><div className="live-finalization-entry-actions"><button type="button" className="is-primary" disabled={busy} onClick={() => void finalizeCurrentMatch(null)}>ΟΡΙΣΤΙΚΗ ΤΟΠΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</button><button type="button" disabled={busy} onClick={() => { setFinalizationEntryError(null); setFinalizationEntry("REPORT"); }}>ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</button></div></> : <><h2>ΑΝΑΦΟΡΑ ΣΥΜΒΑΝΤΩΝ</h2><p>Η αναφορά θα συνοδεύει τον οριστικά ολοκληρωμένο αγώνα.</p><textarea autoFocus maxLength={INCIDENT_REPORT_MAX_LENGTH} value={incidentReportDraft} onChange={(event) => { setIncidentReportDraft(event.target.value); setFinalizationEntryError(null); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setFinalizationEntryError(null); setFinalizationEntry("CHOICE"); } }} aria-label="Κείμενο αναφοράς συμβάντων" /><span className="live-incident-report-count">{incidentReportDraft.length.toLocaleString("el-GR")} / {INCIDENT_REPORT_MAX_LENGTH.toLocaleString("el-GR")}</span><div className="live-finalization-entry-actions"><button type="button" disabled={busy} onClick={() => { setFinalizationEntryError(null); setFinalizationEntry("CHOICE"); }}>ΠΙΣΩ</button><button type="button" className="is-primary" disabled={busy} onClick={() => void finalizeCurrentMatch(incidentReportDraft)}>ΟΡΙΣΤΙΚΗ ΟΛΟΚΛΗΡΩΣΗ</button></div></>}{finalizationEntryError ? <div className="live-finalization-entry-error" role="alert">{finalizationEntryError}</div> : null}</section></div> : null}
         {clockEditing ? <div className="live-modal-backdrop"><form className="live-modal live-clock-editor" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setClockEditError(null); setClockEditing(false); } }} onSubmit={async (event) => { event.preventDefault(); if (clockEditSubmittingRef.current || busy) return; const validation = validateLiveClockCorrection(clockInput, maximumClockSeconds); if (validation.error) { setClockEditError(validation.error); return; } clockEditSubmittingRef.current = true; setClockEditSubmitting(true); setClockEditError(null); try { const next = await appendIntent({ kind: "clock-set", remainingSeconds: validation.remainingSeconds }); if (next) setClockEditing(false); else setClockEditError("Η διόρθωση ρολογιού απορρίφθηκε."); } finally { clockEditSubmittingRef.current = false; setClockEditSubmitting(false); } }}><h2>Διόρθωση ρολογιού</h2><fieldset className="live-clock-selectors"><legend>Γρήγορη επιλογή χρόνου</legend><label><span>Λεπτά</span><select aria-label="Λεπτά" value={clockSelectorParts === null ? "" : String(clockSelectorParts.minutes)} onChange={(event) => { setClockInput(liveClockInputFromSelectors(Number(event.target.value), clockSelectorParts?.seconds ?? 0, maximumClockSeconds)); setClockEditError(null); }}>{clockSelectorParts === null ? <option value="" disabled>--</option> : null}{clockMinuteOptions.map((minute) => <option key={minute} value={minute}>{String(minute).padStart(2, "0")}</option>)}</select></label><span className="live-clock-selector-separator" aria-hidden="true">:</span><label><span>Δευτερόλεπτα</span><select aria-label="Δευτερόλεπτα" value={clockSelectorParts === null ? "" : String(clockSelectorParts.seconds)} onChange={(event) => { setClockInput(liveClockInputFromSelectors(clockSelectorParts?.minutes ?? 0, Number(event.target.value), maximumClockSeconds)); setClockEditError(null); }}>{clockSelectorParts === null ? <option value="" disabled>--</option> : null}{clockSecondOptions.map((second) => <option key={second} value={second}>{String(second).padStart(2, "0")}</option>)}</select></label></fieldset><label className="live-clock-keyboard-input"><span>Πληκτρολόγηση MM:SS</span><input autoFocus autoComplete="off" spellCheck={false} value={clockInput} onFocus={(event) => event.currentTarget.select()} onChange={(event) => { setClockInput(updateLiveClockEditBuffer(event.target.value)); setClockEditError(null); }} aria-label="Χρόνος ΛΛ:ΔΔ" /></label>{clockEditError ? <p className="live-clock-edit-error" role="alert">{clockEditError}</p> : null}<div><button type="button" disabled={clockEditSubmitting} onClick={() => { setClockEditError(null); setClockEditing(false); }}>Ακύρωση</button><button type="submit" disabled={clockEditSubmitting}>{clockEditSubmitting ? "ΕΦΑΡΜΟΓΗ..." : "ΕΦΑΡΜΟΓΗ"}</button></div></form></div> : null}

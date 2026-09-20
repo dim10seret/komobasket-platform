@@ -187,6 +187,37 @@ describe("AuthCoordinator", () => {
         const secureStore = store(); secureStore.saveToken(token); const grant = { runId: "run-1", scorerId: context.scorerId, organizationId: context.organizationId }; const recovery = gameplayRecovery({ lifecycle: "finalized", eventHistoryRevision: 4, lastAcceptedSequence: 4, eventIds: ["event-1", "event-2", "event-3", "event-4"], state: { clock: 0, finished: true } }); const manager = { finalize: vi.fn(async () => recovery), recover: vi.fn(async () => recovery), syncState: vi.fn(() => ({ runId: "run-1", lastAcknowledgedHistoryRevision: 0, lastAttemptedHistoryRevision: 0, lastAcknowledgedHistoryHash: null, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: null, lastSuccessAtUtc: null, lastErrorCode: "SYNC_AUTH", consecutiveFailures: 1 })) }; const liveAuthorization = { isAvailable: vi.fn(() => true), reactivateOwner: vi.fn(), resolve: vi.fn(() => grant), listAvailable: vi.fn(() => [grant]) }; const syncWorker = { wake: vi.fn(), pause: vi.fn(), retry: vi.fn() }; const client = fakeClient({ listGames: vi.fn(async () => { throw new AuthFlowError("SESSION_INVALID"); }) }); const coordinator = new AuthCoordinator(client, secureStore, deviceId, null, null, null, null, manager, undefined, liveAuthorization, syncWorker);
         expect((await coordinator.initialize()).kind).toBe("authenticated"); expect(await coordinator.listGames()).toMatchObject({ ok: false, errorCode: "SESSION_INVALID", state: { kind: "live-continuity" } }); expect(await coordinator.finalizeMatch("run-1")).toMatchObject({ ok: true, gameplay: { lifecycle: "finalized" } }); expect(await coordinator.retryGameplaySync("run-1")).toMatchObject({ ok: false, errorCode: "SESSION_INVALID" }); expect(syncWorker.pause).toHaveBeenCalled(); expect(syncWorker.retry).not.toHaveBeenCalled();
     });
+    it("permits only explicit active SYNC_RUN_CONFLICT retries and preserves finalized retry behavior", async () => {
+        const secureStore = store(); secureStore.saveAuthorization(envelope());
+        const grant = { runId: "run-1", scorerId: context.scorerId, organizationId: context.organizationId };
+        let recovery = gameplayRecovery();
+        let lastErrorCode = "SYNC_RUN_CONFLICT";
+        const manager = {
+            recover: vi.fn(async () => recovery),
+            syncState: vi.fn(() => ({ runId: "run-1", lastAcknowledgedHistoryRevision: 0, lastAttemptedHistoryRevision: 2, lastAcknowledgedHistoryHash: null, lastAcknowledgedFinalizationHash: null, lastAttemptAtUtc: "2026-08-26T12:00:00.000Z", lastSuccessAtUtc: null, lastErrorCode, consecutiveFailures: 1, nextRetryAtUtc: null })),
+        };
+        const liveAuthorization = { isAvailable: vi.fn(() => true), resolve: vi.fn(() => grant), listAvailable: vi.fn(() => [grant]), reactivateOwner: vi.fn() };
+        const syncWorker = { wake: vi.fn(), pause: vi.fn(), retry: vi.fn()
+            .mockRejectedValueOnce(Object.assign(new Error("conflict"), { code: "SYNC_RUN_CONFLICT" }))
+            .mockResolvedValue({}) };
+        const coordinator = new AuthCoordinator(fakeClient(), secureStore, deviceId, null, null, null, null, manager, undefined, liveAuthorization, syncWorker);
+
+        expect((await coordinator.initialize()).kind).toBe("authenticated");
+        expect(await coordinator.retryGameplaySync("run-1")).toMatchObject({ ok: false, errorCode: "SYNC_RUN_CONFLICT" });
+        expect(syncWorker.retry).toHaveBeenCalledTimes(1);
+        expect(await coordinator.retryGameplaySync("run-1")).toMatchObject({ ok: true, gameplay: { lifecycle: "live" } });
+        expect(syncWorker.retry).toHaveBeenCalledTimes(2);
+
+        for (const terminalError of ["SYNC_INVALID", "SYNC_INTEGRITY_CONFLICT", "SYNC_STALE"]) {
+            lastErrorCode = terminalError;
+            expect(await coordinator.retryGameplaySync("run-1")).toMatchObject({ ok: false, errorCode: "SYNC_INVALID" });
+        }
+        expect(syncWorker.retry).toHaveBeenCalledTimes(2);
+
+        recovery = gameplayRecovery({ lifecycle: "finalized", state: { clock: 0, finished: true } });
+        expect(await coordinator.retryGameplaySync("run-1")).toMatchObject({ ok: true, gameplay: { lifecycle: "finalized" } });
+        expect(syncWorker.retry).toHaveBeenCalledTimes(3);
+    });
     it("revokes remotely and clears locally on Logout", async () => {
         const secureStore = store(); const client = fakeClient(); const coordinator = new AuthCoordinator(client, secureStore, deviceId); await coordinator.login({ username: "test", password: "synthetic" }); expect((await coordinator.logout()).ok).toBe(true); expect(client.logout).toHaveBeenCalledWith(token); expect(secureStore.hasSession()).toBe(false);
     });

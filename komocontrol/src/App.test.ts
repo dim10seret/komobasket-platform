@@ -157,6 +157,14 @@ describe("My Games completion presentation", () => {
         expect(source).toContain("SYNC CONFLICT"); expect(source).toContain("Άνοιγμα LIVE Run");
     });
 
+    it("gives LIVE Run matchups the flexible card width without desktop word wrapping", () => {
+        const source = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+        const styles = fs.readFileSync(new URL("./styles/global.css", import.meta.url), "utf8");
+        expect(source).toContain('className="game-card live-run-card"');
+        expect(styles).toContain(".live-run-card { grid-template-columns: minmax(0, 1fr) auto; }");
+        expect(styles).toContain(".live-run-card .game-main h3 { overflow-wrap: normal; white-space: nowrap; }");
+    });
+
     it("reloads both available games and local completion state after returning from LiveControl", () => {
         const source = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
         expect(source).toContain("bridge.listMyGamesRunStates()");

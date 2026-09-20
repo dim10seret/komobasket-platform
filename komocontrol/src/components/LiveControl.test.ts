@@ -2,8 +2,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { canCompleteLiveFlow, enterShootingFoulFlow, finalSubmissionPhase, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, INCIDENT_REPORT_MAX_LENGTH, initializeLiveClockEditBuffer, isEditableKeyboardTarget, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockCorrectionMaximumSeconds, liveClockInputFromSelectors, liveClockMinuteOptions, liveClockSeconds, liveClockSecondOptions, liveClockSelectorParts, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, livePrimaryActionsForMode, liveStatusPlayerStatistics, nextLivePeriod, normalizeIncidentReport, periodScoreLabel, periodScoreValue, periodText, presentationTeams, shouldCaptureFinalFreeThrowRebound, shouldCaptureFoulShotAssist, simpleMadeShotIntent, simpleNormalFoulRequiresDrawnBy, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents, updateLiveClockEditBuffer, validateIncidentReport, validateLiveClockCorrection } from "./LiveControl";
+import { describe, expect, it, vi } from "vitest";
+import { activeSyncRunConflictRetryAvailable, canCompleteLiveFlow, claimShootingResultCommit, enterShootingFoulFlow, finalSubmissionPhase, finalizedSyncRunConflictRetryAvailable, firstLiveFlowStep, formatLiveClock, foulIndicator, gameLogGroupClass, gameplayEventLabel, gameplayEventTeamPresentation, historicalCorrectionIsNoop, INCIDENT_REPORT_MAX_LENGTH, initializeLiveClockEditBuffer, isEditableKeyboardTarget, isScorerFacingGameplayEvent, latestOpenTimeout, liveClockCorrectionMaximumSeconds, liveClockInputFromSelectors, liveClockMinuteOptions, liveClockSeconds, liveClockSecondOptions, liveClockSelectorParts, liveKeyboardCommand, livePrimaryActionAvailable, livePrimaryActions, livePrimaryActionsForMode, liveStatusPlayerStatistics, nextLivePeriod, normalizeIncidentReport, periodScoreLabel, periodScoreValue, periodText, presentationTeams, shootingFoulResultTrailLocked, shouldCaptureFinalFreeThrowRebound, shouldCaptureFoulShotAssist, simpleMadeShotIntent, simpleNormalFoulRequiresDrawnBy, simplePrimaryActionColumns, teamReboundIntent, timeoutCountdownSeconds, timeoutGameplayIntents, updateLiveClockEditBuffer, validateIncidentReport, validateLiveClockCorrection } from "./LiveControl";
 
 const gameplay = {
     runId: "run", gameMode: "FULL", lifecycle: "live", eventHistoryRevision: 1, lastAcceptedSequence: 1, score: { home: 50, away: 45 }, period: { kind: "REGULATION", index: 4 }, periodScores: [{ period: { kind: "REGULATION", index: 1 }, home: 12, away: 8 }, { period: { kind: "REGULATION", index: 2 }, home: 11, away: 10 }, { period: { kind: "REGULATION", index: 3 }, home: 14, away: 12 }, { period: { kind: "REGULATION", index: 4 }, home: 13, away: 15 }], clockSeconds: 300, clockRunning: false, clockStartedAtMs: null, possession: "HOME", alternatingPossession: "AWAY", finished: false, latestEvent: null,
@@ -21,27 +21,30 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(source).toContain('gameplay.gameMode === "FULL" ? "Πλήρη στατιστικά" : "Απλό φύλλο"');
         expect(livePrimaryActions.map((action) => action.id)).toEqual(["SHOOT", "FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
     });
-    it("filters only the SIMPLE primary UI into an even three-by-two action grid", () => {
+    it("uses the FULL-style court composition with the locked SIMPLE action columns", () => {
         expect(livePrimaryActionsForMode("FULL").map((action) => action.id)).toEqual(["SHOOT", "FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
-        expect(livePrimaryActionsForMode("SIMPLE").map((action) => action.id)).toEqual(["SHOOT", "FOUL", "SUBS", "TIME_OUT", "TECH_FOUL", "OFFENSIVE_FOUL"]);
+        expect(simplePrimaryActionColumns).toEqual([["FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"], ["SUBS", "TECH_FOUL", "TIME_OUT"]]);
+        expect(livePrimaryActionsForMode("SIMPLE").map((action) => action.id)).toEqual(["FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL", "SUBS", "TECH_FOUL", "TIME_OUT"]);
         expect(livePrimaryActions.map((action) => action.id)).toContain("TURN_OVER");
         expect(livePrimaryActions.map((action) => action.id)).toContain("SHOOTING_FOUL");
         expect(livePrimaryActions.map((action) => action.id)).not.toContain("JUMP_BALL");
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
-        expect(source).toContain('livePrimaryActionsForMode(gameplay.gameMode).map');
-        expect(source).toContain('gameplay.gameMode === "SIMPLE" ? <div className="live-primary-grid is-simple">');
-        expect(styles).toContain('.live-primary-grid.is-simple { grid-template-columns: repeat(3, minmax(0, 1fr)); }');
+        expect(source).toContain('gameplay.gameMode === "SIMPLE" ? <div className="live-primary-grid is-full is-simple-court">');
+        expect(source).toContain('simplePrimaryActionColumns[0].map');
+        expect(source).toContain('simplePrimaryActionColumns[1].map');
+        expect(styles).toContain('.live-primary-actions.is-simple { grid-template-rows: repeat(3, minmax(0, 1fr)); }');
     });
     it("builds canonical terminal made shots for the SIMPLE two-point and three-point capture paths", () => {
         expect(simpleMadeShotIntent("HOME", "home-7", 2, "stoppage-1")).toEqual({ kind: "shot", team: "HOME", playerId: "home-7", points: 2, made: true, stoppageId: "stoppage-1", scorerEventTerminal: { reason: "NATURAL" } });
         expect(simpleMadeShotIntent("AWAY", "away-9", 3, "stoppage-2")).toEqual({ kind: "shot", team: "AWAY", playerId: "away-9", points: 3, made: true, stoppageId: "stoppage-2", scorerEventTerminal: { reason: "NATURAL" } });
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
-        expect(source).toContain('step: action === "SHOOT" ? "shot-points" : firstLiveFlowStep(action)');
-        expect(source).toContain('if (flow.step === "shot-points" && gameplay.gameMode === "SIMPLE")');
+        expect(source).toContain('const simpleCourtSelectionActive = gameplay.gameMode === "SIMPLE"');
+        expect(source).toContain('points: shotTypeFromCourtPosition(shotLocation)');
+        expect(source).not.toContain('flow.step === "shot-points" && gameplay.gameMode === "SIMPLE"');
         expect(source).toContain('const next = await appendIntent(simpleMadeShotIntent(side, player.playerId, flow.points ?? 2, flow.stoppageId));');
         expect(source).toContain('if (next) closeFlow();');
-        expect(source).not.toContain('className="live-context-exception" onClick={() => selectShotPoints(3)}>3PT</button>');
+        expect(source).not.toContain('const selectShotPoints =');
         expect(source).toContain('Επιλέξτε σημείο προσπάθειας στο γήπεδο');
     });
     it("submits a SIMPLE offensive foul after FOULER while preserving the FULL DRAWN BY branch", () => {
@@ -68,7 +71,98 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         expect(source).toContain('if (shouldCaptureFoulShotAssist(gameplay.gameMode, made)) { setFlow({ ...nextFlow, step: "assist-choice" }); return; }');
         expect(source).toContain('const foul: KomoControlGameplayIntent = { kind: "foul", foulType: flow.foulType');
-        expect(source).toContain('if (flow.step === "shooting-result") return <><h3>MADE / MISS</h3>');
+        expect(source).toContain('if (flow.step === "shooting-result") return <><h3>{gameplay.gameMode === "SIMPLE" && flow.context === "SHOOTING" ? "Το καλάθι μπήκε;" : "Μπήκε το καλάθι;"}</h3>');
+    });
+    it("asks the SIMPLE shooting-result question without changing MADE/MISS handlers or normal shots", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const simpleShootingPrompt = '<h3>{gameplay.gameMode === "SIMPLE" && flow.context === "SHOOTING" ? "Το καλάθι μπήκε;" : "Μπήκε το καλάθι;"}</h3>';
+        expect(source.split(simpleShootingPrompt)).toHaveLength(3);
+        expect(source).toContain('disabled={shootingResultInFlight} onClick={() => void recordShootingFoul(true)}>MADE</Choice>');
+        expect(source).toContain('disabled={shootingResultInFlight} onClick={() => void recordShootingFoul(false)}>MISS</Choice>');
+        expect(source).toContain('if (flow.step === "shot-result") return <><h3>Μπήκε το καλάθι;</h3><ChoiceGrid stacked><Choice active={flow.made === true} onClick={() => void finishShot(true)}>MADE</Choice><Choice active={flow.made === false} onClick={() => void finishShot(false)}>MISS</Choice></ChoiceGrid></>');
+        expect(source).not.toContain('<h3>MADE / MISS</h3>');
+        expect(source).not.toContain('flow.step === "shot-result") return <><h3>{gameplay.gameMode === "SIMPLE"');
+    });
+    it("keeps SIMPLE shooting-foul and shooting-TECH results locked after the first accepted selection", async () => {
+        const runCase = async (flowKey: string, first: boolean, second: boolean) => {
+            let resolveBridge!: () => void;
+            const deferredBridge = new Promise<void>((resolve) => { resolveBridge = resolve; });
+            const bridge = vi.fn(() => deferredBridge);
+            const lock = { current: null as string | null };
+            const submittedResults: boolean[] = [];
+            const recordShootingFoul = async (made: boolean) => {
+                if (!claimShootingResultCommit(lock, flowKey)) return;
+                submittedResults.push(made);
+                await bridge();
+            };
+
+            const firstSubmission = recordShootingFoul(first);
+            const competingSubmission = recordShootingFoul(second);
+
+            expect(lock.current).toBe(flowKey);
+            expect(submittedResults).toEqual([first]);
+            expect(bridge).toHaveBeenCalledTimes(1);
+
+            resolveBridge();
+            await Promise.all([firstSubmission, competingSubmission]);
+            await recordShootingFoul(second);
+            expect(submittedResults).toEqual([first]);
+            expect(bridge).toHaveBeenCalledTimes(1);
+        };
+
+        await runCase("shooting-foul-made", true, false);
+        await runCase("shooting-foul-miss", false, true);
+        await runCase("shooting-tech-made", true, false);
+        await runCase("shooting-tech-miss", false, true);
+    });
+    it("keeps the result lock scoped to the active stoppage while preserving SIMPLE-only cancel blocking", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        expect(source).toContain('const shootingResultLockKey = flow.stoppageId;');
+        expect(source).toContain('if (shootingResultLockKey && !claimShootingResultCommit(shootingResultInFlightRef, shootingResultLockKey)) return;');
+        expect(source).toContain('if (gameplay.gameMode === "SIMPLE" && flow?.stoppageId && shootingResultInFlightRef.current === flow.stoppageId) return;');
+        expect(source).toContain('shootingResultLockKey && !durableShotCommitted');
+        expect(source).toContain('flow.action === "FOUL" || flow.action === "OFFENSIVE_FOUL" || flow.action === "TECH_FOUL"');
+    });
+    it("locks the real FULL shooting-foul result trail and handler while allowing a new phase", async () => {
+        const fullFixture = { gameMode: "FULL" as const };
+        const fullShootingFoul: Parameters<typeof shootingFoulResultTrailLocked>[0] = { action: "FOUL", step: "assist-choice", context: "SHOOTING", stoppageId: "full-foul-1", committedEventId: "shot-1", made: true };
+        const fullShootingTech: Parameters<typeof shootingFoulResultTrailLocked>[0] = { action: "TECH_FOUL", step: "assist-choice", context: "SHOOTING", foulType: "FLAGRANT_FOUL", stoppageId: "full-tech-1", committedEventId: "shot-2", made: true };
+        const fullPenalty: Parameters<typeof shootingFoulResultTrailLocked>[0] = { action: "PENALTY", step: "free-throw", context: "SHOOTING", stoppageId: "full-foul-1", committedEventId: "shot-1", sourceFoulEventId: "foul-1", made: true };
+        expect(fullFixture.gameMode).toBe("FULL");
+        expect(shootingFoulResultTrailLocked(fullShootingFoul, "shooting-result", true)).toBe(true);
+        expect(shootingFoulResultTrailLocked(fullShootingTech, "shooting-result", true)).toBe(true);
+        expect(shootingFoulResultTrailLocked(fullPenalty, "shooting-result", true)).toBe(true);
+        expect(shootingFoulResultTrailLocked({ action: "SHOOT", step: "assist", committedEventId: "shot-3", made: true }, "shot-result", undefined)).toBe(false);
+
+        let resolveBridge!: () => void;
+        const deferredBridge = new Promise<void>((resolve) => { resolveBridge = resolve; });
+        const bridge = vi.fn(() => deferredBridge);
+        const lock = { current: null as string | null };
+        const submittedResults: boolean[] = [];
+        const submit = async (flowKey: string, made: boolean) => {
+            if (!claimShootingResultCommit(lock, flowKey)) return;
+            submittedResults.push(made);
+            await bridge();
+        };
+        const firstSubmission = submit("full-foul-1", true);
+        const competingSubmission = submit("full-foul-1", false);
+        expect(submittedResults).toEqual([true]);
+        expect(bridge).toHaveBeenCalledTimes(1);
+        resolveBridge();
+        await Promise.all([firstSubmission, competingSubmission]);
+        await submit("full-foul-1", false);
+        expect(submittedResults).toEqual([true]);
+        expect(claimShootingResultCommit(lock, "full-foul-2")).toBe(true);
+
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
+        expect(source).toContain('const lockedShootingFoulResult = shootingFoulResultTrailLocked(flow, item.step, item.frozen);');
+        expect(source).toContain('if (lockedShootingFoulResult) return;');
+        expect(source).toContain('return lockedShootingFoulResult || item.frozen');
+        expect(source).toContain('lockedShootingFoulResult ? "is-locked-shooting-result" : ""');
+        expect(styles).toContain('.live-flow-trail span.is-preserved-trail-card, .live-flow-trail span.is-locked-shooting-result { display: grid; align-content: center; gap: 2px;');
+        expect(source).toContain('disabled={busy || shootingResultInFlight} onClick={() => void recordShootingFoul(true)}');
+        expect(source).toContain('const recordFreeThrow = async (made: boolean) => {');
     });
     it("closes a SIMPLE final missed live-ball free throw without a rebound or fake event", () => {
         expect(shouldCaptureFinalFreeThrowRebound("SIMPLE", false, "LIVE_BALL")).toBe(false);
@@ -147,10 +241,34 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(source).toContain('Η ΑΠΟΣΤΟΛΗ ΟΛΟΚΛΗΡΩΘΗΚΕ');
         expect(source).toContain('Η ΑΠΟΣΤΟΛΗ ΔΕΝ ΟΛΟΚΛΗΡΩΘΗΚΕ');
         expect(source).toContain('Ο αγώνας έχει αποθηκευτεί με ασφάλεια τοπικά.');
-        expect(source).toContain('finalSubmission === "failure" ? <button');
         expect(source).toContain('finalSubmission === "auth-required" ? <button');
-        expect(source).not.toContain('finalSubmission === "conflict" ? <button type="button" className="is-primary"');
+        expect(source).toContain('finalSubmission === "failure" || finalizedRunConflictRetry ? <button');
         expect(styles).toContain('.live-final-submission');
+    });
+    it("offers the existing single-flight retry only for a finalized exact SYNC_RUN_CONFLICT", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const finalizedConflict = { ...gameplay, lifecycle: "finalized" as const, sync: { ...gameplay.sync, status: "conflict" as const, lastErrorCode: "SYNC_RUN_CONFLICT" } };
+        expect(finalizedSyncRunConflictRetryAvailable(finalizedConflict)).toBe(true);
+        expect(finalizedSyncRunConflictRetryAvailable({ ...finalizedConflict, sync: { ...finalizedConflict.sync, lastErrorCode: "SYNC_INVALID" } })).toBe(false);
+        expect(finalizedSyncRunConflictRetryAvailable({ ...finalizedConflict, sync: { ...finalizedConflict.sync, lastErrorCode: "SYNC_INTEGRITY_CONFLICT" } })).toBe(false);
+        expect(finalizedSyncRunConflictRetryAvailable({ ...finalizedConflict, lifecycle: "live" })).toBe(false);
+        expect(source).toContain('gameplay.sync.status !== "conflict" || finalizedRunConflictRetry');
+        expect(source).toContain('disabled={finalSubmissionBusy} onClick={() => void retryGameplaySync()}');
+        expect(source).toContain('syncRetryInFlightRef.current');
+        expect(source).toContain('finalSubmissionBusy ? "ΑΠΟΣΤΟΛΗ..." : "ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ"');
+        expect(source).toMatch(/ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ[\s\S]*ΟΙ ΑΓΩΝΕΣ ΜΟΥ/);
+    });
+    it("offers a single-flight manual retry only for an active exact SYNC_RUN_CONFLICT", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
+        const activeConflict = { ...gameplay, sync: { ...gameplay.sync, status: "conflict" as const, lastErrorCode: "SYNC_RUN_CONFLICT" } };
+        expect(activeSyncRunConflictRetryAvailable(activeConflict)).toBe(true);
+        expect(activeSyncRunConflictRetryAvailable({ ...activeConflict, sync: { ...activeConflict.sync, lastErrorCode: "SYNC_INTEGRITY_CONFLICT" } })).toBe(false);
+        expect(activeSyncRunConflictRetryAvailable({ ...activeConflict, sync: { ...activeConflict.sync, lastErrorCode: "SYNC_INVALID" } })).toBe(false);
+        expect(activeSyncRunConflictRetryAvailable({ ...activeConflict, lifecycle: "finalized" })).toBe(false);
+        expect(source).toContain("syncRetryInFlightRef.current");
+        expect(source).toContain('{activeRunConflictRetry ? <button type="button" className="live-reconnect-button" disabled={finalSubmissionBusy}');
+        expect(source).toContain('onClick={() => void retryGameplaySync()}');
+        expect(source).toContain('finalSubmissionBusy ? "ΑΠΟΣΤΟΛΗ..." : "ΝΕΑ ΠΡΟΣΠΑΘΕΙΑ"');
     });
     it("normalizes incident reports deterministically and rejects oversized normalized text", () => {
         expect(normalizeIncidentReport("  Ελληνική αναφορά\r\nδεύτερη γραμμή\rτρίτη  ")).toBe("Ελληνική αναφορά\nδεύτερη γραμμή\nτρίτη");
@@ -458,6 +576,8 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(css).toMatch(/@media \(max-height: 800px\)[\s\S]*\.live-primary-grid/);
         expect(css).toMatch(/@media \(min-width: 1700px\)[\s\S]*\.live-control-shell/);
         expect(css).toMatch(/\.live-event-workspace\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
+        expect(css).toMatch(/\.live-event-workspace\.is-full-active-event\s*\{[^}]*overflow-y:\s*hidden;/s);
+        expect(css).toMatch(/\.live-event-workspace\.is-full-active-event \.live-choice-grid\.is-stacked\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
         expect(css).toMatch(/\.live-log-list > button\s*\{[^}]*display:\s*flex;/s);
         expect(css).not.toContain(".live-log-head");
     });
@@ -769,15 +889,20 @@ describe("Full Stats Live Control presentation contract", () => {
         const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         expect(source).toContain('if (action === "SHOOT") return "shooter";');
         expect(source).toContain('if (action === "FOUL") return "offender";');
-        expect(source).toContain('setFlow(gameplay.gameMode === "SIMPLE" ? { ...next, points: 2 } : next);');
+        expect(source).toContain('if (gameplay.gameMode === "FULL") setFlow(next);');
         expect(source).toContain('setFlow({ ...next, foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" });');
-        expect(source).toContain('const selectShotPoints = (points: 2 | 3)');
+        expect(source).toContain('const activeCourtSelectionFlow = isCourtShotSelectionFlow(flow);');
+        const courtHandler = source.slice(source.indexOf('const selectCourtPosition ='), source.indexOf('const flowPlayerLabel ='));
+        expect(courtHandler.indexOf('if (activeCourtSelectionFlow)')).toBeLessThan(courtHandler.indexOf('if (gameplay.gameMode === "SIMPLE")'));
+        expect(courtHandler).toContain('applyActiveCourtFlowSelection(current, shotLocation)');
+        expect(courtHandler).not.toContain('appendIntent');
         expect(source).not.toContain('onClick={() => selectShotPoints(3)}>3PT</button>');
         expect(enterShootingFoulFlow({ action: "FOUL", step: "offender", foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" })).toEqual({ action: "FOUL", step: "shot-points", foulType: "PERSONAL_FOUL", context: "SHOOTING" });
         expect(source).toContain('action === "SHOOTING_FOUL" ? "FOUL" : action');
         expect(source).toContain('setFlow(enterShootingFoulFlow({ ...next, foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" }))');
-        expect(source).toContain('gameplay.gameMode === "SIMPLE" && flow.action === "FOUL" && flow.context === "NON_SHOOTING" && !flow.offender');
-        expect(source).toContain('onClick={() => setFlow(enterShootingFoulFlow(flow))}>SHOOTING FOUL</button>');
+        expect(source).not.toContain('gameplay.gameMode === "SIMPLE" && flow.action === "FOUL" && flow.context === "NON_SHOOTING" && !flow.offender');
+        expect(source).not.toContain('onClick={() => setFlow(enterShootingFoulFlow(flow))}>SHOOTING FOUL</button>');
+        expect(source).toContain('gameplay.gameMode === "SIMPLE" ? "Επιλέξτε σημείο στο τέρεν" : "Επιλέξτε σημείο προσπάθειας στο γήπεδο"');
         expect(source).not.toContain('if (flow.step === "points") return <><h3>SHOT TYPE</h3>');
         expect(source).not.toContain('flow.action === "FOUL" ? "SHOOTING FOUL" : "SHOOTING"');
         expect(source).toContain('flow.context === "SHOOTING" ? "shot-victim" : "victim"');
@@ -804,7 +929,7 @@ describe("Full Stats Live Control presentation contract", () => {
         const styles = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
         expect(source).toContain('const isThreePointShotType = flow.action === "SHOOT" && item.step === "points" && flow.points === 3;');
         expect(source).toContain('const itemClassName = [isThreePointShotType ? "is-three-point" : "", itemTeam ? "is-team-owned" : ""].filter(Boolean).join(" ") || undefined;');
-        expect(source).toContain('setFlow(gameplay.gameMode === "SIMPLE" ? { ...next, points: 2 } : next);');
+        expect(source).toContain('if (gameplay.gameMode === "FULL") setFlow(next);');
         expect(source).not.toContain('onClick={() => selectShotPoints(3)}>3PT</button>');
         expect(styles).toContain('.live-flow-trail button.is-three-point');
     });

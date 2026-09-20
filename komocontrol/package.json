@@ -1,7 +1,7 @@
 {
   "name": "komocontrol",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": { "name": "D.Seretidis" },
   "description": "Official Scoring Application for KomoBasket",
   "main": "dist-electron/main.cjs",

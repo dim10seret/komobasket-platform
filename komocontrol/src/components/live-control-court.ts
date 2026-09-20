@@ -62,14 +62,18 @@ export type CourtSelectableFlow = Flow & {
     action: "SHOOT" | "FOUL" | "TECH_FOUL" | "PENALTY";
 };
 
+export function isCourtShotSelectionFlow(flow: Flow | null): flow is CourtSelectableFlow {
+    if (flow === null || flow.committedEventId) return false;
+    if (flow.action !== "SHOOT" && flow.action !== "FOUL" && flow.action !== "TECH_FOUL" && flow.action !== "PENALTY") return false;
+    const shootingFlow = flow.action === "SHOOT" || flow.context === "SHOOTING";
+    return shootingFlow && (flow.step === "shot-points" || Boolean(flow.shotLocation));
+}
+
 export function isFullCourtShotSelectionFlow(
     gameMode: "FULL" | "SIMPLE",
     flow: Flow | null,
 ): flow is CourtSelectableFlow {
-    if (gameMode !== "FULL" || flow === null || flow.committedEventId) return false;
-    if (flow.action !== "SHOOT" && flow.action !== "FOUL" && flow.action !== "TECH_FOUL" && flow.action !== "PENALTY") return false;
-    const shootingFlow = flow.action === "SHOOT" || flow.context === "SHOOTING";
-    return shootingFlow && (flow.step === "shot-points" || Boolean(flow.shotLocation));
+    return gameMode === "FULL" && isCourtShotSelectionFlow(flow);
 }
 
 export function applyCourtShotSelection<T extends CourtSelectableFlow>(

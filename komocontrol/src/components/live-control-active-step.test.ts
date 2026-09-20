@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { currentFullActiveStep, shouldShowFullActiveStep, type Flow } from "./LiveControl";
+import { currentFullActiveStep, currentSimpleActiveStep, shouldShowFullActiveStep, shouldShowSimpleActiveStep, type Flow } from "./LiveControl";
 
 describe("FULL LiveControl active-step panel", () => {
     it("shows only the current step of the requested FULL flows", () => {
@@ -51,17 +51,38 @@ describe("FULL LiveControl active-step panel", () => {
         const source = readFileSync(resolve("src/components/LiveControl.tsx"), "utf8");
         const styles = readFileSync(resolve("src/styles/global.css"), "utf8");
         expect(source).toContain('aria-label="Τρέχον βήμα" aria-live="polite">{renderCurrentFlowStep()}</section>');
-        expect(source).toContain('{renderFlowTrail()}{renderFlow()}</>');
+        expect(source).toContain('const activeStepVisible = gameplay.gameMode === "FULL"');
+        expect(source).toContain('{gameplay.gameMode === "FULL" ? renderFlowTrail() : null}{renderFlow()}</>');
         const stepRenderer = source.slice(source.indexOf('const renderCurrentFlowStep = () => {'), source.indexOf('return <main className="live-control-shell">'));
         expect(stepRenderer).not.toContain('renderFlowTrail()');
         expect(stepRenderer).not.toContain('renderFlow()');
         expect(stepRenderer).toContain('onClick={() => void finishShot(true)}>MADE</button>');
         expect(stepRenderer).toContain('onClick={() => void finishShot(false)}>MISS</button>');
+        expect(stepRenderer.split('<p className="live-active-step-instruction">Μπήκε το καλάθι;</p>')).toHaveLength(3);
         expect(stepRenderer).toContain('onClick={() => void finishAssist()}>NO ASSIST</button>');
         expect(source).toContain('flow.step !== "foul-type"');
         expect(source).toContain('gameMode !== "FULL"');
         expect(styles).toContain('.live-control-main > .live-active-step-panel');
         expect(styles).toContain('.live-active-step-choices { min-width: 0; max-width: 100%; display: flex;');
         expect(styles).toContain('.live-control-body.has-active-step .live-control-main > .live-event-workspace { grid-row: 3; }');
+        expect(source).toContain('gameplay.gameMode === "FULL" && flow && !historyPreview && !historyEdit && !localCurrentCorrection && !correctionTarget ? " is-full-active-event"');
+        expect(styles).toContain('.live-event-workspace.is-full-active-event { overflow-y: hidden;');
+        expect(styles).toContain('.live-event-workspace.is-full-active-event .live-choice-grid.is-stacked { grid-template-columns: repeat(2, minmax(0, 1fr));');
+    });
+});
+
+describe("SIMPLE LiveControl active-step panel", () => {
+    it("shows only the unresolved SIMPLE step while preserving the reduced shot flow", () => {
+        expect(shouldShowSimpleActiveStep("SIMPLE", { action: "SHOOT", step: "shooter", points: 3 })).toBe(true);
+        expect(currentSimpleActiveStep("SIMPLE", { action: "SHOOT", step: "shooter", points: 3 })).toEqual({ kind: "instruction", text: "Επιλέξτε αριθμό από τα rails" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "FOUL", step: "offender", context: "NON_SHOOTING" })).toEqual({ kind: "instruction", text: "Ποιος έκανε το φάουλ;" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "FOUL", step: "victim", context: "NON_SHOOTING" })).toEqual({ kind: "instruction", text: "Ποιος κέρδισε το φάουλ;" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "FOUL", step: "shot-points", context: "SHOOTING" })).toEqual({ kind: "instruction", text: "Επιλέξτε σημείο στο τέρεν" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "FOUL", step: "offender", context: "SHOOTING" })).toEqual({ kind: "instruction", text: "Ποιος έκανε το φάουλ;" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "FOUL", step: "shot-victim", context: "SHOOTING" })).toEqual({ kind: "instruction", text: "Ποιος κέρδισε το φάουλ;" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "TECH_FOUL", step: "foul-type" })).toBeNull();
+        expect(currentSimpleActiveStep("SIMPLE", { action: "TECH_FOUL", step: "shot-points", context: "SHOOTING" })).toEqual({ kind: "instruction", text: "Επιλέξτε σημείο στο τέρεν" });
+        expect(currentSimpleActiveStep("SIMPLE", { action: "TECH_FOUL", step: "offender", context: "SHOOTING" })).toEqual({ kind: "instruction", text: "Ποιος έκανε το φάουλ;" });
+        expect(currentSimpleActiveStep("FULL", { action: "SHOOT", step: "shooter", points: 2 })).toBeNull();
     });
 });

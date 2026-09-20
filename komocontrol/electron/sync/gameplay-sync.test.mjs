@@ -60,6 +60,51 @@ describe("Run-scoped gameplay synchronization", () => {
         await expect(first).resolves.toMatchObject({ runId: "run-a" }); await expect(duplicate).resolves.toMatchObject({ runId: "run-a" }); await expect(independentB).resolves.toMatchObject({ runId: "run-b" }); await expect(independentC).resolves.toMatchObject({ runId: "run-c" });
         expect(database.acknowledgeGameplaySync).toHaveBeenCalledTimes(3);
     });
+    it("keeps SYNC_RUN_CONFLICT terminal while allowing one deduplicated explicit attempt at a time", async () => {
+        vi.useFakeTimers();
+        try {
+            const database = databaseFixture(["run-a"]);
+            const eventsBefore = database.readLocalMatchEvents("run-a");
+            let rejectFirst;
+            const firstConflict = new Promise((_resolve, reject) => { rejectFirst = reject; });
+            const client = { syncGameplay: vi.fn()
+                .mockImplementationOnce(() => firstConflict)
+                .mockRejectedValueOnce(new PlatformGameplaySyncError("SYNC_RUN_CONFLICT"))
+                .mockImplementationOnce(async (_token, input) => response(input)) };
+            const worker = new GameplaySyncWorker(database, client);
+            const owner = { scorerId: "scorer-1", organizationId: "organization-1" };
+
+            const first = worker.retry("run-a", "token", owner);
+            const duplicate = worker.retry("run-a", "token", owner);
+            expect(client.syncGameplay).toHaveBeenCalledTimes(1);
+            rejectFirst(new PlatformGameplaySyncError("SYNC_RUN_CONFLICT"));
+            expect((await Promise.allSettled([first, duplicate])).map((item) => item.status)).toEqual(["rejected", "rejected"]);
+            expect(database.recordGameplaySyncFailure).toHaveBeenCalledTimes(1);
+            expect(database.readLocalGameplaySyncState("run-a")).toMatchObject({
+                lastAcknowledgedHistoryRevision: 0,
+                lastErrorCode: "SYNC_RUN_CONFLICT",
+                consecutiveFailures: 1,
+                nextRetryAtUtc: null,
+            });
+            expect(database.readLocalMatchEvents("run-a")).toEqual(eventsBefore);
+
+            worker.wake("token", owner);
+            await vi.advanceTimersByTimeAsync(600_000);
+            expect(client.syncGameplay).toHaveBeenCalledTimes(1);
+
+            await expect(worker.retry("run-a", "token", owner)).rejects.toMatchObject({ code: "SYNC_RUN_CONFLICT" });
+            expect(client.syncGameplay).toHaveBeenCalledTimes(2);
+            expect(database.readLocalGameplaySyncState("run-a")).toMatchObject({ lastErrorCode: "SYNC_RUN_CONFLICT", consecutiveFailures: 2, nextRetryAtUtc: null });
+
+            await expect(worker.retry("run-a", "token", owner)).resolves.toMatchObject({ runId: "run-a", status: "accepted" });
+            expect(client.syncGameplay).toHaveBeenCalledTimes(3);
+            expect(database.acknowledgeGameplaySync).toHaveBeenCalledOnce();
+            expect(database.readLocalGameplaySyncState("run-a")).toMatchObject({ lastAcknowledgedHistoryRevision: 1, lastErrorCode: null, consecutiveFailures: 0, nextRetryAtUtc: null });
+            expect(database.readLocalMatchEvents("run-a")).toEqual(eventsBefore);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
     it("notifies the renderer after attempt and exact acknowledgement without entering the append path", async () => {
         const database = databaseFixture(["run-a"]); const onStateChange = vi.fn(); const client = { syncGameplay: vi.fn(async (_token, input) => response(input)) };
         const worker = new GameplaySyncWorker(database, client, undefined, onStateChange); await worker.retry("run-a", "token", { scorerId: "scorer-1", organizationId: "organization-1" });

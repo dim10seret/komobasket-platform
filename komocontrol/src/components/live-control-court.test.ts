@@ -1,17 +1,20 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Flow } from "./LiveControl";
+import { applyActiveCourtFlowSelection, type Flow } from "./LiveControl";
 import {
     LIVE_COURT_CORNER_BREAK_Y,
     LIVE_COURT_BOUNDARY_EPSILON,
     LIVE_COURT_GEOMETRY,
     applyCourtShotSelection,
+    isCourtShotSelectionFlow,
     isFullCourtShotSelectionFlow,
     liveCourtThreePointSvgPath,
     normalizedCourtPosition,
     shotTypeFromCourtPosition,
 } from "./live-control-court";
 
-describe("FULL LiveControl court shot selection", () => {
+describe("LiveControl shared court shot selection", () => {
     it("classifies positions inside and outside the three-point arc", () => {
         expect(shotTypeFromCourtPosition({ x: 0.5, y: 0.45 })).toBe(2);
         expect(shotTypeFromCourtPosition({ x: 0.5, y: 0.7 })).toBe(3);
@@ -61,6 +64,40 @@ describe("FULL LiveControl court shot selection", () => {
         expect(isFullCourtShotSelectionFlow("FULL", shootingFoul)).toBe(true);
         expect(isFullCourtShotSelectionFlow("FULL", { action: "TECH_FOUL", step: "shot-points", context: "SHOOTING" })).toBe(true);
         expect(isFullCourtShotSelectionFlow("FULL", { action: "PENALTY", step: "shot-points", context: "SHOOTING" })).toBe(true);
+    });
+
+    it("accepts SIMPLE normal-shot reselection and shooting-context foul flows", () => {
+        expect(isCourtShotSelectionFlow({ action: "SHOOT", step: "shooter", points: 2, shotLocation: { x: 0.5, y: 0.45 } })).toBe(true);
+        expect(isCourtShotSelectionFlow({ action: "FOUL", step: "shot-points", context: "SHOOTING" })).toBe(true);
+        expect(isCourtShotSelectionFlow({ action: "TECH_FOUL", step: "shot-points", context: "SHOOTING" })).toBe(true);
+        expect(isCourtShotSelectionFlow({ action: "FOUL", step: "offender", context: "NON_SHOOTING" })).toBe(false);
+        expect(isCourtShotSelectionFlow({ action: "TIME_OUT", step: "team-target" })).toBe(false);
+        expect(isCourtShotSelectionFlow(null)).toBe(false);
+    });
+
+    it("applies SIMPLE shooting-foul court locations without replacing the active FOUL flow", () => {
+        const flow: Flow = { action: "FOUL", step: "shot-points", context: "SHOOTING", foulType: "PERSONAL_FOUL" };
+        expect(applyActiveCourtFlowSelection(flow, { x: 0.5, y: 0.45 })).toMatchObject({ action: "FOUL", context: "SHOOTING", step: "offender", points: 2, shotLocation: { x: 0.5, y: 0.45 } });
+        expect(applyActiveCourtFlowSelection(flow, { x: 0.5, y: 0.7 })).toMatchObject({ action: "FOUL", context: "SHOOTING", step: "offender", points: 3, shotLocation: { x: 0.5, y: 0.7 } });
+        expect(applyActiveCourtFlowSelection(flow, { x: LIVE_COURT_GEOMETRY.cornerInset - 0.01, y: LIVE_COURT_CORNER_BREAK_Y - 0.01 })).toMatchObject({ action: "FOUL", step: "offender", points: 3 });
+        expect(applyActiveCourtFlowSelection(flow, { x: LIVE_COURT_GEOMETRY.hoopX, y: LIVE_COURT_GEOMETRY.hoopY + LIVE_COURT_GEOMETRY.threePointRadius })).toMatchObject({ action: "FOUL", step: "offender", points: 2 });
+    });
+
+    it("applies shooting TECH locations to the same TECH flow", () => {
+        const flow: Flow = { action: "TECH_FOUL", step: "shot-points", context: "SHOOTING", foulType: "FLAGRANT_FOUL" };
+        expect(applyActiveCourtFlowSelection(flow, { x: 0.5, y: 0.45 })).toMatchObject({ action: "TECH_FOUL", context: "SHOOTING", step: "offender", points: 2 });
+        expect(applyActiveCourtFlowSelection(flow, { x: 0.5, y: 0.7 })).toMatchObject({ action: "TECH_FOUL", context: "SHOOTING", step: "offender", points: 3 });
+        expect(applyActiveCourtFlowSelection({ action: "TURN_OVER", step: "offender" }, { x: 0.5, y: 0.7 })).toEqual({ action: "TURN_OVER", step: "offender" });
+        expect(applyActiveCourtFlowSelection(null, { x: 0.5, y: 0.7 })).toBeNull();
+    });
+
+    it("dispatches active court context before the SIMPLE idle made-shot path", () => {
+        const source = readFileSync(resolve("src/components/LiveControl.tsx"), "utf8");
+        const handler = source.slice(source.indexOf("const selectCourtPosition ="), source.indexOf("const flowPlayerLabel ="));
+        expect(handler.indexOf("if (activeCourtSelectionFlow)")).toBeGreaterThanOrEqual(0);
+        expect(handler.indexOf("if (activeCourtSelectionFlow)")).toBeLessThan(handler.indexOf('if (gameplay.gameMode === "SIMPLE")'));
+        expect(handler).toContain("applyActiveCourtFlowSelection(current, shotLocation)");
+        expect(handler).not.toContain("appendIntent");
     });
 
     it("rejects null, SIMPLE, unrelated actions, wrong steps, and committed flows", () => {
