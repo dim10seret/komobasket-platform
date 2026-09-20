@@ -293,6 +293,14 @@ describe("KomoControl gameplay sync replay and revision policy", () => {
 
   it("rejects a different device at the pure identity boundary", () => {
     const input = payload();
-    expect(() => assertGameplaySyncIdentity({ scorerId: input.scorerId, organizationId: input.organizationId, deviceId: "different-device" }, input)).toThrowError(/SYNC_RUN_CONFLICT/);
+    try {
+      assertGameplaySyncIdentity({ scorerId: input.scorerId, organizationId: input.organizationId, deviceId: "different-device" }, input);
+      throw new Error("Expected identity conflict");
+    } catch (error) {
+      expect(error).toBeInstanceOf(GameplaySyncValidationError);
+      if (!(error instanceof GameplaySyncValidationError)) throw error;
+      expect(error.code).toBe("SYNC_RUN_CONFLICT");
+      expect(error.diagnostic).toEqual({ reason: "SESSION_IDENTITY_MISMATCH", mismatchedFields: ["deviceId"] });
+    }
   });
 });

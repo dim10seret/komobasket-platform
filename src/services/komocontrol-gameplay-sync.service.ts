@@ -8,6 +8,8 @@ import {
   decideGameplayConfigurationSync,
   decideGameplaySync,
   validateGameplaySync,
+  type GameplaySyncConflictDiagnostic,
+  type GameplaySyncConflictReason,
   type GameplaySyncDecision,
   type ValidatedGameplaySync,
 } from "@/services/komocontrol-gameplay-sync-core";
@@ -33,9 +35,15 @@ type ClaimRow = { game_id: string; run_id: string; organization_id: string; scor
 type SnapshotRow = { run_id: string; game_id: string; package_id: string; package_version: number; package_hash: string; organization_id: string; scorer_id: string; device_id: string };
 type HeadRow = { event_history_revision: number; history_hash: string; finalization_hash: string | null; official_result_applied_at: string | null };
 type CurrentConfigurationRow = { configuration_revision: number; configuration_hash: string };
+type SyncCorrelation = Pick<ValidatedGameplaySync, "runId" | "gameId">;
+type ServiceConflictDiagnostic = GameplaySyncConflictDiagnostic & SyncCorrelation;
 
 export class GameplaySyncServiceError extends Error {
-  constructor(readonly code: "SYNC_INVALID" | "SYNC_STALE" | "SYNC_INTEGRITY_CONFLICT" | "SYNC_RUN_CONFLICT" | "SYNC_UNAVAILABLE", readonly status: number) {
+  constructor(
+    readonly code: "SYNC_INVALID" | "SYNC_STALE" | "SYNC_INTEGRITY_CONFLICT" | "SYNC_RUN_CONFLICT" | "SYNC_UNAVAILABLE",
+    readonly status: number,
+    readonly diagnostic?: ServiceConflictDiagnostic,
+  ) {
     super(code);
     this.name = "GameplaySyncServiceError";
   }
@@ -47,21 +55,89 @@ async function gameplayDatabase(): Promise<D1DatabaseBinding> {
   return environment.NEWS_DB;
 }
 
-function mapValidation(error: unknown): never {
+export function gameplaySyncServiceErrorFrom(error: unknown, correlation?: SyncCorrelation): GameplaySyncServiceError {
   if (error instanceof GameplaySyncValidationError) {
     const status = error.code === "SYNC_STALE" ? 409 : error.code === "SYNC_INTEGRITY_CONFLICT" || error.code === "SYNC_RUN_CONFLICT" ? 409 : 400;
-    throw new GameplaySyncServiceError(error.code, status);
+    const diagnostic = error.code === "SYNC_RUN_CONFLICT" && error.diagnostic && correlation
+      ? { ...error.diagnostic, ...correlation }
+      : undefined;
+    return new GameplaySyncServiceError(error.code, status, diagnostic);
   }
-  if (error instanceof GameplaySyncServiceError) throw error;
-  throw new GameplaySyncServiceError("SYNC_UNAVAILABLE", 503);
+  if (error instanceof GameplaySyncServiceError) return error;
+  return new GameplaySyncServiceError("SYNC_UNAVAILABLE", 503);
 }
 
-function assertStoredIdentity(input: ValidatedGameplaySync, row: SnapshotRow | null): void {
+function mapValidation(error: unknown, correlation?: SyncCorrelation): never {
+  throw gameplaySyncServiceErrorFrom(error, correlation);
+}
+
+function mismatchFields(checks: ReadonlyArray<readonly [string, boolean]>): string[] {
+  return checks.filter(([, mismatch]) => mismatch).map(([field]) => field);
+}
+
+function runConflict(input: SyncCorrelation, reason: GameplaySyncConflictReason, mismatchedFields: readonly string[]): never {
+  throw new GameplaySyncServiceError("SYNC_RUN_CONFLICT", 409, { reason, runId: input.runId, gameId: input.gameId, mismatchedFields });
+}
+
+export function assertGameplaySyncPackageAccepted(
+  input: Pick<ValidatedGameplaySync, "packageVersion" | "packageHash">,
+  row: Pick<PackageRow, "package_version" | "package_hash" | "package_status"> | null,
+): asserts row is Pick<PackageRow, "package_version" | "package_hash" | "package_status"> {
+  if (!row || row.package_version !== input.packageVersion || row.package_hash !== input.packageHash
+    || !["published", "superseded"].includes(row.package_status)) throw new GameplaySyncServiceError("SYNC_INVALID", 400);
+}
+
+export function assertGameplaySyncClaimIdentity(
+  input: Pick<ValidatedGameplaySync, "runId" | "gameId" | "organizationId" | "scorerId" | "deviceId">,
+  row: ClaimRow | null,
+): void {
   if (!row) return;
-  if (row.run_id !== input.runId || row.game_id !== input.gameId || row.package_id !== input.packageId || row.package_version !== input.packageVersion
-    || row.package_hash !== input.packageHash || row.organization_id !== input.organizationId || row.scorer_id !== input.scorerId || row.device_id !== input.deviceId) {
-    throw new GameplaySyncServiceError("SYNC_RUN_CONFLICT", 409);
-  }
+  const mismatches = mismatchFields([
+    ["gameId", row.game_id !== input.gameId],
+    ["runId", row.run_id !== input.runId],
+    ["organizationId", row.organization_id !== input.organizationId],
+    ["scorerId", row.scorer_id !== input.scorerId],
+    ["deviceId", row.device_id !== input.deviceId],
+  ]);
+  if (mismatches.length > 0) runConflict(input, "CLAIM_IDENTITY_MISMATCH", mismatches);
+}
+
+export function assertStoredGameplaySyncIdentity(input: ValidatedGameplaySync, row: SnapshotRow | null): void {
+  if (!row) return;
+  const mismatches = mismatchFields([
+    ["runId", row.run_id !== input.runId],
+    ["gameId", row.game_id !== input.gameId],
+    ["packageId", row.package_id !== input.packageId],
+    ["packageVersion", row.package_version !== input.packageVersion],
+    ["packageHash", row.package_hash !== input.packageHash],
+    ["organizationId", row.organization_id !== input.organizationId],
+    ["scorerId", row.scorer_id !== input.scorerId],
+    ["deviceId", row.device_id !== input.deviceId],
+  ]);
+  if (mismatches.length > 0) runConflict(input, "SNAPSHOT_IDENTITY_MISMATCH", mismatches);
+}
+
+export function assertPersistedGameplaySyncHead(
+  input: SyncCorrelation & { eventHistoryRevision: number; historyHash: string; finalizationHash: string | null },
+  row: HeadRow | null,
+): void {
+  const mismatches = row ? mismatchFields([
+    ["eventHistoryRevision", row.event_history_revision !== input.eventHistoryRevision],
+    ["historyHash", row.history_hash !== input.historyHash],
+    ["finalizationHash", (row.finalization_hash ?? null) !== input.finalizationHash],
+  ]) : ["gameplayHead"];
+  if (mismatches.length > 0) runConflict(input, "POST_WRITE_HISTORY_MISMATCH", mismatches);
+}
+
+export function assertPersistedGameplaySyncConfiguration(
+  input: SyncCorrelation & { currentConfigurationRevision: number; currentConfigurationHash: string },
+  row: CurrentConfigurationRow | null,
+): void {
+  const mismatches = row ? mismatchFields([
+    ["currentConfigurationRevision", row.configuration_revision !== input.currentConfigurationRevision],
+    ["currentConfigurationHash", row.configuration_hash !== input.currentConfigurationHash],
+  ]) : ["currentConfiguration"];
+  if (mismatches.length > 0) runConflict(input, "POST_WRITE_CONFIGURATION_MISMATCH", mismatches);
 }
 
 function eventRowsJson(input: ValidatedGameplaySync): string {
@@ -149,12 +225,12 @@ async function persistRevision(
   try { await database.batch(statements); } catch { throw new GameplaySyncServiceError("SYNC_INTEGRITY_CONFLICT", 409); }
   const persisted = await database.prepare(`SELECT event_history_revision, history_hash, finalization_hash, official_result_applied_at
     FROM league_komocontrol_gameplay_heads WHERE run_id = ?`).bind(input.runId).first<HeadRow>();
-  if (!persisted || persisted.event_history_revision !== input.eventHistoryRevision || persisted.history_hash !== input.historyHash
-    || (persisted.finalization_hash ?? null) !== finalizationHash) throw new GameplaySyncServiceError("SYNC_RUN_CONFLICT", 409);
+  assertPersistedGameplaySyncHead({ runId: input.runId, gameId: input.gameId, eventHistoryRevision: input.eventHistoryRevision,
+    historyHash: input.historyHash, finalizationHash }, persisted);
   const persistedConfiguration = await database.prepare(`SELECT configuration_revision, configuration_hash
     FROM league_komocontrol_current_game_configurations_v1 WHERE run_id = ?`).bind(input.runId).first<CurrentConfigurationRow>();
-  if (!persistedConfiguration || persistedConfiguration.configuration_revision !== input.currentConfigurationRevision
-    || persistedConfiguration.configuration_hash !== input.currentConfigurationHash) throw new GameplaySyncServiceError("SYNC_RUN_CONFLICT", 409);
+  assertPersistedGameplaySyncConfiguration({ runId: input.runId, gameId: input.gameId,
+    currentConfigurationRevision: input.currentConfigurationRevision, currentConfigurationHash: input.currentConfigurationHash }, persistedConfiguration);
 }
 
 async function applyOfficialResult(database: D1DatabaseBinding, input: ValidatedGameplaySync, packageRow: PackageRow): Promise<boolean> {
@@ -179,8 +255,10 @@ async function applyOfficialResult(database: D1DatabaseBinding, input: Validated
 }
 
 export async function syncScorerGameplay(session: SafeScorerSession, routeRunId: string, payload: unknown) {
+  let correlation: SyncCorrelation | undefined;
   try {
     const input = validateGameplaySync(payload, routeRunId);
+    correlation = { runId: input.runId, gameId: input.gameId };
     assertGameplaySyncIdentity({ scorerId: session.scorer.id, organizationId: session.organization.id, deviceId: session.session.deviceId }, input);
     const database = await gameplayDatabase();
     const packageRow = await database.prepare(`SELECT p.id AS package_id, p.game_id, p.package_version, p.snapshot_hash AS package_hash,
@@ -190,17 +268,15 @@ export async function syncScorerGameplay(session: SafeScorerSession, routeRunId:
       JOIN league_competitions c ON c.id = g.competition_id
       WHERE p.id = ? AND p.game_id = ? AND p.organization_id = ? AND c.organization_id = ? LIMIT 1`)
       .bind(input.packageId, input.gameId, input.organizationId, input.organizationId).first<PackageRow>();
-    if (!packageRow || packageRow.package_version !== input.packageVersion || packageRow.package_hash !== input.packageHash
-      || !["published", "superseded"].includes(packageRow.package_status)) throw new GameplaySyncServiceError("SYNC_INVALID", 400);
+    assertGameplaySyncPackageAccepted(input, packageRow);
     assertGameplayPackageLineage(input, packageRow.snapshot_json);
     const claim = await database.prepare(`SELECT game_id, run_id, organization_id, scorer_id, device_id
       FROM league_komocontrol_gameplay_game_claims WHERE game_id = ? OR run_id = ? LIMIT 1`)
       .bind(input.gameId, input.runId).first<ClaimRow>();
-    if (claim && (claim.game_id !== input.gameId || claim.run_id !== input.runId || claim.organization_id !== input.organizationId
-      || claim.scorer_id !== input.scorerId || claim.device_id !== input.deviceId)) throw new GameplaySyncServiceError("SYNC_RUN_CONFLICT", 409);
+    assertGameplaySyncClaimIdentity(input, claim);
     const snapshot = await database.prepare(`SELECT run_id, game_id, package_id, package_version, package_hash, organization_id, scorer_id, device_id
       FROM league_komocontrol_match_engine_snapshots_v1 WHERE run_id = ?`).bind(input.runId).first<SnapshotRow>();
-    assertStoredIdentity(input, snapshot);
+    assertStoredGameplaySyncIdentity(input, snapshot);
     const current = await database.prepare(`SELECT event_history_revision, history_hash, finalization_hash, official_result_applied_at
       FROM league_komocontrol_gameplay_heads WHERE run_id = ?`).bind(input.runId).first<HeadRow>();
     const currentConfiguration = await database.prepare(`SELECT configuration_revision, configuration_hash
@@ -226,10 +302,18 @@ export async function syncScorerGameplay(session: SafeScorerSession, routeRunId:
       officialResultApplied,
       status: decision === "idempotent" ? "idempotent" as const : "accepted" as const,
     };
-  } catch (error) { return mapValidation(error); }
+  } catch (error) { return mapValidation(error, correlation); }
 }
 
 export function gameplaySyncErrorResponse(error: unknown): Response {
   const mapped = error instanceof GameplaySyncServiceError ? error : new GameplaySyncServiceError("SYNC_UNAVAILABLE", 503);
+  if (mapped.code === "SYNC_RUN_CONFLICT" && mapped.diagnostic) {
+    console.warn("[KomoControl gameplay sync] SYNC_RUN_CONFLICT", {
+      reason: mapped.diagnostic.reason,
+      runId: mapped.diagnostic.runId,
+      gameId: mapped.diagnostic.gameId,
+      mismatchedFields: mapped.diagnostic.mismatchedFields,
+    });
+  }
   return Response.json({ error: { code: mapped.code } }, { status: mapped.status, headers: { "Cache-Control": "no-store, private" } });
 }

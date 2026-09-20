@@ -5,9 +5,20 @@ import type { MatchState } from "../../komocontrol/shared/match-engine/types/mat
 
 export type GameplaySyncDecision = "insert" | "replace" | "idempotent";
 export type GameplaySyncErrorCode = "SYNC_INVALID" | "SYNC_STALE" | "SYNC_INTEGRITY_CONFLICT" | "SYNC_RUN_CONFLICT";
+export type GameplaySyncConflictReason =
+  | "SESSION_IDENTITY_MISMATCH"
+  | "CLAIM_IDENTITY_MISMATCH"
+  | "SNAPSHOT_IDENTITY_MISMATCH"
+  | "POST_WRITE_HISTORY_MISMATCH"
+  | "POST_WRITE_CONFIGURATION_MISMATCH";
+
+export type GameplaySyncConflictDiagnostic = {
+  reason: GameplaySyncConflictReason;
+  mismatchedFields: readonly string[];
+};
 
 export class GameplaySyncValidationError extends Error {
-  constructor(readonly code: GameplaySyncErrorCode) {
+  constructor(readonly code: GameplaySyncErrorCode, readonly diagnostic?: GameplaySyncConflictDiagnostic) {
     super(code);
     this.name = "GameplaySyncValidationError";
   }
@@ -320,7 +331,12 @@ export function assertGameplaySyncIdentity(
   expected: { scorerId: string; organizationId: string; deviceId: string },
   incoming: Pick<ValidatedGameplaySync, "scorerId" | "organizationId" | "deviceId">,
 ): void {
-  if (incoming.scorerId !== expected.scorerId || incoming.organizationId !== expected.organizationId || incoming.deviceId !== expected.deviceId) {
-    throw new GameplaySyncValidationError("SYNC_RUN_CONFLICT");
+  const mismatchedFields = [
+    ...(incoming.scorerId !== expected.scorerId ? ["scorerId"] : []),
+    ...(incoming.organizationId !== expected.organizationId ? ["organizationId"] : []),
+    ...(incoming.deviceId !== expected.deviceId ? ["deviceId"] : []),
+  ];
+  if (mismatchedFields.length > 0) {
+    throw new GameplaySyncValidationError("SYNC_RUN_CONFLICT", { reason: "SESSION_IDENTITY_MISMATCH", mismatchedFields });
   }
 }
