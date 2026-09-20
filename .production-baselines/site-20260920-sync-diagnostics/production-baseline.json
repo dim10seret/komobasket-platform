@@ -1,0 +1,60 @@
+{
+  "product": "KomoBasket Site",
+  "environment": "production",
+  "baseline_name": "Sync Diagnostics",
+  "recorded_at_utc": "2026-09-20T15:37:13Z",
+  "production_origin": "https://komobasket.gr",
+  "cloudflare_deployment_id": "80808b65-5efd-4af2-ba98-9b119abf8237",
+  "cloudflare_version_id": "1f24ec95-384d-4edf-b240-07a3e92acb32",
+  "traffic_percent": 100,
+  "worker_script_etag": "204566f760d02cf35c54528c3444c3aa49f342ea5e033fb2e7414828919aaccb",
+  "worker_service_artifact_sha256": "3b23a7c3a9b7958970142c6ead7128c1e666a8e9248b1041a13d85c82022ed71",
+  "d1_migrations_applied": 34,
+  "d1_migrations_pending": 0,
+  "d1_quick_check": "ok",
+  "d1_fk_violations": 0,
+  "previous_production_tag": "production-site-20260919-game-sheet-v1",
+  "previous_cloudflare_deployment_id": "0366509c-07b5-4d4d-8960-c3409de5b55a",
+  "previous_cloudflare_version_id": "2cf8a05d-5529-4db7-bde5-93cfbe766b31",
+  "source_git_commit": "be559dbc1531af90f43aad99c57e85f6eb1d690f",
+  "git_tag": "production-site-20260920-sync-diagnostics",
+  "tag_target": "be559dbc1531af90f43aad99c57e85f6eb1d690f",
+  "exact_delta": [
+    "src/services/komocontrol-gameplay-sync-core.ts",
+    "src/services/komocontrol-gameplay-sync-core.test.ts",
+    "src/services/komocontrol-gameplay-sync.service.ts",
+    "src/services/komocontrol-gameplay-sync.service.test.ts"
+  ],
+  "validation": {
+    "focused_sync_tests": "14/14 PASS",
+    "site_regressions": "814/814 PASS (770 Vitest + 44 Node)",
+    "typescript": "PASS",
+    "next_production_build": "PASS",
+    "opennext_build": "PASS",
+    "post_deploy_smoke": "PASS"
+  },
+  "sync_contract": {
+    "public_error": "SYNC_RUN_CONFLICT",
+    "public_contract_unchanged": true,
+    "internal_subreasons": [
+      "SESSION_IDENTITY_MISMATCH",
+      "CLAIM_IDENTITY_MISMATCH",
+      "SNAPSHOT_IDENTITY_MISMATCH",
+      "POST_WRITE_HISTORY_MISMATCH",
+      "POST_WRITE_CONFIGURATION_MISMATCH"
+    ],
+    "internal_subreasons_present_in_deployed_artifact": true,
+    "sensitive_data_exposed": false,
+    "acceptance_rules_changed": false
+  },
+  "safety": {
+    "production_d1_writes": 0,
+    "migrations_applied_during_release": 0,
+    "cloudflare_config_changed": false,
+    "routes_changed": false,
+    "bindings_changed": false,
+    "komocontrol_desktop_changed": false
+  },
+  "site_source_manifest": "site-source-sha256.txt",
+  "site_source_manifest_entries": 413
+}
