@@ -1,0 +1,56 @@
+{
+  "product": "KomoBasket Site",
+  "environment": "production",
+  "baseline_name": "Meta Legal Pages",
+  "recorded_at_utc": "2026-09-21T16:32:00Z",
+  "production_origin": "https://komobasket.gr",
+  "cloudflare_deployment_id": "cb4fbb91-b736-4fd5-9ddf-b74bc3b513c2",
+  "cloudflare_version_id": "10c69a1e-10f3-460b-ad33-164c41d1b97f",
+  "traffic_percent": 100,
+  "worker_script_etag": "68b78a718578ba995cde79265b8df1a4bd2893ef06954a32a1e11fa167254e55",
+  "worker_service_artifact_sha256": "c3188b1d06218db916642019f0a01b95893792eac4c74a7c5ccf02ad070c0142",
+  "d1_migrations_applied": 34,
+  "d1_migrations_pending": 0,
+  "d1_quick_check": "ok",
+  "d1_fk_violations": 0,
+  "previous_production_tag": "production-site-20260920-sync-diagnostics",
+  "previous_cloudflare_deployment_id": "80808b65-5efd-4af2-ba98-9b119abf8237",
+  "previous_cloudflare_version_id": "1f24ec95-384d-4edf-b240-07a3e92acb32",
+  "source_git_commit": "9d214b4d9c15dd886ce07400b47f751e43bb0340",
+  "git_tag": "production-site-20260921-meta-legal-pages",
+  "tag_target": "9d214b4d9c15dd886ce07400b47f751e43bb0340",
+  "exact_delta": [
+    "src/app/(central)/privacy/page.tsx",
+    "src/app/(central)/terms/page.tsx",
+    "src/app/(central)/data-deletion/page.tsx",
+    "src/components/layout/SupportersFooter.tsx",
+    "src/components/layout/route-layout-boundary.test.ts"
+  ],
+  "validation": {
+    "focused_legal_layout_tests": "4/4 PASS",
+    "site_regressions": "815/815 PASS (771 Vitest + 44 Node)",
+    "typescript": "PASS",
+    "next_production_build": "PASS",
+    "opennext_build": "PASS",
+    "local_unauthenticated_route_smoke": "PASS",
+    "production_unauthenticated_route_smoke": "PASS"
+  },
+  "routes": {
+    "privacy": "https://komobasket.gr/privacy",
+    "terms": "https://komobasket.gr/terms",
+    "data_deletion": "https://komobasket.gr/data-deletion"
+  },
+  "safety": {
+    "d1_writes_by_release": 0,
+    "migrations_applied_during_release": 0,
+    "auth_logic_changed": false,
+    "facebook_api_logic_changed": false,
+    "meta_config_changed": false,
+    "cloudflare_access_changed": false,
+    "dns_changed": false,
+    "r2_or_images_config_changed": false,
+    "komocontrol_desktop_changed": false
+  },
+  "site_source_manifest": "site-source-sha256.txt",
+  "site_source_manifest_entries": 416
+}
