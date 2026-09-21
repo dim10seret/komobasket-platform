@@ -57,4 +57,24 @@ describe("central and hosted root layout boundary", () => {
     expect(existsSync(appFile("sitemap.ts"))).toBe(true);
     expect(existsSync(appFile("icon.png"))).toBe(true);
   });
+
+  it("keeps public policy routes in the central layout and links them from the footer", () => {
+    const pages = [
+      ["privacy", "Πολιτική Απορρήτου"],
+      ["terms", "Όροι Χρήσης"],
+      ["data-deletion", "Διαγραφή Δεδομένων"],
+    ] as const;
+
+    for (const [route, title] of pages) {
+      const source = appFile(`(central)/${route}/page.tsx`);
+      expect(existsSync(source), route).toBe(true);
+      const page = readFileSync(source, "utf8");
+      expect(page).toContain(`title: "${title}"`);
+      expect(page).toContain(`canonical: "/${route}"`);
+      expect(page).toContain("<Header />");
+      expect(page).not.toContain("requireAdmin");
+      expect(page).not.toContain("organizationUserLoginService");
+      expect(centralFooter).toContain(`href="/${route}"`);
+    }
+  });
 });
