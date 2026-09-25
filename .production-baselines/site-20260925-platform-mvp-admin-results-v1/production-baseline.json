@@ -1,0 +1,572 @@
+{
+  "product": "KomoBasket Site / Platform",
+  "environment": "production",
+  "baseline_name": "Platform MVP v1 + Administrative Game Result v1",
+  "source_git_commit": "6d6007e4bc86e3481f52d8fd4b76544bf76b1050",
+  "cloudflare_deployment_id": "c8790ca5-b148-420f-9514-ea85644b1bdb",
+  "cloudflare_version_id": "d3227395-be57-49a0-b9ae-fc79e1d7f0bd",
+  "traffic_percent": 100,
+  "previous_production_tag": "production-site-20260921-meta-legal-pages",
+  "previous_cloudflare_deployment_id": "cb4fbb91-b736-4fd5-9ddf-b74bc3b513c2",
+  "previous_cloudflare_version_id": "10c69a1e-10f3-460b-ad33-164c41d1b97f",
+  "git_tag": "production-site-20260925-platform-mvp-admin-results-v1",
+  "tag_target": "6d6007e4bc86e3481f52d8fd4b76544bf76b1050",
+  "release_status": "LIVE AT 100% WITH DOCUMENTED PRODUCTION-SMOKE FIXTURE GAPS",
+  "d1": {
+    "database_name": "komobasket-news",
+    "database_id": "d7947fb0-124a-4bc0-bdff-a7e1e9664a70",
+    "binding": "NEWS_DB",
+    "migrations_before": {
+      "applied": 34,
+      "pending": 2
+    },
+    "migrations_applied_in_order": [
+      "0035_matchday_mvp_selections.sql",
+      "0036_administrative_game_results.sql"
+    ],
+    "migrations_after": {
+      "applied": 36,
+      "pending": 0
+    },
+    "quick_check": "ok",
+    "fk_violations": 0,
+    "existing_business_table_counts_compared": 61,
+    "existing_business_table_count_changes": 0,
+    "existing_business_data": "Preserved: 61/61 pre-existing business-table row counts unchanged after the additive migrations.",
+    "row_count_snapshot_atomic_across_batches": false,
+    "feature_tables": {
+      "league_matchday_mvp_selections": {
+        "present": true,
+        "rows": 0
+      },
+      "league_game_administrative_results": {
+        "present": true,
+        "rows": 0
+      }
+    },
+    "unexpected_feature_rows": 0,
+    "post_migration_verified_at_utc": "2026-09-25T19:42:34.8050340Z",
+    "row_counts_before_and_after": [
+      {
+        "table_name": "league_app_users",
+        "row_count": 4
+      },
+      {
+        "table_name": "league_audit_log",
+        "row_count": 679
+      },
+      {
+        "table_name": "league_competition_formats",
+        "row_count": 12
+      },
+      {
+        "table_name": "league_competition_komocontrol_defaults",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_competition_publication",
+        "row_count": 12
+      },
+      {
+        "table_name": "league_competition_teams",
+        "row_count": 134
+      },
+      {
+        "table_name": "league_competition_venues",
+        "row_count": 1
+      },
+      {
+        "table_name": "league_competitions",
+        "row_count": 12
+      },
+      {
+        "table_name": "league_game_komocontrol_overrides",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_game_official_assignments",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_games",
+        "row_count": 299
+      },
+      {
+        "table_name": "league_komocontrol_current_game_configurations_v1",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_komocontrol_game_packages",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_komocontrol_game_runs",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_komocontrol_gameplay_game_claims",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_komocontrol_gameplay_heads",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_komocontrol_match_engine_snapshots_v1",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_komocontrol_match_events_v2",
+        "row_count": 798
+      },
+      {
+        "table_name": "league_komocontrol_match_finalizations_v1",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_komocontrol_recovery_events",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_komocontrol_scorer_sessions",
+        "row_count": 3
+      },
+      {
+        "table_name": "league_komocontrol_scorers",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_legacy_player_refs",
+        "row_count": 1339
+      },
+      {
+        "table_name": "league_match_report_bench_staff",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_events",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_fouls",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_free_throw_series",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_imports",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_lineup_players",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_periods",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_player_stats",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_referee_assignments",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_report_table_official_assignments",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_match_reports",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_organization_memberships",
+        "row_count": 4
+      },
+      {
+        "table_name": "league_organizations",
+        "row_count": 5
+      },
+      {
+        "table_name": "league_phase_rules",
+        "row_count": 22
+      },
+      {
+        "table_name": "league_phase_schedules",
+        "row_count": 2
+      },
+      {
+        "table_name": "league_phase_standings_presentation",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_phases",
+        "row_count": 22
+      },
+      {
+        "table_name": "league_player_aliases",
+        "row_count": 632
+      },
+      {
+        "table_name": "league_player_game_stats",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_player_merge_log",
+        "row_count": 1317
+      },
+      {
+        "table_name": "league_player_movements",
+        "row_count": 29
+      },
+      {
+        "table_name": "league_player_profiles",
+        "row_count": 1054
+      },
+      {
+        "table_name": "league_players",
+        "row_count": 1054
+      },
+      {
+        "table_name": "league_referees",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_roster_memberships",
+        "row_count": 1635
+      },
+      {
+        "table_name": "league_schema_migrations",
+        "row_count": 8
+      },
+      {
+        "table_name": "league_season_teams",
+        "row_count": 103
+      },
+      {
+        "table_name": "league_seasons",
+        "row_count": 7
+      },
+      {
+        "table_name": "league_series_planning_slots",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_staff",
+        "row_count": 15
+      },
+      {
+        "table_name": "league_staff_memberships",
+        "row_count": 15
+      },
+      {
+        "table_name": "league_supporters",
+        "row_count": 3
+      },
+      {
+        "table_name": "league_table_officials",
+        "row_count": 0
+      },
+      {
+        "table_name": "league_teams",
+        "row_count": 43
+      },
+      {
+        "table_name": "league_user_credentials",
+        "row_count": 3
+      },
+      {
+        "table_name": "league_user_sessions",
+        "row_count": 2
+      },
+      {
+        "table_name": "news_articles",
+        "row_count": 19
+      },
+      {
+        "table_name": "news_attachments",
+        "row_count": 2
+      }
+    ]
+  },
+  "production_smoke": {
+    "verified_pass": [
+      "central public homepage",
+      "/schedule",
+      "/stats",
+      "/privacy",
+      "/terms",
+      "/data-deletion",
+      "Cloudflare Access protection for admin and sampled admin API",
+      "authorized Platform load",
+      "organization switching in Platform",
+      "Program / Games",
+      "selected-game Administrative Result UI",
+      "MVP modal",
+      "MVP Top 5 read",
+      "central public competition",
+      "sampled responsive/mobile behavior",
+      "admin table scrolling"
+    ],
+    "fixture_gaps": [
+      {
+        "scope": "Hosted public homepage/statistics/standings/navigation",
+        "status": "NOT VERIFIED IN PRODUCTION — NO SAFE FIXTURE",
+        "reason": "All 5 production organizations have publication_status=unpublished; /friendlymatches returned 404. No publication status was changed for smoke."
+      },
+      {
+        "scope": "Public finalized-game/date display",
+        "status": "NOT VERIFIED IN PRODUCTION — NO SAFE FIXTURE",
+        "reason": "No suitable currently public production fixture was used for safe verification. No game or result was manufactured."
+      },
+      {
+        "scope": "MVP incomplete-matchday production case",
+        "status": "NOT VERIFIED IN PRODUCTION — NO SAFE FIXTURE",
+        "reason": "No suitable production matchday was used solely for smoke testing. No production competition data was created or altered."
+      }
+    ],
+    "observed_runtime_failure_for_fixture_gaps": false,
+    "production_write_smoke": {
+      "mvp_selection": "NOT PERFORMED BY DESIGN",
+      "administrative_result_edit": "NOT PERFORMED BY DESIGN",
+      "reason": "Both workflows were validated locally; production business data is not modified solely for smoke testing."
+    }
+  },
+  "validation": {
+    "source_commit": "6d6007e4bc86e3481f52d8fd4b76544bf76b1050",
+    "provenance": "Reused certified release results and explicit user acceptance; no tests or builds rerun during baseline finalization.",
+    "local_functional_tests": "PASS",
+    "site_regressions": "PASS",
+    "local_browser_visual_validation": "PASS",
+    "typescript": "PASS",
+    "next_production_build": "PASS",
+    "opennext_build": "PASS",
+    "coverage_note": "The unavailable production fixture paths were covered by local functional tests, site regressions and local browser/visual validation for the exact deployed source commit. This does not convert unperformed production checks to PASS."
+  },
+  "architecture_preserved": {
+    "top_performance": true,
+    "eff": true,
+    "mvp_ranking_and_tie_break": true,
+    "statistics_calculations": true,
+    "komocontrol_desktop": true,
+    "match_engine": true,
+    "canonical_gameplay_events": true,
+    "finalization_contract": true,
+    "public_sync_protocol": true,
+    "meta_facebook_integration": true
+  },
+  "safety": {
+    "production_mutations_during_baseline_finalization": 0,
+    "production_data_modified_for_smoke": false,
+    "production_migrations_during_release": [
+      "0035",
+      "0036"
+    ],
+    "additional_migrations": false,
+    "rebuild_before_deploy": false,
+    "redeploy_during_baseline_finalization": false,
+    "rollback": false,
+    "source_modified_during_baseline_finalization": false,
+    "credential_fallback": false,
+    "credentials_in_record": false,
+    "force_push": false
+  },
+  "site_source_manifest": "site-source-sha256.txt",
+  "site_source_manifest_entries": 423,
+  "manifest_policy": {
+    "basis": "Previous production manifest (416 paths), retaining tracked paths and adding the 7 introduced deployable source/migration files.",
+    "hashes": "SHA-256 of current source file bytes; each file verified against the exact source commit using Git object identity and repository clean filters where applicable.",
+    "excludes": [
+      "tests",
+      "komocontrol desktop source",
+      "generated build output",
+      "temporary artifacts",
+      "backups",
+      "local databases",
+      "logs",
+      "caches",
+      "secrets"
+    ],
+    "worker_bundle_identity_claim": false,
+    "scope_note": "Source integrity / future source-delta comparison; not a cryptographic assertion of byte-for-byte equivalence with the deployed Worker."
+  },
+  "source_runtime_delta_vs_previous_baseline": [
+    {
+      "status": "M",
+      "paths": [
+        "cloudflare/league-schema.sql"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "cloudflare/migrations/0035_matchday_mvp_selections.sql"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "cloudflare/migrations/0036_administrative_game_results.sql"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/app/(central)/data-deletion/page.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/app/(central)/privacy/page.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/app/(central)/terms/page.tsx"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "src/app/api/admin/matchday-mvp/route.ts"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/admin/platform/sections/PhaseScheduleSection.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/admin/platform/sections/ProgramGamesSection.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/competition/PublicCompetitionLatestMovements.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/competition/PublicCompetitionStatistics.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/competition/PublicCompetitionsView.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/competition/PublicFinalizedGame.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/competition/PublicTeamStatistics.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/hosted/HostedOrganizationHeader.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/hosted/HostedOrganizationHomeData.tsx"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/components/schedule/ScheduleGrid.tsx"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "src/lib/administrative-game-result.ts"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/lib/organization-platform-http.ts"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "src/lib/public-date.ts"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/lib/standings-calculator.ts"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "src/services/administrative-game-result.service.ts"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/services/league-admin.service.ts"
+      ]
+    },
+    {
+      "status": "A",
+      "paths": [
+        "src/services/matchday-mvp.service.ts"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/services/public-competition-statistics.service.ts"
+      ]
+    },
+    {
+      "status": "M",
+      "paths": [
+        "src/services/public-competition.service.ts"
+      ]
+    }
+  ],
+  "excluded_local_artifacts": [
+    ".tmp_phase1b_font/",
+    "output/",
+    "scripts/benchmark-organization-user-local.mjs"
+  ],
+  "recorded_at_utc": "2026-09-25T19:59:45.518Z",
+  "manifest_verification": {
+    "entries": 423,
+    "missing": 0,
+    "malformed": 0,
+    "duplicates": 0,
+    "hash_mismatches": 0,
+    "source_commit_mismatches": 0,
+    "git_clean_filter_matches": 54,
+    "source_commit_verified_files": 423
+  },
+  "site_source_manifest_sha256": "d75d483830215cf2865ddd465bd8826afb22970cfd4ac8f9088a90c8bed2b753"
+}
