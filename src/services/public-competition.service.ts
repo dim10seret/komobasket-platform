@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { projectAdministrativeGameResult } from "@/lib/administrative-game-result";
 import { resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
 import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame } from "@/lib/series-progression";
 import { calculateStandings, type StandingsTieBreakerKey } from "@/lib/standings-calculator";
@@ -200,6 +201,11 @@ type PublicGameRow = {
   away_team_name: string;
   away_team_logo_url: string | null;
   finalized_statistics_available?: boolean;
+  administrative_result_id: string | null;
+  administrative_home_score: number | null;
+  administrative_away_score: number | null;
+  administrative_home_standings_points_override: number | null;
+  administrative_away_standings_points_override: number | null;
 };
 
 type PublicTeamRow = { id: string; name: string; logo_url: string | null };
@@ -303,7 +309,9 @@ function normalizePublicGame(row: PublicGameRow, format: PublicPhase["format"], 
     : row.round_number;
   if (typeof roundNumber !== "number" || !Number.isInteger(roundNumber) || roundNumber < 1) return null;
   const venueName = row.venue_name?.trim() || row.game_venue?.trim() || null;
-  const publicStatus = row.gameplay_lifecycle === "live"
+  const publicStatus = row.administrative_result_id
+    ? "completed" as const
+    : row.gameplay_lifecycle === "live"
     ? "live" as const
     : row.status === "completed" && row.home_score !== null && row.away_score !== null
       ? "completed" as const
@@ -551,11 +559,17 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
     SELECT g.id, g.competition_id, g.phase_id, g.schedule_id, g.cycle_number, g.round_number, g.series_round_number, g.game_order, g.round_label,
            g.scheduled_date, g.scheduled_time, g.venue AS game_venue, v.id AS venue_id, v.name AS venue_name, v.address AS venue_address, v.map_url AS venue_map_url,
            g.home_score, g.away_score, g.status, g.result_source, gameplay_head.lifecycle AS gameplay_lifecycle, g.series_matchup_id, g.video_url,
+           administrative.id AS administrative_result_id,
+           administrative.official_home_score AS administrative_home_score,
+           administrative.official_away_score AS administrative_away_score,
+           administrative.home_standings_points_override AS administrative_home_standings_points_override,
+           administrative.away_standings_points_override AS administrative_away_standings_points_override,
            home.id AS home_team_id, COALESCE(NULLIF(TRIM(home_st.display_name), ''), home.name) AS home_team_name, NULLIF(TRIM(home.logo_url), '') AS home_team_logo_url,
            away.id AS away_team_id, COALESCE(NULLIF(TRIM(away_st.display_name), ''), away.name) AS away_team_name, NULLIF(TRIM(away.logo_url), '') AS away_team_logo_url
       FROM league_games g
       LEFT JOIN league_komocontrol_gameplay_game_claims gameplay_claim ON gameplay_claim.game_id=g.id
       LEFT JOIN league_komocontrol_gameplay_heads gameplay_head ON gameplay_head.run_id=gameplay_claim.run_id
+      LEFT JOIN league_game_administrative_results administrative ON administrative.game_id=g.id
       LEFT JOIN league_competition_venues v ON v.competition_id=g.competition_id AND v.name=g.venue
       JOIN league_competition_teams home_ct ON home_ct.competition_id=g.competition_id AND home_ct.status='active'
       JOIN league_season_teams home_st ON home_st.id=home_ct.season_team_id AND home_st.team_id=g.home_team_id
@@ -576,7 +590,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
   ]);
   const teams = teamResult.results ?? [];
   const canonicalGames = (gameResult.results ?? []).map((game) => ({
-    ...game,
+    ...projectAdministrativeGameResult(game),
     finalized_statistics_available: matchReportAvailability[game.id]?.available === true,
   }));
   const bracket = buildCompetitionBracketProjection(phaseRows, phases, selectedCompetition.id, canonicalGames, teams);
@@ -642,7 +656,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
   let standings: PublicStandingRow[] = [];
   if (selectedPhase.format === "standings" && selectedPhase.participantCount !== null) {
     const settings = parseJsonRecord(selectedPhaseRow.rule_settings_json);
-    const result = calculateStandings({ phaseId: selectedPhase.id, teams: teams.map((team) => ({ id: team.id, name: team.name })), games: canonicalGames.map((game) => ({ id: game.id, phaseId: game.phase_id, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score, awayScore: game.away_score, status: game.status, resultSource: game.result_source })), rules: { pointsForWin: Number(settings.pointsForWin ?? settings.winPoints ?? 2), pointsForLoss: Number(settings.pointsForLoss ?? settings.lossPoints ?? 1) }, tieBreakers: tieBreakers(selectedPhaseRow.rule_settings_json) });
+    const result = calculateStandings({ phaseId: selectedPhase.id, teams: teams.map((team) => ({ id: team.id, name: team.name })), games: canonicalGames.map((game) => ({ id: game.id, phaseId: game.phase_id, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score, awayScore: game.away_score, status: game.status, resultSource: game.result_source, homeStandingsPointsOverride: game.administrative_home_standings_points_override, awayStandingsPointsOverride: game.administrative_away_standings_points_override })), rules: { pointsForWin: Number(settings.pointsForWin ?? settings.winPoints ?? 2), pointsForLoss: Number(settings.pointsForLoss ?? settings.lossPoints ?? 1) }, tieBreakers: tieBreakers(selectedPhaseRow.rule_settings_json) });
     const stats = new Map(result.rows.map((row) => [row.teamId, row]));
     const byTeam = new Map(teams.map((team) => [team.id, team]));
     standings = result.orderedRows.flatMap((ordered) => { const row = stats.get(ordered.teamId); const team = byTeam.get(ordered.teamId); return row && team ? [{ rank: ordered.rank, team: { id: team.id, name: team.name, logoUrl: team.logo_url?.trim() || null }, gamesPlayed: row.gamesPlayed, wins: row.wins, losses: row.losses, standingsPoints: row.standingsPoints, pointsFor: row.pointsFor, pointsAgainst: row.pointsAgainst, pointDifference: row.pointDifference }] : []; });

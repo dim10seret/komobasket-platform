@@ -1,6 +1,7 @@
 import Link from "next/link";
 import PublicGameResult from "@/components/competition/PublicGameResult";
 import { hostedCompetitionGamePath, hostedOrganizationPath } from "@/lib/hosted-organization-routes";
+import { formatPublicDate } from "@/lib/public-date";
 import type { PublicCompetitionContext, PublicGame } from "@/services/public-competition.service";
 
 export type HostedNextCompetitiveBlock = {
@@ -180,7 +181,7 @@ export function selectPublicProgramResultsNavigation(contexts: PublicCompetition
 }
 
 function GameRow({ game, gameBasePath, liveGameHref }: { game: PublicGame; gameBasePath: string; liveGameHref: (gameId: string) => string }) {
-  const metadata = [game.scheduledDate, game.scheduledTime, game.venue?.name].filter(Boolean).join(" · ");
+  const metadata = [game.scheduledDate ? formatPublicDate(game.scheduledDate) : null, game.scheduledTime, game.venue?.name].filter(Boolean).join(" · ");
   return <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
       <strong className="min-w-0 break-words text-sm sm:text-base">{game.homeTeam.name}</strong>
@@ -215,7 +216,7 @@ export default function HostedOrganizationHomeData({ organizationSlug, context, 
         gameBasePath={`${competitionsPath}/games`}
         liveGameHref={(gameId) => hostedCompetitionGamePath(organizationSlug, gameId, true)}
       />
-      <section className="rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.18em] text-orange-400">{context?.selectedCompetition?.name ?? "Βαθμολογία"}</p><h2 className="mt-2 text-2xl font-black">ΒΑΘΜΟΛΟΓΙΑ</h2></div><Link href={statisticsPath} className="rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Στατιστικά &amp; MVP</Link></div>{standings.length ? <div className="mt-5 space-y-2">{standings.map((row) => <div key={row.team.id} className="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl bg-zinc-900 px-4 py-3"><strong className="text-center text-orange-400">{row.rank}</strong><span className="min-w-0 truncate font-black">{row.team.name}</span><strong>{row.standingsPoints} β.</strong></div>)}</div> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη βαθμολογία για την επιλεγμένη διοργάνωση και φάση.</p>}</section>
+      <section className="rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.18em] text-orange-400">{context?.selectedCompetition?.name ?? "Βαθμολογία"}</p><h2 className="mt-2 text-2xl font-black">ΒΑΘΜΟΛΟΓΙΑ</h2></div><Link href={statisticsPath} className="rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Στατιστικά &amp; MVP</Link></div>{standings.length ? <div className="mt-5 max-w-full overflow-x-auto rounded-2xl border border-zinc-700" tabIndex={0} aria-label="Βαθμολογία Οργανισμού"><table className="w-full min-w-[720px] border-collapse text-sm"><thead><tr className="bg-zinc-900 text-xs font-black uppercase tracking-wide text-zinc-300"><th className="px-3 py-3 text-center">Θ</th><th className="px-3 py-3 text-left">ΟΜΑΔΑ</th><th className="px-3 py-3 text-center">ΑΓ</th><th className="px-3 py-3 text-center">Ν</th><th className="px-3 py-3 text-center">Η</th><th className="px-3 py-3 text-center">ΥΠ</th><th className="px-3 py-3 text-center">Δ</th><th className="px-3 py-3 text-center">Β</th></tr></thead><tbody>{standings.map((row) => <tr key={row.team.id} className="border-t border-zinc-700 bg-zinc-950"><td className="px-3 py-3 text-center font-black text-orange-400">{row.rank}</td><td className="whitespace-nowrap px-3 py-3 font-black">{row.team.name}</td><td className="px-3 py-3 text-center tabular-nums">{row.gamesPlayed}</td><td className="px-3 py-3 text-center tabular-nums">{row.wins}</td><td className="px-3 py-3 text-center tabular-nums">{row.losses}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointsFor}–{row.pointsAgainst}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointDifference > 0 ? `+${row.pointDifference}` : row.pointDifference}</td><td className="px-3 py-3 text-center font-black tabular-nums">{row.standingsPoints}</td></tr>)}</tbody></table></div> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη βαθμολογία για την επιλεγμένη διοργάνωση και φάση.</p>}</section>
     </div>
   </section>;
 }

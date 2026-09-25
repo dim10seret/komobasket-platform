@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { formatPublicDate } from "@/lib/public-date";
 import type { PublicCompetitionMovement } from "@/services/public-competition.service";
 
 const movementLabels: Record<PublicCompetitionMovement["movementType"], string> = {
@@ -9,13 +10,6 @@ const movementLabels: Record<PublicCompetitionMovement["movementType"], string> 
   departure: "ΑΠΟΧΩΡΗΣΗ",
   transfer: "ΜΕΤΑΓΡΑΦΗ",
 };
-
-function formatDate(value: string) {
-  const [year, month, day] = value.split("-").map(Number);
-  if (!year || !month || !day) return value;
-  return new Intl.DateTimeFormat("el-GR", { day: "2-digit", month: "2-digit", year: "numeric" })
-    .format(new Date(year, month - 1, day));
-}
 
 export default function PublicCompetitionLatestMovements({
   seasonName,
@@ -58,7 +52,7 @@ export default function PublicCompetitionLatestMovements({
                         <p className="text-xs font-black tracking-[0.14em] text-orange-700">{movementLabels[movement.movementType]}</p>
                         <h3 className="mt-1 text-base font-black text-zinc-950 sm:text-lg">{movement.playerName}</h3>
                       </div>
-                      <time className="text-sm font-black tabular-nums text-zinc-700">{formatDate(movement.effectiveOn)}</time>
+                      <time className="text-sm font-black tabular-nums text-zinc-700">{formatPublicDate(movement.effectiveOn)}</time>
                     </div>
                     <p className="mt-3 text-sm font-bold text-zinc-700">
                       {movement.fromTeamName ?? "—"} <span aria-hidden="true" className="px-1 text-orange-700">→</span> {movement.toTeamName ?? "—"}

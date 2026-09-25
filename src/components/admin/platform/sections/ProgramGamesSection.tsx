@@ -24,6 +24,7 @@ import {
   resolveSeriesCarryOver,
 } from "@/lib/series-carry-over";
 import type { PlatformMatchReport, PlatformMatchReportAvailability } from "@/lib/platform-match-report";
+import type { MatchdayMvpState } from "@/services/matchday-mvp.service";
 
 type PhaseScheduleRow = Row & {
   id: string;
@@ -58,7 +59,17 @@ type GeneratedGameRow = Row & {
   status: string | null;
   external_id: string | null;
   video_url: string | null;
+  phase_format: string | null;
+  phase_lifecycle_status: string | null;
+  administrative_result_id: string | null;
+  administrative_decision_type: string | null;
+  administrative_home_standings_points_override: number | string | null;
+  administrative_away_standings_points_override: number | string | null;
+  administrative_reason: string | null;
+  administrative_updated_at: string | null;
 };
+
+type ResultEditorMode = "manual" | "administrative-correction" | "administrative-interruption";
 
 type SeriesRoundViewRow = {
   matchupId: string;
@@ -523,6 +534,10 @@ export function ProgramGamesSection({
   const [editingResultGameId, setEditingResultGameId] = useState("");
   const [resultHomeScore, setResultHomeScore] = useState("");
   const [resultAwayScore, setResultAwayScore] = useState("");
+  const [resultEditorMode, setResultEditorMode] = useState<ResultEditorMode>("manual");
+  const [resultHomeStandingsPoints, setResultHomeStandingsPoints] = useState("");
+  const [resultAwayStandingsPoints, setResultAwayStandingsPoints] = useState("");
+  const [resultReason, setResultReason] = useState("");
   const [matchReportGameId, setMatchReportGameId] = useState("");
   const [matchReportDetail, setMatchReportDetail] = useState<PlatformMatchReport | null>(null);
   const [matchReportLoading, setMatchReportLoading] = useState(false);
@@ -534,6 +549,13 @@ export function ProgramGamesSection({
   const [scheduleEditorByScheduleId, setScheduleEditorByScheduleId] = useState<Record<string, ScheduleEditorState>>({});
   const [deleteProgramTarget, setDeleteProgramTarget] = useState<{ phaseId: string; phaseName: string } | null>(null);
   const [deleteProgramConfirmation, setDeleteProgramConfirmation] = useState("");
+  const [matchdayMvpOpen, setMatchdayMvpOpen] = useState(false);
+  const [matchdayMvpState, setMatchdayMvpState] = useState<MatchdayMvpState | null>(null);
+  const [matchdayMvpLoading, setMatchdayMvpLoading] = useState(false);
+  const [matchdayMvpSaving, setMatchdayMvpSaving] = useState("");
+  const [matchdayMvpError, setMatchdayMvpError] = useState("");
+  const [showOtherMvpPlayers, setShowOtherMvpPlayers] = useState(false);
+  const [otherMvpSelection, setOtherMvpSelection] = useState("");
   const [deleteProgramBusy, setDeleteProgramBusy] = useState(false);
   const [deleteProgramError, setDeleteProgramError] = useState("");
   const [planningTarget, setPlanningTarget] = useState<{
@@ -661,10 +683,16 @@ export function ProgramGamesSection({
     setShowVenueForm(true);
   };
 
-  const openResultForm = (game: GeneratedGameRow) => {
+  const openResultForm = (game: GeneratedGameRow, requestedMode?: ResultEditorMode) => {
+    const hasResult = game.home_score !== null && game.home_score !== undefined
+      && game.away_score !== null && game.away_score !== undefined;
     setEditingResultGameId(String(game.id));
     setResultHomeScore(String(game.home_score ?? ""));
     setResultAwayScore(String(game.away_score ?? ""));
+    setResultEditorMode(requestedMode ?? (hasResult ? "administrative-correction" : "manual"));
+    setResultHomeStandingsPoints(String(game.administrative_home_standings_points_override ?? ""));
+    setResultAwayStandingsPoints(String(game.administrative_away_standings_points_override ?? ""));
+    setResultReason(String(game.administrative_reason ?? ""));
     setShowResultForm(true);
   };
 
@@ -673,6 +701,10 @@ export function ProgramGamesSection({
     setEditingResultGameId("");
     setResultHomeScore("");
     setResultAwayScore("");
+    setResultEditorMode("manual");
+    setResultHomeStandingsPoints("");
+    setResultAwayStandingsPoints("");
+    setResultReason("");
   };
 
   const closeMatchReport = () => {
@@ -901,6 +933,55 @@ export function ProgramGamesSection({
     return true;
   };
 
+  const openMatchdayMvp = async (phaseId: string, roundNumber: number) => {
+    setMatchdayMvpOpen(true);
+    setMatchdayMvpState(null);
+    setMatchdayMvpError("");
+    setShowOtherMvpPlayers(false);
+    setOtherMvpSelection("");
+    setMatchdayMvpLoading(true);
+    try {
+      const params = new URLSearchParams({ competitionId, phaseId, roundNumber: String(roundNumber) });
+      const response = await fetch(`/api/admin/matchday-mvp?${params}`, { cache: "no-store" });
+      const body = await response.json().catch(() => null) as (MatchdayMvpState & { error?: string }) | null;
+      if (!response.ok || !body) throw new Error(body?.error || "Η λίστα υποψηφίων δεν φορτώθηκε.");
+      setMatchdayMvpState(body);
+    } catch (error) {
+      setMatchdayMvpError(error instanceof Error ? error.message : "Η λίστα υποψηφίων δεν φορτώθηκε.");
+    } finally {
+      setMatchdayMvpLoading(false);
+    }
+  };
+
+  const selectMatchdayMvp = async (gameId: string, playerId: string) => {
+    if (!matchdayMvpState || matchdayMvpSaving) return;
+    const key = `${gameId}:${playerId}`;
+    setMatchdayMvpSaving(key);
+    setMatchdayMvpError("");
+    try {
+      const response = await fetch("/api/admin/matchday-mvp", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          competitionId,
+          phaseId: matchdayMvpState.phaseId,
+          roundNumber: matchdayMvpState.roundNumber,
+          gameId,
+          playerId,
+        }),
+      });
+      const body = await response.json().catch(() => null) as (MatchdayMvpState & { error?: string }) | null;
+      if (!response.ok || !body) throw new Error(body?.error || "Η επιλογή MVP δεν αποθηκεύτηκε.");
+      setMatchdayMvpState(body);
+      setShowOtherMvpPlayers(false);
+      setOtherMvpSelection("");
+    } catch (error) {
+      setMatchdayMvpError(error instanceof Error ? error.message : "Η επιλογή MVP δεν αποθηκεύτηκε.");
+    } finally {
+      setMatchdayMvpSaving("");
+    }
+  };
+
   return (
     <Panel
       title="Πρόγραμμα & Αγώνες"
@@ -1012,6 +1093,8 @@ export function ProgramGamesSection({
               const selectedGameIds = getSelectedGameIds(scheduleKey);
               const selectedGameSet = new Set(selectedGameIds);
               const displayedRoundGames = phaseFormat === "series" ? [] : (activeRound ? sortRoundsForDisplay(activeRound.games) : []);
+              const mvpMatchdayEligible = phaseFormat === "standings" && displayedRoundGames.length > 0
+                && displayedRoundGames.every((game) => data.matchReports?.[String(game.id)]?.available === true);
               const activeSeriesRows = phaseFormat === "series" ? (activeSeriesRound?.rows ?? []) : [];
               const activeSeriesSelectableGameIds = activeSeriesRows
                 .filter((entry) => entry.round.rowState === "real_game" && entry.round.realGameId)
@@ -1035,6 +1118,11 @@ export function ProgramGamesSection({
                 : "";
               const selectedResultGame = editingResultGameId
                 ? scheduleGames.find((game) => String(game.id) === editingResultGameId) ?? null
+                : null;
+              const administrativeResultMode = resultEditorMode !== "manual";
+              const resultPhaseUsesStandings = String(selectedResultGame?.phase_format ?? "") === "standings";
+              const selectedMatchReportGame = matchReportGameId
+                ? scheduleGames.find((game) => String(game.id) === matchReportGameId) ?? null
                 : null;
               const selectedGameRows = scheduleGames.filter((game) => selectedGameSet.has(String(game.id)));
               const dateInputValue = editor.scheduledDateMode === "set"
@@ -1156,6 +1244,7 @@ export function ProgramGamesSection({
                               ) : null}
                             </div>
                             {displayMode === "round" ? (
+                              <div className="flex flex-wrap items-center justify-end gap-2">
                               <select
                                 className={inputClass}
                                 value={String(activeRoundNumber || "")}
@@ -1174,25 +1263,37 @@ export function ProgramGamesSection({
                                   </option>
                                 ))}
                               </select>
+                              {phaseFormat === "standings" && activeRoundNumber ? (
+                                <PlatformButton mutation
+                                  type="button"
+                                  disabled={!mvpMatchdayEligible || matchdayMvpLoading}
+                                  title={mvpMatchdayEligible ? "Επιλογή MVP για την αγωνιστική" : "Η επιλογή MVP ενεργοποιείται όταν ολοκληρωθούν όλα τα Match Reports της αγωνιστικής."}
+                                  onClick={() => void openMatchdayMvp(String(phase?.id ?? ""), activeRoundNumber)}
+                                  className="rounded-xl border border-orange-300 bg-orange-50 px-3 py-2 text-xs font-black text-orange-800 transition hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  MVP ΑΓΩΝΙΣΤΙΚΗΣ
+                                </PlatformButton>
+                              ) : null}
+                              </div>
                             ) : null}
                           </div>
                           {displayMode === "round" ? (
                             phaseFormat === "series" ? (
                               activeSeriesRound ? (
                                 <div className="mt-4 min-w-0">
-                                  <div className="max-w-full overflow-x-auto rounded-2xl border border-zinc-200 bg-white lg:overflow-x-visible">
-                                    <table className="w-full min-w-0 table-fixed text-left text-sm">
+                                  <div className="max-w-full overflow-x-auto overscroll-x-contain rounded-2xl border border-zinc-200 bg-white">
+                                    <table className="w-full min-w-[68rem] table-auto text-left text-sm">
                                       <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
                                         <tr>
-                                          <th className="w-10 px-3 py-3" aria-label="Selection"></th>
-                                          <th className="w-24 px-3 py-3">Match Report</th>
-                                          <th className="w-20 px-3 py-3">ΒΙΝΤΕΟ</th>
-                                          <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
-                                          <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
-                                          <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
-                                          <th className="w-28 px-3 py-3">Ημερομηνία</th>
-                                          <th className="w-20 px-3 py-3">Ώρα</th>
-                                          <th className="px-3 py-3">Γήπεδο</th>
+                                          <th className="w-10 min-w-10 whitespace-nowrap px-3 py-3" aria-label="Selection"></th>
+                                          <th className="min-w-28 whitespace-nowrap px-3 py-3">Match Report</th>
+                                          <th className="min-w-24 whitespace-nowrap px-3 py-3">ΒΙΝΤΕΟ</th>
+                                          <th className="min-w-[11rem] whitespace-nowrap px-3 py-3">Γηπεδούχος</th>
+                                          <th className="min-w-32 whitespace-nowrap px-3 py-3 text-center">Αποτέλεσμα</th>
+                                          <th className="min-w-[11rem] whitespace-nowrap px-3 py-3">Φιλοξενούμενος</th>
+                                          <th className="min-w-28 whitespace-nowrap px-3 py-3">Ημερομηνία</th>
+                                          <th className="min-w-20 whitespace-nowrap px-3 py-3">Ώρα</th>
+                                          <th className="min-w-40 whitespace-nowrap px-3 py-3">Γήπεδο</th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -1270,28 +1371,41 @@ export function ProgramGamesSection({
                                                   </a>
                                                 ) : "—"}
                                               </td>
-                                              <td className="px-3 py-3 align-top text-zinc-800">
-                                                <span className="block min-w-0 break-words text-right leading-snug">{displayHome}</span>
+                                              <td className="min-w-[11rem] px-3 py-3 align-top text-zinc-800">
+                                                <span className="block whitespace-normal break-normal text-right leading-snug">{displayHome}</span>
                                               </td>
                                               <td className="px-3 py-3 align-top font-black text-zinc-900">
                                                 {isRealGame ? (
-                                                  <PlatformButton
-                                                    type="button"
-                                                    onClick={() => {
-                                                      if (realGame) openResultForm(realGame);
-                                                    }}
-                                                    className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
-                                                  >
-                                                    {round.homeScore !== null && round.awayScore !== null ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}` : "—"}
-                                                  </PlatformButton>
+                                                  <div className="space-y-2">
+                                                  {round.homeScore !== null && round.awayScore !== null ? (
+                                                    <div className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-zinc-50 px-2 py-2 text-sm font-black text-zinc-900">
+                                                      {`${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`}
+                                                    </div>
+                                                  ) : (
+                                                    <PlatformButton
+                                                      type="button"
+                                                      onClick={() => {
+                                                        if (realGame) openResultForm(realGame);
+                                                      }}
+                                                      className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                                    >
+                                                      —
+                                                    </PlatformButton>
+                                                  )}
+                                                  {realGame?.administrative_decision_type === "interruption" ? (
+                                                    <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-black leading-tight text-amber-900">
+                                                      Διακοπή – διοικητικό αποτέλεσμα
+                                                    </p>
+                                                  ) : null}
+                                                  </div>
                                                 ) : (
                                                   <div className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-zinc-50 px-2 py-2 text-sm font-black text-zinc-600">
                                                     {displayResult}
                                                   </div>
                                                 )}
                                               </td>
-                                              <td className="px-3 py-3 align-top text-zinc-800">
-                                                <span className="block min-w-0 break-words text-left leading-snug">{displayAway}</span>
+                                              <td className="min-w-[11rem] px-3 py-3 align-top text-zinc-800">
+                                                <span className="block whitespace-normal break-normal text-left leading-snug">{displayAway}</span>
                                               </td>
                                               <td className="px-3 py-3 align-top text-zinc-800">
                                                 {displayDate}
@@ -1332,19 +1446,19 @@ export function ProgramGamesSection({
                             ) : (
                               activeRound ? (
                                 <div className="mt-4 min-w-0">
-                                  <div className="max-w-full overflow-x-auto rounded-2xl border border-zinc-200 bg-white lg:overflow-x-visible">
-                                    <table className="w-full min-w-0 table-fixed text-left text-sm">
+                                  <div className="max-w-full overflow-x-auto overscroll-x-contain rounded-2xl border border-zinc-200 bg-white">
+                                    <table className="w-full min-w-[68rem] table-auto text-left text-sm">
                                       <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
                                         <tr>
-                                          <th className="w-10 px-3 py-3" aria-label="Selection"></th>
-                                          <th className="w-24 px-3 py-3">Match Report</th>
-                                          <th className="w-20 px-3 py-3">ΒΙΝΤΕΟ</th>
-                                          <th className="w-[18%] px-3 py-3">Γηπεδούχος</th>
-                                          <th className="w-24 px-3 py-3 text-center">Αποτέλεσμα</th>
-                                          <th className="w-[18%] px-3 py-3">Φιλοξενούμενος</th>
-                                          <th className="w-28 px-3 py-3">Ημερομηνία</th>
-                                          <th className="w-20 px-3 py-3">Ώρα</th>
-                                          <th className="px-3 py-3">Γήπεδο</th>
+                                          <th className="w-10 min-w-10 whitespace-nowrap px-3 py-3" aria-label="Selection"></th>
+                                          <th className="min-w-28 whitespace-nowrap px-3 py-3">Match Report</th>
+                                          <th className="min-w-24 whitespace-nowrap px-3 py-3">ΒΙΝΤΕΟ</th>
+                                          <th className="min-w-[11rem] whitespace-nowrap px-3 py-3">Γηπεδούχος</th>
+                                          <th className="min-w-32 whitespace-nowrap px-3 py-3 text-center">Αποτέλεσμα</th>
+                                          <th className="min-w-[11rem] whitespace-nowrap px-3 py-3">Φιλοξενούμενος</th>
+                                          <th className="min-w-28 whitespace-nowrap px-3 py-3">Ημερομηνία</th>
+                                          <th className="min-w-20 whitespace-nowrap px-3 py-3">Ώρα</th>
+                                          <th className="min-w-40 whitespace-nowrap px-3 py-3">Γήπεδο</th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -1385,20 +1499,33 @@ export function ProgramGamesSection({
                                                   </a>
                                                 ) : "—"}
                                               </td>
-                                              <td className="px-3 py-3 align-top text-zinc-800">
-                                                <span className="block min-w-0 break-words text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
+                                              <td className="min-w-[11rem] px-3 py-3 align-top text-zinc-800">
+                                                <span className="block whitespace-normal break-normal text-right leading-snug">{String(game.home_team_name ?? "—")}</span>
                                               </td>
                                               <td className="px-3 py-3 align-top font-black text-zinc-900">
-                                                <PlatformButton
-                                                  type="button"
-                                                  onClick={() => openResultForm(game)}
-                                                  className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
-                                                >
-                                                  {hasScore ? `${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}` : "—"}
-                                                </PlatformButton>
+                                                <div className="space-y-2">
+                                                {hasScore ? (
+                                                  <div className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-zinc-50 px-2 py-2 text-sm font-black text-zinc-900">
+                                                    {`${String(game.home_score ?? "—")} – ${String(game.away_score ?? "—")}`}
+                                                  </div>
+                                                ) : (
+                                                  <PlatformButton
+                                                    type="button"
+                                                    onClick={() => openResultForm(game)}
+                                                    className="mx-auto inline-flex min-h-10 w-full items-center justify-center whitespace-nowrap rounded-xl border border-zinc-200 bg-white px-2 py-2 text-sm font-black text-zinc-900 transition hover:border-orange-300 hover:bg-orange-50"
+                                                  >
+                                                    —
+                                                  </PlatformButton>
+                                                )}
+                                                {game.administrative_decision_type === "interruption" ? (
+                                                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-black leading-tight text-amber-900">
+                                                    Διακοπή – διοικητικό αποτέλεσμα
+                                                  </p>
+                                                ) : null}
+                                                </div>
                                               </td>
-                                              <td className="px-3 py-3 align-top text-zinc-800">
-                                                <span className="block min-w-0 break-words text-left leading-snug">{String(game.away_team_name ?? "—")}</span>
+                                              <td className="min-w-[11rem] px-3 py-3 align-top text-zinc-800">
+                                                <span className="block whitespace-normal break-normal text-left leading-snug">{String(game.away_team_name ?? "—")}</span>
                                               </td>
                                               <td className="px-3 py-3 align-top text-zinc-800">
                                                 {date ? parseDateForDisplay(date) : "—"}
@@ -1527,9 +1654,11 @@ export function ProgramGamesSection({
                               <div className="flex items-start justify-between gap-3">
                                 <div>
                                   <p className="text-xl font-black text-zinc-950">
-                                    {String(selectedResultGame.home_score ?? "") || String(selectedResultGame.away_score ?? "")
-                                      ? "Επεξεργασία αποτελέσματος"
-                                      : "Καταχώριση αποτελέσματος"}
+                                    {resultEditorMode === "administrative-interruption"
+                                      ? "Οριστικό κλείσιμο λόγω διακοπής"
+                                      : administrativeResultMode
+                                        ? "Επεξεργασία επίσημου αποτελέσματος"
+                                        : "Καταχώριση αποτελέσματος"}
                                   </p>
                                   <p className="mt-1 text-sm text-zinc-600">
                                     {String(selectedResultGame.home_team_name ?? "—")} - {String(selectedResultGame.away_team_name ?? "—")}
@@ -1547,20 +1676,30 @@ export function ProgramGamesSection({
                                 className="mt-4 space-y-4"
                                 onSubmit={async (event) => {
                                   event.preventDefault();
+                                  if (resultEditorMode === "administrative-interruption" && !window.confirm(
+                                    "Καταγράφεται επίσημο διοικητικό αποτέλεσμα. Το ιστορικό KomoControl δεν θα οριστικοποιηθεί τεχνητά. Ο αγώνας δεν θα συνεχιστεί. Θέλετε να προχωρήσετε;",
+                                  )) return;
                                   const ok = await updateEntity(
                                     "games",
                                     editingResultGameId,
                                     event,
-                                    "Το αποτέλεσμα αποθηκεύτηκε.",
+                                    administrativeResultMode ? "Το επίσημο διοικητικό αποτέλεσμα αποθηκεύτηκε." : "Το αποτέλεσμα αποθηκεύτηκε.",
                                   );
                                   if (!ok) return;
+                                  if (administrativeResultMode) {
+                                    await onRefreshCompetitionData?.();
+                                  }
                                   closeResultForm();
                                 }}
                               >
                                 <input type="hidden" name="competitionId" value={competitionId} />
-                                <input type="hidden" name="action" value="manual-result" />
+                                <input type="hidden" name="action" value={administrativeResultMode ? "administrative-result" : "manual-result"} />
+                                {administrativeResultMode ? <>
+                                  <input type="hidden" name="decisionType" value={resultEditorMode === "administrative-interruption" ? "interruption" : "correction"} />
+                                  <input type="hidden" name="expectedAdministrativeUpdatedAt" value={String(selectedResultGame.administrative_updated_at ?? "")} />
+                                </> : null}
                                 <div className="grid gap-4 md:grid-cols-2">
-                                  <Field label={String(selectedResultGame.home_team_name ?? "Γηπεδούχος")}>
+                                  <Field label={`${administrativeResultMode ? "Επίσημο σκορ · " : ""}${String(selectedResultGame.home_team_name ?? "Γηπεδούχος")}`}>
                                     <input
                                       name="homeScore"
                                       type="number"
@@ -1572,7 +1711,7 @@ export function ProgramGamesSection({
                                       className={inputClass}
                                     />
                                   </Field>
-                                  <Field label={String(selectedResultGame.away_team_name ?? "Φιλοξενούμενος")}>
+                                  <Field label={`${administrativeResultMode ? "Επίσημο σκορ · " : ""}${String(selectedResultGame.away_team_name ?? "Φιλοξενούμενος")}`}>
                                     <input
                                       name="awayScore"
                                       type="number"
@@ -1585,6 +1724,27 @@ export function ProgramGamesSection({
                                     />
                                   </Field>
                                 </div>
+                                {administrativeResultMode && resultPhaseUsesStandings ? (
+                                  <div className="grid gap-4 md:grid-cols-2">
+                                    <Field label={`Βαθμοί · ${String(selectedResultGame.home_team_name ?? "Γηπεδούχος")}`}>
+                                      <input name="homeStandingsPointsOverride" type="number" min={0} step={1} value={resultHomeStandingsPoints} onChange={(event) => setResultHomeStandingsPoints(event.target.value)} className={inputClass} placeholder="Αυτόματος κανόνας" />
+                                    </Field>
+                                    <Field label={`Βαθμοί · ${String(selectedResultGame.away_team_name ?? "Φιλοξενούμενος")}`}>
+                                      <input name="awayStandingsPointsOverride" type="number" min={0} step={1} value={resultAwayStandingsPoints} onChange={(event) => setResultAwayStandingsPoints(event.target.value)} className={inputClass} placeholder="Αυτόματος κανόνας" />
+                                    </Field>
+                                    <p className="md:col-span-2 text-xs font-semibold text-zinc-600">Κενό πεδίο: εφαρμόζεται ο κανονικός κανόνας της φάσης. Το 0 αποθηκεύεται ως ρητή απονομή μηδενικών βαθμών.</p>
+                                  </div>
+                                ) : null}
+                                {administrativeResultMode ? (
+                                  <>
+                                    <Field label="Αιτία / Παρατηρήσεις">
+                                      <textarea name="reason" required maxLength={2000} value={resultReason} onChange={(event) => setResultReason(event.target.value)} className={`${inputClass} min-h-28 resize-y`} />
+                                    </Field>
+                                    <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-950">
+                                      Η διοικητική απόφαση δεν αλλάζει το χρονόμετρο, τα γεγονότα, τη finalization ή τα στατιστικά KomoControl. Τυχόν μεταγενέστερες φάσεις ή διασταυρώσεις δεν ανακατασκευάζονται αυτόματα.
+                                    </div>
+                                  </>
+                                ) : null}
                                 <div className="flex flex-wrap justify-end gap-3 border-t border-zinc-200 pt-4">
                                   <PlatformButton
                                     type="button"
@@ -1594,7 +1754,11 @@ export function ProgramGamesSection({
                                     Ακύρωση
                                   </PlatformButton>
                                   <PlatformButton mutation disabled={busy} className={buttonClass}>
-                                    Αποθήκευση αποτελέσματος
+                                    {resultEditorMode === "administrative-interruption"
+                                      ? "Κλείσιμο και αποθήκευση αποτελέσματος"
+                                      : administrativeResultMode
+                                        ? "Αποθήκευση διόρθωσης"
+                                        : "Αποθήκευση αποτελέσματος"}
                                   </PlatformButton>
                                 </div>
                               </PlatformForm>
@@ -1611,6 +1775,7 @@ export function ProgramGamesSection({
                                 {matchReportDetail ? <>
                                   <p className="mt-2 break-words text-lg font-black text-zinc-900">{matchReportDetail.game.homeTeam.name} {matchReportDetail.game.finalScore.home} – {matchReportDetail.game.finalScore.away} {matchReportDetail.game.awayTeam.name}</p>
                                   <p className="mt-1 text-sm text-zinc-600">{matchReportDetail.game.competition}{matchReportDetail.game.round ? ` · ${matchReportDetail.game.round}` : ""}</p>
+                                  {selectedMatchReportGame?.administrative_result_id ? <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-950">Υπάρχει διοικητική διαφοροποίηση του επίσημου αποτελέσματος.</p> : null}
                                 </> : null}
                               </div>
                               <PlatformButton type="button" onClick={closeMatchReport} className="min-h-11 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-black text-zinc-700">Κλείσιμο</PlatformButton>
@@ -1791,6 +1956,42 @@ export function ProgramGamesSection({
                                 </p>
                               </Field>
                             </div>
+
+                            {selectedGameIds.length === 1 ? (() => {
+                              const selectedPanelGame = scheduleGames.find((game) => String(game.id) === selectedGameIds[0]) ?? null;
+                              if (!selectedPanelGame) return null;
+                              const hasOfficialResult = selectedPanelGame.home_score !== null && selectedPanelGame.away_score !== null;
+                              const isAdministrativeInterruption = selectedPanelGame.administrative_decision_type === "interruption";
+                              return (
+                                <section data-testid="selected-game-result-controls" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                  <p className="text-xs font-black uppercase tracking-[0.16em] text-amber-800">ΑΠΟΤΕΛΕΣΜΑ ΑΓΩΝΑ</p>
+                                  {isAdministrativeInterruption ? (
+                                    <p className="mt-2 inline-flex rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-black text-amber-900">
+                                      Διοικητικό κλείσιμο λόγω διακοπής
+                                    </p>
+                                  ) : null}
+                                  <div className="mt-3 flex flex-wrap gap-2">
+                                    {hasOfficialResult ? (
+                                      <PlatformButton
+                                        type="button"
+                                        onClick={() => openResultForm(selectedPanelGame, "administrative-correction")}
+                                        className={buttonClass}
+                                      >
+                                        Επεξεργασία επίσημου αποτελέσματος
+                                      </PlatformButton>
+                                    ) : (
+                                      <PlatformButton
+                                        type="button"
+                                        onClick={() => openResultForm(selectedPanelGame, "administrative-interruption")}
+                                        className="rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-sm font-black text-amber-900 transition hover:bg-amber-100"
+                                      >
+                                        Οριστικό κλείσιμο λόγω διακοπής
+                                      </PlatformButton>
+                                    )}
+                                  </div>
+                                </section>
+                              );
+                            })() : null}
                           </div>
                         ) : null}
                         </div>
@@ -2285,6 +2486,73 @@ export function ProgramGamesSection({
           </div>
         </div>
       )}
+      {matchdayMvpOpen ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-3 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="matchday-mvp-title">
+          <div className="max-h-[92vh] w-full max-w-7xl overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:p-7">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-orange-700">{matchdayMvpState?.roundLabel ?? "Αγωνιστική"}</p>
+                <h2 id="matchday-mvp-title" className="mt-2 text-3xl font-black text-zinc-950">MVP ΑΓΩΝΙΣΤΙΚΗΣ</h2>
+                <p className="mt-2 text-sm font-bold text-zinc-600">Οι 5 πρώτοι προκύπτουν από EFF, PTS, REB, AST και το canonical tie-break. Η τελική επιλογή είναι ανθρώπινη.</p>
+              </div>
+              <PlatformButton type="button" onClick={() => setMatchdayMvpOpen(false)} className="rounded-xl border border-zinc-300 bg-white px-4 py-2 font-black text-zinc-700">Κλείσιμο</PlatformButton>
+            </div>
+            {matchdayMvpLoading ? <p className="mt-6 rounded-2xl bg-zinc-100 p-5 font-bold text-zinc-600">Φόρτωση υποψηφίων…</p> : null}
+            {matchdayMvpError ? <p role="alert" className="mt-6 rounded-2xl border border-red-200 bg-red-50 p-4 font-bold text-red-700">{matchdayMvpError}</p> : null}
+            {matchdayMvpState ? (
+              <>
+                {matchdayMvpState.selection ? <p className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 font-black text-emerald-800">Επιλεγμένος MVP: #{matchdayMvpState.selection.player.shirtNumber} {matchdayMvpState.selection.player.displayName} · {matchdayMvpState.selection.teamName}</p> : null}
+                <div className="mt-6 max-w-full overflow-x-auto overscroll-x-contain rounded-2xl border border-zinc-200 bg-white">
+                  <table className="w-full min-w-[72rem] table-auto text-left text-sm">
+                    <thead className="bg-zinc-950 text-xs font-black uppercase tracking-wide text-zinc-200">
+                      <tr>
+                        <th className="min-w-28 whitespace-nowrap px-3 py-3">Επιλογή</th>
+                        <th className="w-16 whitespace-nowrap px-3 py-3 text-center">#</th>
+                        <th className="min-w-44 whitespace-nowrap px-3 py-3">Ονοματεπώνυμο</th>
+                        <th className="min-w-44 whitespace-nowrap px-3 py-3">Ομάδα</th>
+                        <th className="w-14 whitespace-nowrap px-2 py-3 text-center">PTS</th>
+                        <th className="w-16 whitespace-nowrap px-2 py-3 text-center">3PTS</th>
+                        <th className="w-14 whitespace-nowrap px-2 py-3 text-center">REB</th>
+                        <th className="w-14 whitespace-nowrap px-2 py-3 text-center">AST</th>
+                        <th className="w-14 whitespace-nowrap px-2 py-3 text-center">STL</th>
+                        <th className="w-14 whitespace-nowrap px-2 py-3 text-center">EFF</th>
+                        <th className="min-w-72 whitespace-nowrap px-3 py-3">Αποτέλεσμα αγώνα</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matchdayMvpState.candidates.map((candidate) => {
+                        const key = `${candidate.gameId}:${candidate.playerId}`;
+                        const selected = matchdayMvpState.selection?.gameId === candidate.gameId && matchdayMvpState.selection?.playerId === candidate.playerId;
+                        return <tr key={key} className={`border-t border-zinc-200 ${selected ? "bg-emerald-50" : "bg-white"}`}>
+                          <td className="px-3 py-3">
+                            <PlatformButton mutation type="button" disabled={Boolean(matchdayMvpSaving)} onClick={() => void selectMatchdayMvp(candidate.gameId, candidate.playerId)} className={`min-w-24 rounded-xl px-3 py-2 text-xs font-black text-white disabled:opacity-50 ${selected ? "bg-emerald-700" : "bg-zinc-950"}`}>{selected ? "ΕΠΙΛΕΓΜΕΝΟΣ" : matchdayMvpSaving === key ? "ΑΠΟΘΗΚΕΥΣΗ…" : "ΕΠΙΛΟΓΗ"}</PlatformButton>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3 text-center font-black text-zinc-950">#{candidate.player.shirtNumber}</td>
+                          <td className="min-w-44 whitespace-nowrap px-3 py-3 font-black text-zinc-950">{candidate.player.displayName}</td>
+                          <td className="min-w-44 whitespace-nowrap px-3 py-3 font-bold text-zinc-700">{candidate.teamName}</td>
+                          <td className="px-2 py-3 text-center tabular-nums text-zinc-800">{candidate.statistics.points}</td>
+                          <td className="px-2 py-3 text-center tabular-nums text-zinc-800">{candidate.statistics.threePointMade}</td>
+                          <td className="px-2 py-3 text-center tabular-nums text-zinc-800">{candidate.statistics.rebounds}</td>
+                          <td className="px-2 py-3 text-center tabular-nums text-zinc-800">{candidate.statistics.assists}</td>
+                          <td className="px-2 py-3 text-center tabular-nums text-zinc-800">{candidate.statistics.steals}</td>
+                          <td className="px-2 py-3 text-center font-black tabular-nums text-orange-700">{candidate.statistics.efficiency}</td>
+                          <td className="min-w-72 whitespace-nowrap px-3 py-3 font-bold text-zinc-700">{candidate.teamName} – {candidate.opponentName} {candidate.finalScore.team}–{candidate.finalScore.opponent}</td>
+                        </tr>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {matchdayMvpState.otherPerformances.length ? (
+                  <div className="mt-6 border-t border-zinc-200 pt-5">
+                    <PlatformButton type="button" onClick={() => setShowOtherMvpPlayers((current) => !current)} className="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 font-black text-zinc-800">ΑΛΛΟΣ ΠΑΙΚΤΗΣ</PlatformButton>
+                    {showOtherMvpPlayers ? <div className="mt-4 flex flex-col gap-3 sm:flex-row"><select className={`${inputClass} flex-1`} value={otherMvpSelection} onChange={(event) => setOtherMvpSelection(event.target.value)}><option value="">Επιλέξτε επιλέξιμη εμφάνιση</option>{matchdayMvpState.otherPerformances.map((performance) => <option key={`${performance.gameId}:${performance.playerId}`} value={`${performance.gameId}:${performance.playerId}`}>#{performance.player.shirtNumber} {performance.player.displayName} · {performance.teamName} · EFF {performance.statistics.efficiency}</option>)}</select><PlatformButton mutation type="button" disabled={!otherMvpSelection || Boolean(matchdayMvpSaving)} onClick={() => { const separator = otherMvpSelection.indexOf(":"); const gameId = otherMvpSelection.slice(0, separator); const playerId = otherMvpSelection.slice(separator + 1); if (separator > 0 && gameId && playerId) void selectMatchdayMvp(gameId, playerId); }} className={buttonClass}>ΑΠΟΘΗΚΕΥΣΗ MVP</PlatformButton></div> : null}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </Panel>
   );
 }

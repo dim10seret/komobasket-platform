@@ -54,6 +54,7 @@ describe("public Statistics and MVP V1 presentation", () => {
   it("shows the safe empty performance state", () => expect(component).toContain("Δεν υπάρχουν διαθέσιμα δεδομένα για Top Performance."));
   it("keeps filters touch friendly and responsive", () => { expect(component.match(/min-h-11/g)?.length).toBeGreaterThanOrEqual(3); expect(component).toContain("sm:grid-cols-2"); });
   it("keeps rankings horizontally accessible", () => { expect(component).toContain("overflow-x-auto"); expect(component).toContain('tabIndex={0}'); expect(component).toContain("sticky left-0"); });
-  it("does not implement manual MVP controls", () => expect(component).not.toMatch(/vote|shortlist|MVP Αγωνιστικής|admin MVP/i));
+  it("renders the selected human MVP as a larger section below Top Performance", () => { expect(component).toContain("MVP ΑΓΩΝΙΣΤΙΚΗΣ"); expect(component.indexOf("MVP ΑΓΩΝΙΣΤΙΚΗΣ")).toBeGreaterThan(component.indexOf("TOP PERFORMANCE")); expect(component).toContain("matchday?.mvp"); });
+  it("does not expose admin selection controls publicly", () => expect(component).not.toMatch(/ΑΛΛΟΣ ΠΑΙΚΤΗΣ|matchday-mvp|admin MVP/i));
   it("does not expose incident or sync metadata", () => { expect(component).not.toMatch(/incidentReport|historyHash|finalizationHash|scorerId|deviceId|runId/); expect(service).not.toMatch(/incidentReport|historyHash|finalizationHash|scorerId|deviceId/); });
 });

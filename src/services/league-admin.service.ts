@@ -3,6 +3,10 @@ import "server-only";
 import { players as legacyPlayers } from "@/data/players";
 import { teams as legacyTeams } from "@/data/teams";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import {
+  projectAdministrativeGameResult,
+  type AdministrativeGameResultProjectionRow,
+} from "@/lib/administrative-game-result";
 import { calculateStandings } from "@/lib/standings-calculator";
 import {
   calculateSeriesProgression,
@@ -43,6 +47,7 @@ import {
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 import { isEligibleRootSeriesSlot, resolvePhasePredecessorId } from "@/lib/phase-root-source";
 import { listPlatformMatchReportAvailabilityWithDb } from "@/services/platform-match-report.service";
+import { saveAdministrativeGameResultWithDb } from "@/services/administrative-game-result.service";
 
 const HISTORICAL_SEASONS = [
   "2019-20",
@@ -54,6 +59,7 @@ const HISTORICAL_SEASONS = [
 ];
 
 type DbRow = Record<string, unknown>;
+type AdministrativeGameDbRow = DbRow & AdministrativeGameResultProjectionRow;
 
 type CanonicalSeriesGameRow = {
   id: string;
@@ -2372,16 +2378,22 @@ export async function finalizePhaseById(
     throw new Error("Η μορφή της φάσης δεν υποστηρίζει οριστικοποίηση.");
   }
 
-  const phaseGames = await rows<DbRow>(
+  const phaseGames = (await rows<AdministrativeGameDbRow>(
     db,
     `
-    SELECT id, phase_id, home_team_id, away_team_id, home_score, away_score, status, result_source
-    FROM league_games
-    WHERE phase_id=?
-    ORDER BY COALESCE(round_number, 0), COALESCE(game_order, 0), id
+    SELECT g.id, g.phase_id, g.home_team_id, g.away_team_id, g.home_score, g.away_score, g.status, g.result_source,
+      administrative.id AS administrative_result_id,
+      administrative.official_home_score AS administrative_home_score,
+      administrative.official_away_score AS administrative_away_score,
+      administrative.home_standings_points_override AS administrative_home_standings_points_override,
+      administrative.away_standings_points_override AS administrative_away_standings_points_override
+    FROM league_games g
+    LEFT JOIN league_game_administrative_results administrative ON administrative.game_id=g.id
+    WHERE g.phase_id=?
+    ORDER BY COALESCE(g.round_number, 0), COALESCE(g.game_order, 0), g.id
     `,
     [phaseId],
-  );
+  )).map(projectAdministrativeGameResult);
   if (!phaseGames.length) {
     throw new Error("Η φάση δεν μπορεί να οριστικοποιηθεί χωρίς αγώνες.");
   }
@@ -2420,6 +2432,8 @@ export async function finalizePhaseById(
       awayScore: game.away_score as number | string | null,
       status: String(game.status ?? null),
       resultSource: game.result_source === undefined ? null : String(game.result_source ?? null),
+      homeStandingsPointsOverride: game.administrative_home_standings_points_override as number | string | null,
+      awayStandingsPointsOverride: game.administrative_away_standings_points_override as number | string | null,
     })),
     rules: {
       pointsForWin: Number(rules.pointsForWin ?? rules.winPoints ?? 2),
@@ -2915,7 +2929,7 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
     movements: ["seasons", "competitions", "teams", "participations", "players", "rosters", "movements"],
   };
   const detailFields = new Set(["phases", "phaseSchedules", "seriesPlanningSlots", "games", "competitionVenues"]);
-  async function sectionRows(key: string, query: string, values: unknown[] = []): Promise<DbRow[]> {
+  async function sectionRows<T extends DbRow = DbRow>(key: string, query: string, values: unknown[] = []): Promise<T[]> {
     if (!db) return [];
     if (selection) {
       if (!sectionFields[selection.section]?.includes(key)) return [];
@@ -2926,7 +2940,7 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
       }
       if (selection.section === "overview" && key === "movements") query = query.replace("LIMIT 500", "LIMIT 8");
     }
-    return rows(db, query, values);
+    return rows<T>(db, query, values);
   }
 
   const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, seriesPlanningSlots, games, competitionVenues, matchReports] = await Promise.all([
@@ -3014,12 +3028,22 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
       JOIN league_competitions c ON c.id=slots.competition_id
       WHERE c.organization_id=?
       ORDER BY slots.schedule_id, slots.matchup_id, slots.series_round_number`, [organizationId]),
-    sectionRows("games", `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name, p.name AS phase_name
+    sectionRows<AdministrativeGameDbRow>("games", `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name,
+      p.name AS phase_name, p.format AS phase_format, p.lifecycle_status AS phase_lifecycle_status,
+      administrative.id AS administrative_result_id,
+      administrative.decision_type AS administrative_decision_type,
+      administrative.official_home_score AS administrative_home_score,
+      administrative.official_away_score AS administrative_away_score,
+      administrative.home_standings_points_override AS administrative_home_standings_points_override,
+      administrative.away_standings_points_override AS administrative_away_standings_points_override,
+      administrative.reason AS administrative_reason,
+      administrative.updated_at AS administrative_updated_at
       FROM league_games g
       JOIN league_competitions c ON c.id=g.competition_id
       JOIN league_teams ht ON ht.id=g.home_team_id
       JOIN league_teams at ON at.id=g.away_team_id
       LEFT JOIN league_phases p ON p.id=g.phase_id
+      LEFT JOIN league_game_administrative_results administrative ON administrative.game_id=g.id
       WHERE c.organization_id=? AND ht.organization_id=? AND at.organization_id=?
       ORDER BY COALESCE(g.scheduled_at,'9999') DESC LIMIT 1000`, [organizationId, organizationId, organizationId]),
     sectionRows("competitionVenues", `SELECT v.*, c.name AS competition_name, s.name AS season_name
@@ -3041,9 +3065,10 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
       (SELECT COUNT(*) FROM league_teams WHERE organization_id=?) AS teams,
       (SELECT COUNT(*) FROM league_players WHERE organization_id=?) AS players
   `).bind(organizationId, organizationId, organizationId).first<{ seasons: number; competitions: number; teams: number; players: number }>() : null;
+  const effectiveGames = games.map(projectAdministrativeGameResult);
   return {
     mode: "database" as const, seasons, competitions, teams, participations, players, rosters,
-    movements, phases, phaseSchedules, seriesPlanningSlots, games, competitionVenues, matchReports,
+    movements, phases, phaseSchedules, seriesPlanningSlots, games: effectiveGames, competitionVenues, matchReports,
     counts: overviewCounts ?? {
       seasons: seasons.length, competitions: competitions.length,
       teams: teams.length, players: players.length,
@@ -5710,6 +5735,28 @@ export async function updateLeagueEntity(resource: string, input: Record<string,
       FROM league_games g JOIN league_phases p ON p.id=g.phase_id WHERE g.id=?`)
       .bind(id).first<DbRow>();
     if (!current) throw new Error("Δεν βρέθηκε ο αγώνας.");
+
+    if (String(input.action ?? input.updateAction ?? "") === "administrative-result") {
+      const competitionId = String(input.competitionId ?? input.competition_id ?? current.competition_id ?? "").trim();
+      const hasHomePoints = Object.prototype.hasOwnProperty.call(input, "homeStandingsPointsOverride")
+        || Object.prototype.hasOwnProperty.call(input, "home_standings_points_override");
+      const hasAwayPoints = Object.prototype.hasOwnProperty.call(input, "awayStandingsPointsOverride")
+        || Object.prototype.hasOwnProperty.call(input, "away_standings_points_override");
+      return saveAdministrativeGameResultWithDb(db, {
+        gameId: id,
+        competitionId,
+        decisionType: String(input.decisionType ?? input.decision_type ?? "") as "correction" | "interruption",
+        homeScore: input.homeScore ?? input.home_score,
+        awayScore: input.awayScore ?? input.away_score,
+        homeStandingsPointsOverride: input.homeStandingsPointsOverride ?? input.home_standings_points_override,
+        awayStandingsPointsOverride: input.awayStandingsPointsOverride ?? input.away_standings_points_override,
+        homeStandingsPointsOverrideProvided: hasHomePoints,
+        awayStandingsPointsOverrideProvided: hasAwayPoints,
+        reason: input.reason ?? input.notes,
+        expectedUpdatedAt: input.expectedAdministrativeUpdatedAt ?? input.expected_updated_at,
+        scopeOrganizationId,
+      }, actor);
+    }
     if (String(current.phase_lifecycle_status ?? "active") === "finalized" || current.phase_finalized_at) {
       throw new Error("Οι αγώνες οριστικοποιημένης φάσης δεν μπορούν να τροποποιηθούν.");
     }

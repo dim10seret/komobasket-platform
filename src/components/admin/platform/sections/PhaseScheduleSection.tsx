@@ -508,6 +508,8 @@ export function StandingsPhasePreview({
       awayScore: (game.away_score ?? null) as number | string | null,
       status: String(game.status ?? null),
       resultSource: String(game.result_source ?? null),
+      homeStandingsPointsOverride: (game.administrative_home_standings_points_override ?? null) as number | string | null,
+      awayStandingsPointsOverride: (game.administrative_away_standings_points_override ?? null) as number | string | null,
     })),
     rules: {
       pointsForWin: rules.pointsForWin,

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { PublicTeamStatistics, PublicTeamStatisticsPlayer } from "@/lib/public-team-statistics";
+import { formatPublicDate } from "@/lib/public-date";
 import type { PlatformMatchReportMode } from "@/lib/platform-match-report";
 
 export function simpleTeamStatisticsSummary(players: PublicTeamStatisticsPlayer[]) {
@@ -51,7 +52,7 @@ export default function PublicTeamStatisticsPanel({ statistics, gameMode }: { st
       <div>
         <p className="text-xs font-black uppercase tracking-[0.16em] text-orange-700">ΡΟΣΤΕΡ - ΑΓΩΝΙΣΤΙΚΑ ΔΕΔΟΜΕΝΑ</p>
         <h2 id="team-statistics-title" className="mt-2 text-2xl font-black text-zinc-950">{total ? "ΣΥΝΟΛΙΚΑ ΣΤΑΤΙΣΤΙΚΑ" : "ΣΤΑΤΙΣΤΙΚΑ ΑΓΩΝΑ"}</h2>
-        {total ? <p className="mt-2 text-sm font-bold text-zinc-600">Αγώνες ομάδας: <strong className="text-zinc-950">{statistics.total.teamGamesPlayed}</strong></p> : <p className="mt-2 text-sm font-bold text-zinc-700">{selectedGame?.scheduledDate ?? "—"} · {selectedGame?.matchupLabel}</p>}
+        {total ? <p className="mt-2 text-sm font-bold text-zinc-600">Αγώνες ομάδας: <strong className="text-zinc-950">{statistics.total.teamGamesPlayed}</strong></p> : <p className="mt-2 text-sm font-bold text-zinc-700">{selectedGame?.scheduledDate ? formatPublicDate(selectedGame.scheduledDate) : "—"} · {selectedGame?.matchupLabel}</p>}
       </div>
       <label className="w-full sm:w-auto">
         <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-zinc-600">Προβολή στατιστικών</span>

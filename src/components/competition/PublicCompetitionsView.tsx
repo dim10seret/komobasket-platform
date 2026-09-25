@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import CompetitionBracket from "@/components/public/CompetitionBracket";
 import PublicCompactSelector from "@/components/public/PublicCompactSelector";
 import VenueDetails from "@/components/public/VenueDetails";
+import { formatPublicDate } from "@/lib/public-date";
 
 import PublicTeamStatisticsPanel from "@/components/competition/PublicTeamStatistics";
 import PublicTeamRosterButton from "@/components/competition/PublicTeamRosterButton";
@@ -61,11 +62,6 @@ function summary(phase: PublicPhase) {
   return values.filter(Boolean).join(" · ") || (phase.format === "series" ? "Σειρά αγώνων" : "Φάση διοργάνωσης");
 }
 
-function dateText(value: string) {
-  const [year, month, day] = value.split("-").map(Number);
-  return year && month && day ? new Intl.DateTimeFormat("el-GR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(year, month - 1, day)) : value;
-}
-
 function Team({ game, side, teamHref, compact = false }: { game: PublicGame; side: "home" | "away"; teamHref?: (teamId: string) => string; compact?: boolean }) {
   const team = side === "home" ? game.homeTeam : game.awayTeam;
   const score = side === "home" ? game.homeScore : game.awayScore;
@@ -86,7 +82,7 @@ function CompactGameRow({ game, teamHref, gameBasePath }: { game: PublicGame; te
 function GameCard({ game, compact = false, teamHref, gameBasePath }: { game: PublicGame; compact?: boolean; teamHref?: (teamId: string) => string; gameBasePath: string }) {
   if (compact) return <CompactGameRow game={game} teamHref={teamHref} gameBasePath={gameBasePath} />;
   const hasResult = game.homeScore !== null && game.awayScore !== null;
-  const details = [game.scheduledDate && dateText(game.scheduledDate), game.scheduledTime].filter(Boolean);
+  const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime].filter(Boolean);
   const hasMetadata = details.length > 0 || Boolean(game.venue) || Boolean(game.videoUrl);
   return <article className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm"><div className={`grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5 md:gap-4 ${hasMetadata ? "md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_minmax(11rem,auto)]" : "md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]"}`}><Team game={game} side="home" teamHref={teamHref} /><div className="flex min-w-14 flex-col items-center gap-1.5 sm:min-w-16"><PublicGameResult game={game} gameBasePath={gameBasePath} className={`w-full rounded-xl px-2.5 py-1.5 text-center text-base tabular-nums sm:text-lg ${hasResult ? "bg-zinc-950 font-black text-white" : "bg-orange-50 font-bold text-orange-800"}`} />{game.liveAvailable ? <Link href={`${gameBasePath}/${encodeURIComponent(game.id)}/live`} className="inline-flex min-h-10 items-center rounded-lg bg-emerald-500 px-4 text-sm font-black tracking-[0.12em] text-emerald-950 shadow-sm transition hover:bg-emerald-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600">LIVE</Link> : null}</div><Team game={game} side="away" teamHref={teamHref} />{hasMetadata && <div className="col-span-3 mt-1 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-t border-zinc-100 pt-2 text-xs font-bold uppercase tracking-wide text-zinc-500 md:col-span-1 md:col-start-4 md:row-start-1 md:mt-0 md:justify-start md:border-0 md:pt-0">{details.length > 0 && <span>{details.join(" · ")}</span>}{game.venue && <VenueDetails venue={game.venue} />}{game.videoUrl && <a href={game.videoUrl} target="_blank" rel="noopener noreferrer" className="rounded-full bg-orange-100 px-2.5 py-1 text-orange-800 hover:bg-orange-200">▶ Βίντεο</a>}</div>}</div></article>;
 }

@@ -1,5 +1,6 @@
 import type { PublicFinalizedGameDetail, PublicFinalizedGameTeam } from "@/lib/public-finalized-game";
 import type { PlatformMatchReportStatisticsLine } from "@/lib/platform-match-report";
+import { formatPublicDate } from "@/lib/public-date";
 
 const STAT_COLUMNS = ["PTS", "2PT", "3PT", "FT", "OREB", "DREB", "REB", "AST", "STL", "BLK", "TO", "F", "EFF"] as const;
 
@@ -49,7 +50,7 @@ function TeamStatisticsTable({ side, team }: { side: "HOME" | "AWAY"; team: Publ
 
 export default function PublicFinalizedGame({ detail }: { detail: PublicFinalizedGameDetail }) {
   const metadata = [detail.game.competition, detail.game.season, detail.game.phase, detail.game.round].filter(Boolean);
-  const schedule = [detail.game.scheduledDate, detail.game.scheduledTime, detail.game.venue].filter(Boolean);
+  const schedule = [detail.game.scheduledDate ? formatPublicDate(detail.game.scheduledDate) : null, detail.game.scheduledTime, detail.game.venue].filter(Boolean);
   return <div className="space-y-6">
     <section className="overflow-hidden rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-8">
       <div className="text-center"><span className="inline-flex rounded-full bg-orange-500 px-4 py-1.5 text-xs font-black tracking-[0.2em] text-zinc-950">ΤΕΛΙΚΟ</span><p className="mt-3 text-sm font-bold text-zinc-300">{metadata.join(" · ")}</p>{schedule.length ? <p className="mt-1 text-xs font-semibold text-zinc-400">{schedule.join(" · ")}</p> : null}</div>

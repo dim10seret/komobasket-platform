@@ -1,7 +1,8 @@
 import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
-import { buildPublicCompetitionStatistics, type PublicCompetitionStatistics } from "@/lib/public-competition-statistics";
+import { buildPublicCompetitionStatistics, type PublicCompetitionStatistics, type PublicTopPerformance } from "@/lib/public-competition-statistics";
+import { readPublicMatchdayMvpSelectionsWithDb } from "@/services/matchday-mvp.service";
 import { CANONICAL_PUBLIC_SEASON_START, PUBLIC_KOMOBASKET_ORGANIZATION_ID } from "@/services/public-competition.service";
 import { readAuthoritativeCompetitionStatisticalGamesWithDb } from "@/services/platform-match-report.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
@@ -14,7 +15,9 @@ export type PublicCompetitionStatisticsPageData = {
   competitions: Array<{ slug: string; name: string }>;
   selectedSeason: { slug: string; name: string } | null;
   selectedCompetition: { slug: string; name: string } | null;
-  statistics: PublicCompetitionStatistics | null;
+  statistics: (Omit<PublicCompetitionStatistics, "matchdays"> & {
+    matchdays: Array<PublicCompetitionStatistics["matchdays"][number] & { mvp: PublicTopPerformance | null }>;
+  }) | null;
 };
 
 export async function readPublicCompetitionStatisticsForOrganizationWithDb(
@@ -58,12 +61,15 @@ export async function readPublicCompetitionStatisticsForOrganizationWithDb(
     const current = roundGroups.get(roundNumber);
     roundGroups.set(roundNumber, { roundNumber, label: row.round_label?.trim() || `${roundNumber}η Αγωνιστική`, totalRealGames: (current?.totalRealGames ?? 0) + 1 });
   }
+  const sourceGames = eligibleGames.map((game) => ({ ...game, roundNumber: roundByGame.get(game.gameId) ?? null }));
+  const statistics = buildPublicCompetitionStatistics({ games: sourceGames, rounds: [...roundGroups.values()] });
+  const mvpByRound = await readPublicMatchdayMvpSelectionsWithDb(database, organizationId, selectedCompetitionRow.competition_id, sourceGames);
   return {
     seasons,
     competitions,
     selectedSeason,
     selectedCompetition,
-    statistics: buildPublicCompetitionStatistics({ games: eligibleGames.map((game) => ({ ...game, roundNumber: roundByGame.get(game.gameId) ?? null })), rounds: [...roundGroups.values()] }),
+    statistics: { ...statistics, matchdays: statistics.matchdays.map((matchday) => ({ ...matchday, mvp: mvpByRound.get(matchday.roundNumber) ?? null })) },
   };
 }
 

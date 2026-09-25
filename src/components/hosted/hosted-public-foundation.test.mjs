@@ -18,6 +18,20 @@ function source(relativePath) {
 }
 
 describe("hosted organization public foundation", () => {
+  it("uses a compact mobile menu while preserving every hosted navigation link", () => {
+    const header = source("HostedOrganizationHeader.tsx");
+
+    expect(header).toContain('"use client"');
+    expect(header).toContain("const [isMenuOpen, setIsMenuOpen] = useState(false)");
+    expect(header).toContain('aria-controls="hosted-mobile-navigation"');
+    expect(header).toContain('id="hosted-mobile-navigation"');
+    expect(header).toContain("hidden border-t border-zinc-800 bg-zinc-900 lg:block");
+    expect(header).toContain("border-t border-zinc-800 bg-zinc-900 px-5 py-4 lg:hidden");
+    expect(header.match(/navigation\.map/g)).toHaveLength(2);
+    expect(header).toContain("onClick={() => setIsMenuOpen(false)}");
+    expect(header).not.toContain("overflow-x-auto");
+  });
+
   it("uses one centrally managed decorative background across hosted Organizations only", () => {
     const renderHero = (name) => renderToStaticMarkup(createElement(HostedOrganizationHero, { eyebrow: "Hosted Organization", title: name }));
     expect(fs.existsSync(path.resolve(import.meta.dirname, "../../..", "public", HOSTED_ORGANIZATION_BACKGROUND.slice(1)))).toBe(true);

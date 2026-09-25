@@ -16,6 +16,7 @@ import * as komo from "@/services/komocontrol-admin.service";
 import { readPlatformMatchReport } from "@/services/platform-match-report.service";
 import { readPlatformGameSheet, renderPlatformGameSheetHtml } from "@/services/platform-game-sheet.service";
 import { generateStatisticsPdf, statisticsPdfFilename } from "@/services/platform-statistics-pdf.service";
+import { matchdayMvpErrorResponse, readMatchdayMvp, saveMatchdayMvp } from "@/services/matchday-mvp.service";
 
 const sections = new Set(["overview", "seasons", "competitions", "teams", "players", "movements"]);
 const resources = new Set(["competitions", "teams", "participations", "competition-venues", "players", "rosters", "phases", "phase-schedules", "games"]);
@@ -146,6 +147,16 @@ async function dispatch(request: Request, path: string[]) {
     if(!mutation)return publicSettings(organizationId,membership.role);
     if(request.method==="PATCH")return Response.json({organization:await updateManagedOrganizationPublicPresentation(organizationId,input,actor.email)});
   }
+  if(area==="matchday-mvp" && path.length===1) {
+    const source = mutation ? input : Object.fromEntries(url.searchParams.entries());
+    const competitionId = String(source.competitionId ?? "").trim();
+    await platformOperationScope(organizationId).requireCompetitionAccess(actor,competitionId,mutation ? "manage" : "read");
+    const scopedInput = { organizationId, competitionId, phaseId:String(source.phaseId ?? "").trim(), roundNumber:Number(source.roundNumber) };
+    if(!mutation)return Response.json(await readMatchdayMvp(scopedInput));
+    if(request.method==="PATCH")return Response.json(await saveMatchdayMvp({
+      ...scopedInput, gameId:String(source.gameId ?? "").trim(), playerId:String(source.playerId ?? "").trim(),
+    }));
+  }
   if(area==="match-reports" && !mutation && resource)return report(resource,format,actor,organizationId);
   return deny();
 }
@@ -155,7 +166,7 @@ export async function handleOrganizationPlatform(request: Request, path: string[
   catch(error) {
     if(error instanceof OrganizationUserAuthError)response=Response.json({error:"Απαιτείται σύνδεση."},{status:401});
     else if(error instanceof UserLoginError)response=Response.json({error:error.message},{status:error.status});
-    else response=platformAuthorizationErrorResponse(error) ?? komo.komoControlAdminErrorResponse(error) ?? Response.json({error:error instanceof Error && error.message==="REQUEST_TOO_LARGE" ? "Το αίτημα είναι πολύ μεγάλο." : "Η ενέργεια δεν ολοκληρώθηκε."},{status:400});
+    else response=matchdayMvpErrorResponse(error) ?? platformAuthorizationErrorResponse(error) ?? komo.komoControlAdminErrorResponse(error) ?? Response.json({error:error instanceof Error && error.message==="REQUEST_TOO_LARGE" ? "Το αίτημα είναι πολύ μεγάλο." : "Η ενέργεια δεν ολοκληρώθηκε."},{status:400});
   }
   response.headers.set("Cache-Control","private, no-store");
   response.headers.set("Vary","Cookie");

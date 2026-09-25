@@ -17,7 +17,7 @@ export default function DataDeletionPage() {
           <div className="mx-auto max-w-4xl">
             <p className="text-sm font-bold uppercase tracking-[0.2em] text-orange-500">KomoBasket Platform</p>
             <h1 className="mt-4 text-4xl font-black sm:text-5xl">Διαγραφή Δεδομένων</h1>
-            <p className="mt-5 text-sm text-zinc-300">Τελευταία ενημέρωση: 21 Σεπτεμβρίου 2026</p>
+            <p className="mt-5 text-sm text-zinc-300">Τελευταία ενημέρωση: 21/09/2026</p>
           </div>
         </header>
 

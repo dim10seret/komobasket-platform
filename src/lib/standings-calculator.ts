@@ -12,6 +12,8 @@ export type StandingsGameInput = {
   awayScore: number | string | null;
   status: string | null;
   resultSource: string | null;
+  homeStandingsPointsOverride?: number | string | null;
+  awayStandingsPointsOverride?: number | string | null;
 };
 
 export type StandingsRulesInput = {
@@ -140,6 +142,11 @@ const parseScore = (value: unknown, label: string) => {
     throw new Error(`Το πεδίο «${label}» πρέπει να είναι ακέραιος μη αρνητικός αριθμός.`);
   }
   return candidate;
+};
+
+const parseStandingsPointsOverride = (value: unknown, label: string) => {
+  if (value === null || value === undefined || value === "") return null;
+  return parseScore(value, label);
 };
 
 const compareAlpha = (leftName: string, rightName: string, leftId: string, rightId: string) => {
@@ -292,16 +299,19 @@ export const calculateStandings = (input: StandingsCalculatorInput): StandingsCa
     away.pointsFor += awayScore;
     away.pointsAgainst += homeScore;
 
+    const homePointsOverride = parseStandingsPointsOverride(game.homeStandingsPointsOverride, "home_standings_points_override");
+    const awayPointsOverride = parseStandingsPointsOverride(game.awayStandingsPointsOverride, "away_standings_points_override");
+
     if (homeScore > awayScore) {
       home.wins += 1;
       away.losses += 1;
-      home.standingsPoints += rules.pointsForWin;
-      away.standingsPoints += rules.pointsForLoss;
+      home.standingsPoints += homePointsOverride ?? rules.pointsForWin;
+      away.standingsPoints += awayPointsOverride ?? rules.pointsForLoss;
     } else {
       away.wins += 1;
       home.losses += 1;
-      away.standingsPoints += rules.pointsForWin;
-      home.standingsPoints += rules.pointsForLoss;
+      away.standingsPoints += awayPointsOverride ?? rules.pointsForWin;
+      home.standingsPoints += homePointsOverride ?? rules.pointsForLoss;
     }
   }
 
@@ -356,7 +366,11 @@ export const calculateStandings = (input: StandingsCalculatorInput): StandingsCa
         pf += teamScore;
         pa += opponentScore;
         const teamWon = teamScore > opponentScore;
-        points += teamWon ? rules.pointsForWin : rules.pointsForLoss;
+        const override = parseStandingsPointsOverride(
+          teamIsHome ? game.homeStandingsPointsOverride : game.awayStandingsPointsOverride,
+          "standings_points_override",
+        );
+        points += override ?? (teamWon ? rules.pointsForWin : rules.pointsForLoss);
       }
       return {
         teamId,

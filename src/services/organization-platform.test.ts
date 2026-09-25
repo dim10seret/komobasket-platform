@@ -112,6 +112,21 @@ describe("Organization Platform selected-scope integration",()=>{
     const search=await call("league?view=searchAthletes&query=Player");
     expect(search.status).toBe(200);expect((await search.json()).map((row:{player_id:string})=>row.player_id)).toEqual(["player-a"]);
   });
+  it("allows an Organization Admin administrative closure and records one scoped audit decision",async()=>{
+    const response=await call("league/games","PATCH",{id:"game-a",competitionId:"comp-a",action:"administrative-result",decisionType:"interruption",homeScore:42,awayScore:40,homeStandingsPointsOverride:0,awayStandingsPointsOverride:"",reason:"Οριστική διακοπή δοκιμής"});
+    expect(response.status).toBe(200);
+    expect(local.prepare("SELECT organization_id,game_id,decision_type,official_home_score,official_away_score,home_standings_points_override,away_standings_points_override FROM league_game_administrative_results").get()).toEqual({organization_id:"org-a",game_id:"game-a",decision_type:"interruption",official_home_score:42,official_away_score:40,home_standings_points_override:0,away_standings_points_override:null});
+    expect(local.prepare("SELECT COUNT(*) AS count FROM league_audit_log WHERE action='administrative_official_result' AND entity_id='game-a'").get()).toEqual({count:1});
+    expect(local.prepare("SELECT status,home_score,away_score FROM league_games WHERE id='game-a'").get()).toEqual({status:"scheduled",home_score:null,away_score:null});
+  });
+  it("rejects Viewer and cross-organization administrative result mutations",async()=>{
+    const foreignBefore=foreignRowsHash();
+    expect((await call("league/games","PATCH",{id:"game-b",competitionId:"comp-b",action:"administrative-result",decisionType:"interruption",homeScore:1,awayScore:0,reason:"Forbidden"})).status).toBe(403);
+    expect(foreignRowsHash()).toBe(foreignBefore);
+    local.exec("UPDATE league_organization_memberships SET role='viewer' WHERE id='member-a'");
+    expect((await call("league/games","PATCH",{id:"game-a",competitionId:"comp-a",action:"administrative-result",decisionType:"interruption",homeScore:1,awayScore:0,reason:"Forbidden"})).status).toBe(403);
+    expect(local.prepare("SELECT COUNT(*) AS count FROM league_game_administrative_results").get()).toEqual({count:0});
+  });
   it("creates/edits an owned Team without running global legacy conversion",async()=>{
     const before = foreignRowsHash();
     const response=await call("league/teams","POST",{name:"New Owned Team",city:"Local"});expect(response.status).toBe(201);
@@ -215,5 +230,21 @@ describe("Shared UI API boundary",()=>{
     expect(String(request.mock.calls[0][0])).toContain("view=searchAthletes");
     expect((await api.request("/api/admin/league/teams",{method:"DELETE",body:'{"id":"team-a"}'})).status).toBe(403);
     expect(request).toHaveBeenCalledTimes(1);
+  });
+  it("maps matchday MVP reads and Organization Admin writes through the same scoped adapter",async()=>{
+    const request=vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({eligible:true,candidates:[]}));
+    const api=createUserPlatformApi("org-a","admin",csrf);
+    await api.request("/api/admin/matchday-mvp?competitionId=competition-a&phaseId=phase-a&roundNumber=1");
+    await api.request("/api/admin/matchday-mvp",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({competitionId:"competition-a",phaseId:"phase-a",roundNumber:1,gameId:"game-a",playerId:"player-a"})});
+    expect(String(request.mock.calls[0][0])).toContain("/api/user/platform/matchday-mvp");
+    expect(String(request.mock.calls[0][0])).toContain("organizationId=org-a");
+    expect(new Headers(request.mock.calls[1][1]?.headers).get("x-kb-user-csrf")).toBe(csrf);
+    expect(JSON.parse(String(request.mock.calls[1][1]?.body)).organizationId).toBe("org-a");
+  });
+  it("keeps Viewer matchday MVP access read-only",async()=>{
+    const request=vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({eligible:true,candidates:[]}));
+    const api=createUserPlatformApi("org-a","viewer",csrf);
+    expect((await api.request("/api/admin/matchday-mvp",{method:"PATCH",body:JSON.stringify({competitionId:"competition-a"})})).status).toBe(403);
+    expect(request).not.toHaveBeenCalled();
   });
 });

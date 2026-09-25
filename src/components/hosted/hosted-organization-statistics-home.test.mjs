@@ -154,6 +154,11 @@ describe("hosted organization statistics and dynamic home", () => {
   });
   it("provides real-data empty states without static KomoBasket fallback", () => { for (const text of ["Δεν υπάρχουν διαθέσιμες διοργανώσεις.", "Δεν υπάρχουν ακόμη προγραμματισμένοι αγώνες.", "Δεν υπάρχουν ακόμη ολοκληρωμένοι αγώνες.", "Δεν υπάρχει διαθέσιμη βαθμολογία"]) expect(homeData).toContain(text); expect(homeData).not.toContain("SVEKKO"); });
   it("never merges standings across competitions", () => { expect(homeData).toContain('context?.selectedPhase?.format === "standings"'); expect(homeData).toContain("context.standings.slice(0, 5)"); expect(homeData).toContain("context?.selectedCompetition?.name"); });
+  it("renders every canonical standings field in a table-scoped responsive layout", () => {
+    for (const value of ["row.rank", "row.team.name", "row.gamesPlayed", "row.wins", "row.losses", "row.pointsFor", "row.pointsAgainst", "row.pointDifference", "row.standingsPoints"]) expect(homeData).toContain(value);
+    for (const value of ["overflow-x-auto", "min-w-[720px]", "whitespace-nowrap", 'aria-label="Βαθμολογία Οργανισμού"']) expect(homeData).toContain(value);
+    expect(homeData).not.toMatch(/calculateStandings|standingsPoints\s*[+*/-]/);
+  });
   it("keeps all Home links hosted and avoids legacy player/team routes", () => { expect(homeData).toContain("hostedOrganizationPath"); expect(homeData).toContain("hostedCompetitionGamePath"); expect(homeData).not.toContain('href="/competitions'); expect(homeData).not.toContain('href="/stats'); expect(homeData).not.toContain('href="/teams'); expect(homeData).not.toContain('href="/players'); });
   it("keeps central Stats unchanged while central Home uses the shared canonical blocks for KomoBasket", () => {
     expect(centralStats).toContain("readPublicCompetitionStatistics");
@@ -192,13 +197,17 @@ describe("hosted organization statistics and dynamic home", () => {
       seasons: [{ id: "season-run", slug: "2026-27", name: "2026-27" }],
       competitions: [{ id: "competition-run", slug: "run-cup", name: "RUN CUP", type: "league", lifecycleStatus: "online", gameMode: "FULL" }],
       phases: [], games: [game("run-next", "scheduled", null, null), game("run-final", "completed", 70, 60)],
-      standings: [{ rank: 1, team: team("run-home", "RUN HOME"), gamesPlayed: 1, wins: 1, losses: 0, standingsPoints: 2, pointsFor: 70, pointsAgainst: 60, pointDifference: 10 }],
+      standings: [
+        { rank: 1, team: team("run-standing-first", "RUN STANDING FIRST"), gamesPlayed: 4, wins: 3, losses: 1, standingsPoints: 17, pointsFor: 315, pointsAgainst: 290, pointDifference: 25 },
+        { rank: 2, team: team("run-standing-second", "RUN STANDING SECOND"), gamesPlayed: 4, wins: 2, losses: 2, standingsPoints: 0, pointsFor: 280, pointsAgainst: 300, pointDifference: -20 },
+      ],
       seriesHistory: [], bracket: null, teamView: null,
       selectedSeason: { id: "season-run", slug: "2026-27", name: "2026-27" },
       selectedCompetition: { id: "competition-run", slug: "run-cup", name: "RUN CUP", type: "league", lifecycleStatus: "online", gameMode: "FULL" },
       selectedPhase: { id: "phase-run", slug: "regular", name: "Regular", format: "standings", phaseType: "regular", participantCount: 2, roundCount: 1, winsRequired: null, directAdvancements: [], standingsPresentation: { directQualification: [], playOut: [], eliminated: [] } },
     } }));
-    for (const value of ["RUN CUP", "RUN HOME", "RUN AWAY", "70", "60", "/runbasket/competitions"]) expect(html).toContain(value);
+    for (const value of ["RUN CUP", "RUN HOME", "RUN AWAY", "RUN STANDING FIRST", "RUN STANDING SECOND", "315–290", "+25", "280–300", "-20", ">17<", ">0<", "10/09/2026", "01/09/2026", "/runbasket/competitions"]) expect(html).toContain(value);
+    expect(html.indexOf("RUN STANDING FIRST")).toBeLessThan(html.indexOf("RUN STANDING SECOND"));
     expect(html).not.toContain("KOMOBASKET COMPETITION");
     expect(html).not.toContain("KOMOBASKET MVP");
   });
