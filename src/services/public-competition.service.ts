@@ -3,7 +3,7 @@ import "server-only";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import { projectAdministrativeGameResult } from "@/lib/administrative-game-result";
 import { resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
-import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame } from "@/lib/series-progression";
+import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame, type SeriesProgressionResult } from "@/lib/series-progression";
 import { calculateStandings, type StandingsTieBreakerKey } from "@/lib/standings-calculator";
 import { buildPublicTeamStatistics, type PublicTeamStatistics } from "@/lib/public-team-statistics";
 import { selectCompetitionLatestMovements } from "@/lib/competition-latest-movements";
@@ -59,7 +59,11 @@ export type PublicGame = {
 
 export type PublicStandingRow = { rank: number; team: PublicGameTeam; gamesPlayed: number; wins: number; losses: number; standingsPoints: number; pointsFor: number; pointsAgainst: number; pointDifference: number };
 export type PublicSeriesRound = { roundNumber: number; kind: "transferred" | "game" | "not_needed"; sourcePhaseName: string | null; game: PublicGame | null };
-export type PublicSeriesMatchupHistory = { matchupId: string; label: string; maximumSeriesRounds: number; rounds: PublicSeriesRound[] };
+export type PublicSeriesSummary = Pick<SeriesProgressionResult,
+  "teamAId" | "teamAName" | "teamBId" | "teamBName" | "winsRequired" |
+  "currentWinsA" | "currentWinsB" | "qualifiedTeamId" | "qualifiedTeamName" | "transferredRoundCount"
+>;
+export type PublicSeriesMatchupHistory = { matchupId: string; label: string; maximumSeriesRounds: number; rounds: PublicSeriesRound[]; summary?: PublicSeriesSummary };
 export type PublicBracketParticipant = { slot: "A" | "B"; team: PublicGameTeam | null; originLabel: string | null };
 export type PublicBracketMatchup = { matchupId: string; kind: "series" | "direct_qualifier" | "standings_origin"; participants: PublicBracketParticipant[]; winnerTeamId: string | null; seriesScore: { winsA: number; winsB: number; winsRequired: number } | null; directAdvancement: boolean };
 export type PublicBracketStage = { phaseId: string; phaseSlug: string; label: string; order: number; kind: "standings_origin" | "series"; matchups: PublicBracketMatchup[] };
@@ -674,7 +678,14 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
       const materialized: SeriesProgressionMaterializedGame[] = canonicalGames.filter((game) => game.phase_id === selectedPhase.id && game.series_matchup_id === matchup.matchupId && game.series_round_number !== null).map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }));
       const progression = calculateSeriesProgression({ matchupId: matchup.matchupId, teamA: { id: matchup.teamAId, name: matchup.teamAName ?? matchup.teamAId }, teamB: { id: matchup.teamBId, name: matchup.teamBName ?? matchup.teamBId }, winsRequired: Math.max(1, Number(selectedPhase.winsRequired ?? 2)), transferredGames: transferred, materializedGames: materialized, planningSlots: [] });
       const rounds = progression.rounds.flatMap<PublicSeriesRound>((round): PublicSeriesRound[] => { if (round.rowState === "transferred" && round.sourceGameId) { const game = canonicalGames.find((item) => item.id === round.sourceGameId); const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null; return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "transferred" as const, sourcePhaseName: matchup.sourcePhaseName, game: projected }] : []; } if (round.rowState === "real_game" && round.realGameId) { const game = canonicalGames.find((item) => item.id === round.realGameId); const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null; return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "game" as const, sourcePhaseName: null, game: projected }] : []; } return round.rowState === "qualified" ? [{ roundNumber: round.seriesRoundNumber, kind: "not_needed" as const, sourcePhaseName: null, game: null }] : []; });
-      seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds: progression.maximumSeriesRounds, rounds });
+      seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds: progression.maximumSeriesRounds, rounds, summary: {
+        teamAId: progression.teamAId, teamAName: progression.teamAName,
+        teamBId: progression.teamBId, teamBName: progression.teamBName,
+        winsRequired: progression.winsRequired,
+        currentWinsA: progression.currentWinsA, currentWinsB: progression.currentWinsB,
+        qualifiedTeamId: progression.qualifiedTeamId, qualifiedTeamName: progression.qualifiedTeamName,
+        transferredRoundCount: progression.transferredRoundCount,
+      } });
     }
   }
   return { seasons, competitions, phases, games, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };

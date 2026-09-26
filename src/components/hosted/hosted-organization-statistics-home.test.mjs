@@ -153,7 +153,7 @@ describe("hosted organization statistics and dynamic home", () => {
     expect(publicCompetitionService).toContain('matchup.state !== "resolved"');
   });
   it("provides real-data empty states without static KomoBasket fallback", () => { for (const text of ["Δεν υπάρχουν διαθέσιμες διοργανώσεις.", "Δεν υπάρχουν ακόμη προγραμματισμένοι αγώνες.", "Δεν υπάρχουν ακόμη ολοκληρωμένοι αγώνες.", "Δεν υπάρχει διαθέσιμη βαθμολογία"]) expect(homeData).toContain(text); expect(homeData).not.toContain("SVEKKO"); });
-  it("never merges standings across competitions", () => { expect(homeData).toContain('context?.selectedPhase?.format === "standings"'); expect(homeData).toContain("context.standings.slice(0, 5)"); expect(homeData).toContain("context?.selectedCompetition?.name"); });
+  it("never merges standings across competitions", () => { expect(homeData).toContain('currentContext?.selectedPhase?.format === "standings"'); expect(homeData).toContain("currentContext.standings.slice(0, 5)"); expect(homeData).toContain("context?.selectedCompetition?.name"); });
   it("renders every canonical standings field in a table-scoped responsive layout", () => {
     for (const value of ["row.rank", "row.team.name", "row.gamesPlayed", "row.wins", "row.losses", "row.pointsFor", "row.pointsAgainst", "row.pointDifference", "row.standingsPoints"]) expect(homeData).toContain(value);
     for (const value of ["overflow-x-auto", "min-w-[720px]", "whitespace-nowrap", 'aria-label="Βαθμολογία Οργανισμού"']) expect(homeData).toContain(value);
@@ -215,5 +215,82 @@ describe("hosted organization statistics and dynamic home", () => {
     const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "empty-org", context: null }));
     for (const value of ["Δεν υπάρχουν διαθέσιμες διοργανώσεις.", "Δεν υπάρχουν ακόμη προγραμματισμένοι αγώνες.", "Δεν υπάρχουν ακόμη ολοκληρωμένοι αγώνες."]) expect(html).toContain(value);
     expect(html).not.toContain("KomoBasket League");
+  });
+
+  it("preserves the standings preview, canonical values, ordering and statistics link", () => {
+    const context = fixtureContext("standings", [fixtureGame("next", 1, "scheduled")]);
+    context.standings = Array.from({ length: 6 }, (_, index) => ({
+      rank: index + 1, team: fixtureTeam(`team-${index}`, `TEAM ${index}`),
+      gamesPlayed: 4, wins: 3, losses: 1, pointsFor: 315, pointsAgainst: 290,
+      pointDifference: 25, standingsPoints: index === 0 ? 0 : 17,
+    }));
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "runbasket", context }));
+    expect(html).toContain(">ΒΑΘΜΟΛΟΓΙΑ</h2>");
+    expect(html).not.toContain("ΤΡΕΧΟΥΣΑ ΦΑΣΗ");
+    expect([...html.matchAll(/<th\b[^>]*>([^<]+)<\/th>/g)].map((match) => match[1])).toEqual(["Θ", "ΟΜΑΔΑ", "ΑΓ", "Ν", "Η", "ΥΠ", "Δ", "Β"]);
+    const body = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+    expect([...body.matchAll(/<tr\b/g)]).toHaveLength(5);
+    expect([...body.matchAll(/TEAM (\d)/g)].map((match) => match[1])).toEqual(["0", "1", "2", "3", "4"]);
+    for (const value of [">4<", ">3<", ">1<", "315–290", "+25", ">0<", ">17<"]) expect(body).toContain(value);
+    expect(html).toContain('href="/runbasket/statistics"');
+    expect(html).toContain("Στατιστικά &amp; MVP");
+  });
+
+  it.each(["series", "custom"])("renders the current %s phase and canonical round instead of standings", (format) => {
+    const game = fixtureGame("next", 1, "scheduled", { roundLabel: "ΓΥΡΟΣ 1" });
+    const history = [{ matchupId: "matchup", label: "Series", maximumSeriesRounds: 1, rounds: [{ roundNumber: 1, kind: "game", game }] }];
+    const context = fixtureContext(format, [game], history, { name: "ΦΙΛΙΚΟ ΑΤΛΑΣ ΛΕΥΚΙΠΠΟΣ" });
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "example-org", context }));
+    expect(html).not.toContain("ΒΑΘΜΟΛΟΓΙΑ");
+    expect(html).not.toContain("<table");
+    const summary = html.match(/<section[^>]*aria-label="Τρέχουσα φάση">([\s\S]*?)<\/section>/)?.[1];
+    for (const value of ["ΤΡΕΧΟΥΣΑ ΦΑΣΗ", "ΦΙΛΙΚΟ ΑΤΛΑΣ ΛΕΥΚΙΠΠΟΣ", "ΓΥΡΟΣ 1", "Πρόγραμμα &amp; Αποτελέσματα"]) expect(summary).toContain(value);
+    expect(summary).toContain('href="/example-org/competitions?season=2026-27&amp;competition=run-cup&amp;phase=phase#program-results"');
+    expect(summary).not.toContain("next HOME");
+    expect(summary).not.toContain("next AWAY");
+    expect(summary).toContain("whitespace-normal break-normal");
+    expect(summary).toContain("min-h-11 max-w-full");
+    expect(summary).not.toMatch(/truncate|line-clamp|break-all|whitespace-nowrap/);
+  });
+
+  it("reuses canonical Series round fallback rather than fabricating round metadata", () => {
+    const game = { ...fixtureGame("next", 3, "scheduled"), roundLabel: null };
+    const context = fixtureContext("series", [], [{ matchupId: "matchup", rounds: [{ roundNumber: 3, kind: "game", game }] }]);
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "runbasket", context }));
+    expect(html).toContain("ΓΥΡΟΣ 3");
+  });
+
+  it("keeps canonical active phase priority instead of showing the default completed phase", () => {
+    const completed = fixtureContext("standings", [fixtureGame("final", 1, "completed")], [], { lifecycleStatus: "finalized", phaseOrder: 1, name: "COMPLETED PHASE" });
+    const current = fixtureContext("custom", [fixtureGame("next", 1, "scheduled")], [], { phaseOrder: 2, name: "CURRENT PHASE" });
+    const later = fixtureContext("standings", [fixtureGame("later", 1, "scheduled")], [], { phaseOrder: 3 });
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "runbasket", context: completed, phaseContexts: [later, current, completed] }));
+    expect(html).toContain("CURRENT PHASE");
+    expect(html).not.toContain("COMPLETED PHASE");
+    expect(html).not.toContain("ΒΑΘΜΟΛΟΓΙΑ");
+  });
+
+  it.each([null, fixtureContext("standings", [fixtureGame("final", 1, "completed")], [], { lifecycleStatus: "finalized" })])("shows a neutral empty summary when no current phase resolves", (context) => {
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "empty-org", context }));
+    expect(html).toContain("Δεν υπάρχει διαθέσιμη τρέχουσα φάση.");
+    expect(html).not.toContain("ΒΑΘΜΟΛΟΓΙΑ");
+    expect(html).not.toContain("Πρόγραμμα &amp; Αποτελέσματα");
+    expect(html).not.toContain("<table");
+  });
+
+  it("uses the phase format, not names, IDs or competition type, and keeps hosted links isolated", () => {
+    for (const slug of ["friendlymatches", "other-org"]) {
+      const context = fixtureContext("standings", [fixtureGame("next", 1, "scheduled")]);
+      context.selectedCompetition = { ...context.selectedCompetition, name: "Friendly Matches", type: "friendly" };
+      const standingsHtml = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: slug, context }));
+      expect(standingsHtml).toContain(">ΒΑΘΜΟΛΟΓΙΑ</h2>");
+      context.selectedPhase.format = "custom";
+      const phaseHtml = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: slug, context }));
+      expect(phaseHtml).toContain("ΤΡΕΧΟΥΣΑ ΦΑΣΗ");
+      expect(phaseHtml).not.toContain("ΒΑΘΜΟΛΟΓΙΑ");
+      expect(phaseHtml).toContain(`href="/${slug}/competitions?`);
+      expect(phaseHtml).not.toContain('href="/komobasket/');
+    }
+    expect(homeData).not.toMatch(/Friendly Matches|friendlymatches|ΦΙΛΙΚΟ ΑΤΛΑΣ|organization_komobasket/);
   });
 });

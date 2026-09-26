@@ -201,12 +201,61 @@ export function PublicHomeCompetitiveBlocks({ context, phaseContexts = [], gameB
   </div>;
 }
 
+function HostedCurrentSeriesSummary({ context }: { context: PublicCompetitionContext | null }) {
+  if (context?.selectedPhase?.format !== "series") return null;
+  const series = context.seriesHistory.flatMap((matchup) => matchup.summary ? [{ ...matchup, summary: matchup.summary }] : []);
+  if (!series.length) return null;
+  const winsRequired = series[0].summary.winsRequired;
+  const roundNumbers = Array.from({ length: Math.max(...series.map((matchup) => matchup.maximumSeriesRounds)) }, (_, index) => index + 1);
+  return <div className="mt-5 min-w-0">
+    <p className="text-sm font-bold text-zinc-300">{winsRequired === 1 ? "Πρόκριση στη 1 νίκη" : `Πρόκριση στις ${winsRequired} νίκες`}</p>
+    <div className="mt-3 max-w-full overflow-x-auto rounded-2xl border border-zinc-700" tabIndex={0} role="region" aria-label="Σύνοψη σειρών τρέχουσας φάσης">
+      <table className="w-full min-w-[720px] border-collapse text-sm">
+        <caption className="sr-only">Αποτελέσματα στη σειρά των ομάδων Α – Β. Οι μεταφορές επισημαίνονται χωριστά.</caption>
+        <thead><tr className="bg-zinc-900 text-xs font-black uppercase tracking-wide text-zinc-300">
+          <th scope="col" className="px-3 py-3 text-left">ΑΓΩΝΕΣ</th>
+          {roundNumbers.map((roundNumber) => <th scope="col" key={roundNumber} className="whitespace-nowrap px-3 py-3 text-center">ΓΥΡΟΣ {roundNumber}</th>)}
+          <th scope="col" className="px-3 py-3 text-center">ΣΕΙΡΑ</th>
+          <th scope="col" className="px-3 py-3 text-left">ΚΑΤΑΣΤΑΣΗ</th>
+        </tr></thead>
+        <tbody>{series.map((matchup) => <tr key={matchup.matchupId} className="border-t border-zinc-700">
+          <th scope="row" className="whitespace-nowrap px-3 py-3 text-left font-black">{matchup.summary.teamAName} – {matchup.summary.teamBName}</th>
+          {roundNumbers.map((roundNumber) => {
+            const round = matchup.rounds.find((entry) => entry.roundNumber === roundNumber);
+            const game = round?.kind !== "not_needed" ? round?.game : null;
+            const hasResult = game?.publicStatus === "completed" && game.homeScore !== null && game.awayScore !== null;
+            // Scores follow the matchup's A/B order, even when the home team alternates.
+            const score = hasResult
+              ? game.homeTeam.id === matchup.summary.teamAId ? `${game.homeScore}–${game.awayScore}` : `${game.awayScore}–${game.homeScore}`
+              : "—";
+            return <td key={roundNumber} className="whitespace-nowrap px-3 py-3 text-center tabular-nums" title={hasResult ? `${game.homeTeam.name} ${game.homeScore}–${game.awayScore} ${game.awayTeam.name}` : undefined}>
+              {score}
+              {round?.kind === "transferred" ? <span className="mt-1 block text-xs font-bold text-orange-400" title={round.sourcePhaseName ?? undefined}>Μεταφορά</span> : null}
+            </td>;
+          })}
+          <td className="whitespace-nowrap px-3 py-3 text-center font-black tabular-nums">
+            {matchup.summary.currentWinsA}–{matchup.summary.currentWinsB}
+            {matchup.summary.transferredRoundCount > 0 ? <span className="mt-1 block text-xs font-bold text-orange-400">{matchup.summary.transferredRoundCount === 1 ? "1 νίκη από μεταφορά" : `${matchup.summary.transferredRoundCount} νίκες από μεταφορά`}</span> : null}
+          </td>
+          <td className="whitespace-nowrap px-3 py-3 text-left text-xs font-black text-orange-400">{matchup.summary.qualifiedTeamId ? `ΠΡΟΚΡΙΣΗ ${matchup.summary.qualifiedTeamName}` : "ΣΕ ΕΞΕΛΙΞΗ"}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </div>;
+}
+
 export default function HostedOrganizationHomeData({ organizationSlug, context, phaseContexts = [] }: { organizationSlug: string; context: PublicCompetitionContext | null; phaseContexts?: PublicCompetitionContext[] }) {
   const competitionsPath = hostedOrganizationPath(organizationSlug, "competitions");
   const statisticsPath = hostedOrganizationPath(organizationSlug, "statistics");
   const selectedSeason = context?.selectedSeason ?? null;
   const competitionHref = (competitionSlug: string) => selectedSeason ? `${competitionsPath}?${new URLSearchParams({ season: selectedSeason.slug, competition: competitionSlug })}` : competitionsPath;
-  const standings = context?.selectedPhase?.format === "standings" ? context.standings.slice(0, 5) : [];
+  const currentContext = selectHostedHomePhaseContext(phaseContexts.length > 0 ? phaseContexts : context ? [context] : []);
+  const currentPhase = currentContext?.selectedPhase ?? null;
+  const standings = currentContext?.selectedPhase?.format === "standings" ? currentContext.standings.slice(0, 5) : [];
+  const currentRound = selectHostedNextCompetitiveBlock(currentContext);
+  const currentPhaseHref = currentContext?.selectedSeason && currentContext.selectedCompetition && currentPhase
+    ? `${competitionsPath}?${new URLSearchParams({ season: currentContext.selectedSeason.slug, competition: currentContext.selectedCompetition.slug, phase: currentPhase.slug })}#program-results`
+    : competitionsPath;
   return <section className="bg-stone-50 px-5 py-12 sm:px-7 sm:py-16" aria-label="Αγωνιστική εικόνα Οργανισμού">
     <div className="mx-auto max-w-6xl space-y-10">
       <section><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.2em] text-orange-600">Δημόσιες διοργανώσεις</p><h2 className="mt-2 text-3xl font-black">ΔΙΟΡΓΑΝΩΣΕΙΣ</h2></div><Link href={competitionsPath} className="rounded-full bg-zinc-950 px-5 py-2.5 text-sm font-black text-white">Όλες οι διοργανώσεις</Link></div>{context?.competitions.length ? <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{context.competitions.map((competition) => <Link key={competition.id} href={competitionHref(competition.slug)} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:border-orange-400"><span className="text-xs font-black uppercase tracking-wide text-orange-700">{selectedSeason?.name}</span><strong className="mt-2 block text-xl text-zinc-950">{competition.name}</strong></Link>)}</div> : <p className="mt-5 rounded-2xl border border-zinc-200 bg-white p-6 font-bold text-zinc-600">Δεν υπάρχουν διαθέσιμες διοργανώσεις.</p>}</section>
@@ -216,7 +265,15 @@ export default function HostedOrganizationHomeData({ organizationSlug, context, 
         gameBasePath={`${competitionsPath}/games`}
         liveGameHref={(gameId) => hostedCompetitionGamePath(organizationSlug, gameId, true)}
       />
-      <section className="rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.18em] text-orange-400">{context?.selectedCompetition?.name ?? "Βαθμολογία"}</p><h2 className="mt-2 text-2xl font-black">ΒΑΘΜΟΛΟΓΙΑ</h2></div><Link href={statisticsPath} className="rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Στατιστικά &amp; MVP</Link></div>{standings.length ? <div className="mt-5 max-w-full overflow-x-auto rounded-2xl border border-zinc-700" tabIndex={0} aria-label="Βαθμολογία Οργανισμού"><table className="w-full min-w-[720px] border-collapse text-sm"><thead><tr className="bg-zinc-900 text-xs font-black uppercase tracking-wide text-zinc-300"><th className="px-3 py-3 text-center">Θ</th><th className="px-3 py-3 text-left">ΟΜΑΔΑ</th><th className="px-3 py-3 text-center">ΑΓ</th><th className="px-3 py-3 text-center">Ν</th><th className="px-3 py-3 text-center">Η</th><th className="px-3 py-3 text-center">ΥΠ</th><th className="px-3 py-3 text-center">Δ</th><th className="px-3 py-3 text-center">Β</th></tr></thead><tbody>{standings.map((row) => <tr key={row.team.id} className="border-t border-zinc-700 bg-zinc-950"><td className="px-3 py-3 text-center font-black text-orange-400">{row.rank}</td><td className="whitespace-nowrap px-3 py-3 font-black">{row.team.name}</td><td className="px-3 py-3 text-center tabular-nums">{row.gamesPlayed}</td><td className="px-3 py-3 text-center tabular-nums">{row.wins}</td><td className="px-3 py-3 text-center tabular-nums">{row.losses}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointsFor}–{row.pointsAgainst}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointDifference > 0 ? `+${row.pointDifference}` : row.pointDifference}</td><td className="px-3 py-3 text-center font-black tabular-nums">{row.standingsPoints}</td></tr>)}</tbody></table></div> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη βαθμολογία για την επιλεγμένη διοργάνωση και φάση.</p>}</section>
+      {currentPhase?.format === "standings" ? <section className="rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.18em] text-orange-400">{context?.selectedCompetition?.name ?? "Βαθμολογία"}</p><h2 className="mt-2 text-2xl font-black">ΒΑΘΜΟΛΟΓΙΑ</h2></div><Link href={statisticsPath} className="rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Στατιστικά &amp; MVP</Link></div>{standings.length ? <div className="mt-5 max-w-full overflow-x-auto rounded-2xl border border-zinc-700" tabIndex={0} aria-label="Βαθμολογία Οργανισμού"><table className="w-full min-w-[720px] border-collapse text-sm"><thead><tr className="bg-zinc-900 text-xs font-black uppercase tracking-wide text-zinc-300"><th className="px-3 py-3 text-center">Θ</th><th className="px-3 py-3 text-left">ΟΜΑΔΑ</th><th className="px-3 py-3 text-center">ΑΓ</th><th className="px-3 py-3 text-center">Ν</th><th className="px-3 py-3 text-center">Η</th><th className="px-3 py-3 text-center">ΥΠ</th><th className="px-3 py-3 text-center">Δ</th><th className="px-3 py-3 text-center">Β</th></tr></thead><tbody>{standings.map((row) => <tr key={row.team.id} className="border-t border-zinc-700 bg-zinc-950"><td className="px-3 py-3 text-center font-black text-orange-400">{row.rank}</td><td className="whitespace-nowrap px-3 py-3 font-black">{row.team.name}</td><td className="px-3 py-3 text-center tabular-nums">{row.gamesPlayed}</td><td className="px-3 py-3 text-center tabular-nums">{row.wins}</td><td className="px-3 py-3 text-center tabular-nums">{row.losses}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointsFor}–{row.pointsAgainst}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointDifference > 0 ? `+${row.pointDifference}` : row.pointDifference}</td><td className="px-3 py-3 text-center font-black tabular-nums">{row.standingsPoints}</td></tr>)}</tbody></table></div> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη βαθμολογία για την επιλεγμένη διοργάνωση και φάση.</p>}</section> : <section className="min-w-0 rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7" aria-label="Τρέχουσα φάση">
+        <h2 className="text-2xl font-black">ΤΡΕΧΟΥΣΑ ΦΑΣΗ</h2>
+        {currentPhase ? <>
+          <h3 className="mt-4 whitespace-normal break-normal text-xl font-black">{currentPhase.name}</h3>
+          {currentRound ? <p className="mt-2 whitespace-normal break-normal text-sm font-bold text-orange-400">{currentRound.label}</p> : null}
+          <HostedCurrentSeriesSummary context={currentContext} />
+          <Link href={currentPhaseHref} className="mt-5 inline-flex min-h-11 max-w-full items-center rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Πρόγραμμα &amp; Αποτελέσματα</Link>
+        </> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη τρέχουσα φάση.</p>}
+      </section>}
     </div>
   </section>;
 }
