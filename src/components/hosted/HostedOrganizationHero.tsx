@@ -6,6 +6,7 @@ export default function HostedOrganizationHero({
   eyebrow,
   title,
   description,
+  siteCoverUrl,
   compact = false,
   centered = false,
   rightAligned = false,
@@ -13,6 +14,7 @@ export default function HostedOrganizationHero({
   eyebrow?: string;
   title: ReactNode;
   description?: ReactNode;
+  siteCoverUrl?: string | null;
   compact?: boolean;
   centered?: boolean;
   rightAligned?: boolean;
@@ -20,7 +22,7 @@ export default function HostedOrganizationHero({
   return <section
     className={`relative isolate overflow-hidden bg-zinc-950 px-5 text-white ${compact ? "py-12 sm:px-7 sm:py-16" : "py-20 sm:px-7 sm:py-28"}`}
     style={{
-      backgroundImage: `url("${HOSTED_ORGANIZATION_BACKGROUND}")`,
+      backgroundImage: `url("${siteCoverUrl ?? HOSTED_ORGANIZATION_BACKGROUND}")`,
       backgroundPosition: "center",
       backgroundRepeat: "no-repeat",
       backgroundSize: "cover",

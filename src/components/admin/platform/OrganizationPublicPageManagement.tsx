@@ -1,4 +1,5 @@
 "use client";
+import OrganizationSiteCoverControl from "./OrganizationSiteCoverControl";
 
 import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
 
@@ -14,6 +15,7 @@ type PublicSettings = {
   logo_url: string | null;
   public_header_logo_url: string | null;
   public_header_link_url: string | null;
+  site_cover_url: string | null;
   publication_status: "unpublished" | "published";
 };
 
@@ -109,6 +111,7 @@ export default function OrganizationPublicPageManagement({ organizationId, role 
         <label className="grid gap-2 text-sm font-black text-zinc-700">Slug<input name="slug" className={inputClass} defaultValue={organization.slug} readOnly={!canPublish} aria-readonly={!canPublish} />{!canPublish && <span className="text-xs font-medium text-zinc-500">Μόνο ο Super Admin μπορεί να αλλάξει το slug.</span>}</label>
         <label className="grid gap-2 text-sm font-black text-zinc-700">Κατάσταση δημοσίευσης<select name="publicationStatus" className={inputClass} defaultValue={organization.publication_status} disabled={!canPublish}><option value="unpublished">Unpublished</option><option value="published">Published</option></select>{!canPublish && <span className="text-xs font-medium text-zinc-500">Μόνο ο Super Admin μπορεί να δημοσιεύσει το microsite.</span>}</label>
         <div className="sm:col-span-2"><p className="text-sm font-black text-zinc-700">Canonical Organization logo</p><div className="mt-2 flex min-h-24 items-center rounded-2xl border border-zinc-200 bg-zinc-50 p-4">{organization.logo_url ? <img src={organization.logo_url} alt={`Canonical λογότυπο ${organization.name}`} className="max-h-16 max-w-40 object-contain" /> : <span className="text-sm text-zinc-500">Δεν έχει οριστεί canonical logo.</span>}</div><p className="mt-2 text-xs text-zinc-500">Read-only σε αυτή την ενότητα. Είναι ανεξάρτητο από το public header logo.</p></div>
+        <OrganizationSiteCoverControl key={organizationId} organizationId={organizationId} siteCoverUrl={organization.site_cover_url ?? null} canManage={canManage} disabled={busy} onChange={(url) => setOrganization((current) => current ? { ...current, site_cover_url: url } : current)} />
         {canManage && <div className="flex flex-wrap items-center gap-3 sm:col-span-2">{organization.public_header_logo_url && <img src={organization.public_header_logo_url} alt="Τρέχον public header logo" className="h-16 max-w-48 rounded-xl border border-zinc-200 bg-zinc-50 object-contain p-2" />}<PlatformButton type="button" className="inline-flex items-center gap-2 rounded-xl border border-orange-300 bg-orange-50 px-4 py-3 font-black text-orange-700 hover:bg-orange-100" onClick={() => fileRef.current?.click()} disabled={busy}><Upload size={17} /> Upload header logo</PlatformButton><PlatformFileInput ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="sr-only" disabled={busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); event.currentTarget.value = ""; }} /></div>}
         <label className="grid gap-2 text-sm font-black text-zinc-700 sm:col-span-2">Σύνδεσμος λογοτύπου (προαιρετικό)<input name="publicHeaderLinkUrl" type="url" className={inputClass} defaultValue={organization.public_header_link_url ?? ""} readOnly={!canManage} placeholder="https://..." /><span className="text-xs font-medium text-zinc-500">Αν συμπληρωθεί, το λογότυπο θα είναι clickable και θα ανοίγει αυτόν τον σύνδεσμο. Επιτρέπονται μόνο http και https.</span></label>
         {canManage && <PlatformButton mutation type="submit" className={`${buttonClass} sm:col-span-2`} disabled={busy}>{busy ? "Αποθήκευση…" : "Αποθήκευση δημόσιας σελίδας"}</PlatformButton>}

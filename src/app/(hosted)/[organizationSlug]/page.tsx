@@ -40,7 +40,7 @@ export default async function HostedOrganizationHome({ params }: HostedHomeProps
   } catch {}
   return <HostedOrganizationPublicShell organization={organization}>
     <main>
-      <HostedOrganizationHero
+      <HostedOrganizationHero siteCoverUrl={organization.siteCoverUrl}
         title={organization.name}
         rightAligned
       />

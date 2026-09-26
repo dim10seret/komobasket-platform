@@ -17,5 +17,5 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function HostedContactPage({ params }: PageProps) {
   const { organizationSlug } = await params;
   const organization = await resolveHostedPublicOrganization(organizationSlug);
-  return <HostedOrganizationPublicShell organization={organization}><ContactContent hostedOrganizationName={organization.name} hero={<HostedOrganizationHero compact centered eyebrow={organization.name} title="Επικοινωνία" />} /></HostedOrganizationPublicShell>;
+  return <HostedOrganizationPublicShell organization={organization}><ContactContent hostedOrganizationName={organization.name} hero={<HostedOrganizationHero siteCoverUrl={organization.siteCoverUrl} compact centered eyebrow={organization.name} title="Επικοινωνία" />} /></HostedOrganizationPublicShell>;
 }

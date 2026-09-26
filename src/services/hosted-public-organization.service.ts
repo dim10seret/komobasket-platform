@@ -3,7 +3,7 @@ import "server-only";
 import { cache } from "react";
 import { notFound } from "next/navigation";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
-import { safeOrganizationPublicHeaderLogoUrl, safePublicHttpUrl } from "@/lib/hosted-public-url";
+import { safeOrganizationPublicHeaderLogoUrl, safePublicHttpUrl, safeOrganizationSiteCoverUrl } from "@/lib/hosted-public-url";
 import { isReservedOrganizationSlug } from "@/lib/organization-slug";
 
 const CENTRAL_KOMOBASKET_ORGANIZATION_ID = "organization_komobasket";
@@ -15,6 +15,7 @@ type HostedOrganizationRow = {
   logo_url: string | null;
   public_header_logo_url: string | null;
   public_header_link_url: string | null;
+  site_cover_url: string | null;
   status: "active" | "suspended" | "archived";
   publication_status: "unpublished" | "published";
 };
@@ -26,6 +27,7 @@ export type HostedPublicOrganization = {
   canonicalLogoUrl: string | null;
   publicHeaderLogoUrl: string | null;
   publicHeaderLinkUrl: string | null;
+  siteCoverUrl?: string | null;
 };
 
 function normalizeHostedSlug(value: string) {
@@ -46,8 +48,7 @@ export const readHostedPublicOrganization = cache(async (
   if (!db) throw new Error("Η δημόσια βάση Οργανισμών δεν είναι διαθέσιμη.");
 
   const row = await db.prepare(
-    `SELECT id, slug, name, logo_url, public_header_logo_url,
-            public_header_link_url, status, publication_status
+    `SELECT id, slug, name, logo_url, public_header_logo_url, public_header_link_url, site_cover_url, status, publication_status
      FROM league_organizations
      WHERE slug = ?
      LIMIT 1`,
@@ -69,6 +70,7 @@ export const readHostedPublicOrganization = cache(async (
     name: row.name,
     canonicalLogoUrl: row.logo_url,
     publicHeaderLogoUrl: safeOrganizationPublicHeaderLogoUrl(row.public_header_logo_url, row.id),
+    siteCoverUrl: safeOrganizationSiteCoverUrl(row.site_cover_url, row.id),
     publicHeaderLinkUrl: safePublicHttpUrl(row.public_header_link_url),
   };
 });

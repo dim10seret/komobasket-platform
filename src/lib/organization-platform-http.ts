@@ -10,7 +10,7 @@ import { platformLeagueActions } from "@/services/platform-league-actions";
 import { platformLeagueResources } from "@/services/platform-league-resources";
 import { getLeagueAdminSnapshot, getTeamRosterManagementView, listCompetitionLatestMovements, searchAthletesForRosterFoundation, searchStaffForRosterFoundation } from "@/services/league-admin.service";
 import { platformTeamLogo } from "@/services/team-logo-route-operation";
-import { platformPublicHeaderLogo } from "@/services/organization-public-header-logo-operation";
+import { platformPublicHeaderLogo, platformSiteCover } from "@/services/organization-public-header-logo-operation";
 import { updateManagedOrganizationPublicPresentation } from "@/services/platform-management.service";
 import * as komo from "@/services/komocontrol-admin.service";
 import { readPlatformMatchReport } from "@/services/platform-match-report.service";
@@ -71,7 +71,7 @@ async function readLeague(url: URL, actor: CanonicalAppUser, organizationId: str
 async function publicSettings(organizationId: string, role: "admin" | "viewer") {
   const db = (await getKomoBasketCloudflareEnv())?.NEWS_DB;
   if (!db) throw new Error("DATABASE_UNAVAILABLE");
-  const organization = await db.prepare(`SELECT id,name,slug,logo_url,public_header_logo_url,public_header_link_url,publication_status
+  const organization = await db.prepare(`SELECT id,name,slug,logo_url,public_header_logo_url,public_header_link_url,site_cover_url,publication_status
     FROM league_organizations WHERE id=? AND status='active'`).bind(organizationId).first();
   return Response.json({organization,role});
 }
@@ -123,14 +123,14 @@ async function dispatch(request: Request, path: string[]) {
   const actor:CanonicalAppUser={userId:identity.user.id,email:identity.user.email,displayName:identity.user.displayName,isSuperAdmin:false,isLocal:false};
   const [area,resource,format]=path;
   if (multipart) {
-    if(request.method!=="POST" || path.length!==1 || !["team-logo-route","organization-public-header-logo"].includes(area))return deny();
+    if(request.method!=="POST" || path.length!==1 || !["team-logo-route","organization-public-header-logo","organization-site-cover"].includes(area))return deny();
     const bytes=await request.arrayBuffer();if(bytes.byteLength>6*1024*1024)return Response.json({error:"REQUEST_TOO_LARGE"},{status:413});
     const copy=new Request(request.url,{method:"POST",headers:request.headers,body:bytes});
     const form=await copy.formData();
     if(form.has("organizationId") && String(form.get("organizationId"))!==organizationId)return deny();
     form.set("organizationId",organizationId);
     const upload=new Request(request.url,{method:"POST",body:form});
-    return area==="team-logo-route" ? platformTeamLogo(actor,organizationId)(upload) : platformPublicHeaderLogo(actor,organizationId)(upload);
+    return area==="team-logo-route" ? platformTeamLogo(actor,organizationId)(upload) : area === "organization-site-cover" ? platformSiteCover(actor, organizationId).POST(upload) : platformPublicHeaderLogo(actor, organizationId)(upload);
   }
   const input: Record<string, unknown>=mutation ? await inputFrom(request,organizationId) : {};
   if(area==="league") {
@@ -143,6 +143,11 @@ async function dispatch(request: Request, path: string[]) {
     return operations[request.method as "POST"|"PATCH"|"DELETE"](forwarded,{params:Promise.resolve({resource})});
   }
   if(area==="komocontrol" && path.length===2)return komoOperation(resource,request,url,actor,organizationId,input);
+  if(area==="organization-site-cover" && path.length===1 && request.method==="DELETE") {
+    return platformSiteCover(actor, organizationId).DELETE(new Request(request.url, {
+      method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+    }));
+  }
   if(area==="organization-public-settings" && path.length===1) {
     if(!mutation)return publicSettings(organizationId,membership.role);
     if(request.method==="PATCH")return Response.json({organization:await updateManagedOrganizationPublicPresentation(organizationId,input,actor.email)});

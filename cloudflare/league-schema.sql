@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS league_organizations (
   logo_url TEXT,
   public_header_logo_url TEXT,
   public_header_link_url TEXT,
+  site_cover_url TEXT,
   publication_status TEXT NOT NULL DEFAULT 'unpublished'
     CHECK (publication_status IN ('unpublished','published')),
   published_at TEXT,

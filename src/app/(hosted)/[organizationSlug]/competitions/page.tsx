@@ -15,5 +15,5 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function HostedCompetitionsPage({ params, searchParams }: Props) {
   const organization = await resolveHostedPublicOrganization((await params).organizationSlug);
   const basePath = hostedOrganizationPath(organization.slug, "competitions");
-  return <HostedOrganizationPublicShell organization={organization}><PublicCompetitionsView organizationId={organization.organizationId} basePath={basePath} searchParams={searchParams} pageHero={<HostedOrganizationHero compact eyebrow={organization.name} title="Διοργανώσεις" description="Επιλέξτε σεζόν, διοργάνωση και φάση για να παρακολουθήσετε την επίσημη αγωνιστική εικόνα." />} /></HostedOrganizationPublicShell>;
+  return <HostedOrganizationPublicShell organization={organization}><PublicCompetitionsView organizationId={organization.organizationId} basePath={basePath} searchParams={searchParams} pageHero={<HostedOrganizationHero siteCoverUrl={organization.siteCoverUrl} compact eyebrow={organization.name} title="Διοργανώσεις" description="Επιλέξτε σεζόν, διοργάνωση και φάση για να παρακολουθήσετε την επίσημη αγωνιστική εικόνα." />} /></HostedOrganizationPublicShell>;
 }

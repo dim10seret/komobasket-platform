@@ -55,3 +55,25 @@ export function safeOrganizationPublicHeaderLogoUrl(value: unknown, organization
     return null;
   }
 }
+
+/** Covers accept only generated assets owned by this organization, never arbitrary URLs. */
+export function normalizeOptionalOrganizationSiteCoverUrl(value: unknown, organizationId: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") throw new Error("Μη έγκυρο Site cover.");
+  const url = value.trim();
+  if (!url) return null;
+  const segment = encodeURIComponent(organizationId);
+  const prefixes = [
+    "/api/organization/logos/organization-logos/" + segment + "/site-cover/",
+    "/uploads/organization-logos/" + segment + "/site-cover/",
+  ];
+  const prefix = prefixes.find((candidate) => url.startsWith(candidate));
+  if (!prefix || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.(?:jpg|png|webp|avif)$/i.test(url.slice(prefix.length))) {
+    throw new Error("Το Site cover πρέπει να είναι ανεβασμένη εικόνα αυτού του Οργανισμού.");
+  }
+  return url;
+}
+export function safeOrganizationSiteCoverUrl(value: unknown, organizationId: string): string | null {
+  try { return normalizeOptionalOrganizationSiteCoverUrl(value, organizationId); }
+  catch { return null; }
+}

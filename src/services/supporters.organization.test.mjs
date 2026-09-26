@@ -30,7 +30,8 @@ test("supporter and public-header uploads use organization-owned paths", () => {
   assert.match(upload, /`supporter-logos\/\$\{organizationId\}\/\$\{filename\}`/);
   assert.match(headerUpload, /requireAdmin\(request\)/);
   assert.match(headerUpload, /platformPublicHeaderLogo\(await resolveCanonicalAppUser\(authorization\.identity\)\)\(request\)/);
-  assert.match(headerUploadOperation, /`organization-logos\/\$\{organizationId\}\/public-header\/\$\{filename\}`/);
+  assert.match(headerUploadOperation, /`organization-logos\/\$\{organizationId\}\/\$\{assetKind\}\/\$\{filename\}`/);
+  assert.match(headerUploadOperation, /return platformOrganizationImageUpload\(actor, scopeOrganizationId, "public-header"\)/);
   assert.match(upload, /requirePlatformSuperAdmin\(user\)/);
   assert.match(upload, /requireOrganizationAccess\(user, organizationId, "manage"\)/);
   assert.match(headerUploadOperation, /requireOrganizationAccess\(user, organizationId, "manage"\)/);

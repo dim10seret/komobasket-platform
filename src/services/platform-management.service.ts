@@ -2,7 +2,7 @@ import "server-only";
 
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
-import { normalizeOptionalOrganizationPublicHeaderLogoUrl, normalizeOptionalPublicHttpUrl } from "@/lib/hosted-public-url";
+import { normalizeOptionalOrganizationPublicHeaderLogoUrl, normalizeOptionalPublicHttpUrl, normalizeOptionalOrganizationSiteCoverUrl } from "@/lib/hosted-public-url";
 import { isReservedOrganizationSlug } from "@/lib/organization-slug";
 import {
   createRevokeAllOrganizationUserSessionsStatement,
@@ -31,6 +31,7 @@ type OrganizationRow = {
   logo_url: string | null;
   public_header_logo_url: string | null;
   public_header_link_url: string | null;
+  site_cover_url: string | null;
   publication_status: OrganizationPublicationStatus;
   published_at: string | null;
   created_at: string;
@@ -217,8 +218,7 @@ async function loadOrganization(id: string) {
   const db = await requireDatabase();
   return db
     .prepare(
-      `SELECT id, slug, name, status, logo_url, public_header_logo_url,
-              public_header_link_url, publication_status, published_at,
+      `SELECT id, slug, name, status, logo_url, public_header_logo_url, public_header_link_url, site_cover_url, publication_status, published_at,
               created_at, updated_at
        FROM league_organizations WHERE id = ?`,
     )
@@ -300,8 +300,7 @@ export async function listManagedOrganizations(user: CanonicalAppUser) {
   if (user.isSuperAdmin) {
     const result = await db
       .prepare(
-        `SELECT id, slug, name, status, logo_url, public_header_logo_url,
-                public_header_link_url, publication_status, published_at,
+        `SELECT id, slug, name, status, logo_url, public_header_logo_url, public_header_link_url, site_cover_url, publication_status, published_at,
                 created_at, updated_at
          FROM league_organizations ORDER BY name, id`,
       )
@@ -312,7 +311,7 @@ export async function listManagedOrganizations(user: CanonicalAppUser) {
   const result = await db
     .prepare(
       `SELECT o.id, o.slug, o.name, o.status, o.logo_url,
-              o.public_header_logo_url, o.public_header_link_url, o.publication_status,
+              o.public_header_logo_url, o.public_header_link_url, o.site_cover_url, o.publication_status,
               o.published_at, o.created_at, o.updated_at, m.role
        FROM league_organization_memberships m
        JOIN league_organizations o ON o.id = m.organization_id
@@ -855,4 +854,20 @@ export function platformManagementErrorResponse(error: unknown) {
     { code: error.code, error: error.message },
     { status: error.httpStatus },
   );
+}
+
+/** Updates only the optional cover reference, preserving identity and both logos. */
+export async function updateManagedOrganizationSiteCover(organizationId: string, value: unknown, actorEmail: string) {
+  const db = await requireDatabase();
+  const current = await loadOrganization(organizationId);
+  if (!current) throw new Error("Ο Οργανισμός δεν βρέθηκε.");
+  const siteCoverUrl = normalizeOptionalOrganizationSiteCoverUrl(value, organizationId);
+  await db.batch([
+    db.prepare("UPDATE league_organizations SET site_cover_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(siteCoverUrl, organizationId),
+    auditStatement(db, actorEmail, "update_site_cover", "organization", organizationId, {
+      before: { siteCoverUrl: current.site_cover_url }, after: { siteCoverUrl },
+    }),
+  ]);
+  return loadOrganization(organizationId);
 }

@@ -20,7 +20,7 @@ export default async function HostedSupportersPage({ params }: PageProps) {
   let supporters: Supporter[] = [];
   try { supporters = await listSupporters(organization.organizationId, true); } catch { supporters = []; }
   return <HostedOrganizationPublicShell organization={organization}><main className="bg-zinc-100 pb-20">
-    <HostedOrganizationHero compact centered eyebrow={organization.name} title={<>Υποστηρικτές &amp; Συνεργάτες</>} />
+    <HostedOrganizationHero siteCoverUrl={organization.siteCoverUrl} compact centered eyebrow={organization.name} title={<>Υποστηρικτές &amp; Συνεργάτες</>} />
     <section className="mx-auto max-w-7xl px-6 py-14">
       {supporters.length === 0 ? <p className="rounded-3xl border border-zinc-200 bg-white p-8 text-center font-bold text-zinc-600 shadow-sm">Δεν υπάρχουν ακόμη ενεργοί υποστηρικτές.</p> : <div className="grid gap-6 md:grid-cols-2">{supporters.map((supporter) => <article key={supporter.id} className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="flex min-h-40 items-center justify-center rounded-2xl bg-zinc-50 p-6"><img src={supporter.logo_url} alt={`Λογότυπο ${supporter.name}`} className="max-h-32 max-w-full object-contain" /></div>

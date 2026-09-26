@@ -212,6 +212,17 @@ describe("Organization Platform selected-scope integration",()=>{
   });
 });
 describe("Shared UI API boundary",()=>{
+  it("maps cover upload and removal to the selected Organization with CSRF",async()=>{
+    const request=vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({siteCoverUrl:null}));
+    const api=createUserPlatformApi("org-a","admin",csrf);
+    const body=new FormData();body.set("organizationId","org-b");body.set("file",new File(["test"],"cover.png",{type:"image/png"}));
+    await api.request("/api/admin/organization-site-cover",{method:"POST",body});
+    await api.request("/api/admin/organization-site-cover",{method:"DELETE",body:JSON.stringify({organizationId:"org-b"})});
+    expect(request.mock.calls[0][0]).toBe("/api/user/platform/organization-site-cover?organizationId=org-a");
+    expect((request.mock.calls[0][1]?.body as FormData).get("organizationId")).toBe("org-a");
+    expect(new Headers(request.mock.calls[0][1]?.headers).get("x-kb-user-csrf")).toBe(csrf);
+    expect(JSON.parse(String(request.mock.calls[1][1]?.body)).organizationId).toBe("org-a");
+  });
   it("maps every shared Admin business path to /api/user, binds scope and attaches CSRF",async()=>{
     const request=vi.spyOn(globalThis,"fetch").mockResolvedValue(Response.json({ok:true}));
     const api=createUserPlatformApi("org-a","admin",csrf);
@@ -246,5 +257,33 @@ describe("Shared UI API boundary",()=>{
     const api=createUserPlatformApi("org-a","viewer",csrf);
     expect((await api.request("/api/admin/matchday-mvp",{method:"PATCH",body:JSON.stringify({competitionId:"competition-a"})})).status).toBe(403);
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("Organization-user Site cover endpoint",()=>{
+  async function coverUpload(scope="org-a",bodyOrg="org-a",extra:Record<string,string>={}) {
+    const body=new FormData();body.set("organizationId",bodyOrg);body.set("file",new File(["disposable image"],"cover.png",{type:"image/png"}));
+    return handleOrganizationPlatform(new Request("https://example.test/api/user/platform/organization-site-cover?organizationId="+scope,{
+      method:"POST",body,headers:{origin:"https://example.test","sec-fetch-site":"same-origin",cookie:`__Host-kb_user_csrf=${csrf}; ${ORGANIZATION_USER_SESSION_COOKIE_NAME}=${token}`,"x-kb-user-csrf":csrf,...extra},
+    }),["organization-site-cover"]);
+  }
+  it("uploads, reads and removes through the authenticated organization-user route",async()=>{
+    const put=vi.fn().mockResolvedValue({});environment.current.NEWS_IMAGES={put};
+    const response=await coverUpload();expect(response.status).toBe(200);
+    const {siteCoverUrl}=await response.json();expect(siteCoverUrl).toContain("/org-a/site-cover/");
+    expect((await (await call("organization-public-settings")).json()).organization.site_cover_url).toBe(siteCoverUrl);
+    expect((await call("organization-site-cover","DELETE")).status).toBe(200);
+    expect(local.prepare("SELECT site_cover_url FROM league_organizations WHERE id='org-a'").get()).toEqual({site_cover_url:null});
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+  it("rejects foreign scope/body, missing CSRF and Viewer upload/remove before storage",async()=>{
+    const put=vi.fn().mockResolvedValue({});environment.current.NEWS_IMAGES={put};
+    expect((await coverUpload("org-b","org-b")).status).toBe(403);
+    expect((await coverUpload("org-a","org-b")).status).toBe(403);
+    expect((await coverUpload("org-a","org-a",{"x-kb-user-csrf":""})).status).toBe(403);
+    local.exec("UPDATE league_organization_memberships SET role='viewer'");
+    expect((await coverUpload()).status).toBe(403);
+    expect((await call("organization-site-cover","DELETE")).status).toBe(403);
+    expect(put).not.toHaveBeenCalled();
   });
 });

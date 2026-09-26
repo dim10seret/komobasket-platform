@@ -1,4 +1,5 @@
 "use client";
+import OrganizationSiteCoverControl from "./OrganizationSiteCoverControl";
 
 import Image from "next/image";
 import Link from "next/link";
@@ -15,6 +16,7 @@ type ManagedOrganization = {
   logo_url: string | null;
   public_header_logo_url: string | null;
   public_header_link_url: string | null;
+  site_cover_url: string | null;
   publication_status: "unpublished" | "published";
   published_at: string | null;
 };
@@ -212,6 +214,10 @@ export function PlatformOrganizationManagement({ initialCreate = false }: { init
         <label className="block text-sm font-black text-zinc-700">Λειτουργική κατάσταση<select name="status" defaultValue={editing.status} className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold"><option value="active">Ενεργός</option><option value="suspended">Σε αναστολή</option><option value="archived">Αρχειοθετημένος</option></select></label>
         <label className="block text-sm font-black text-zinc-700">Public microsite<select name="publicationStatus" defaultValue={editing.publication_status} className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold"><option value="unpublished">Unpublished</option><option value="published">Published</option></select></label>
         <label className="block text-sm font-black text-zinc-700">Σύνδεσμος λογοτύπου (προαιρετικό)<input name="publicHeaderLinkUrl" type="url" defaultValue={editing.public_header_link_url ?? ""} placeholder="https://..." className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 font-semibold" /><span className="mt-2 block text-xs font-medium leading-5 text-zinc-500">Αν συμπληρωθεί, το λογότυπο θα είναι clickable και θα ανοίγει αυτόν τον σύνδεσμο.</span></label>
+        <OrganizationSiteCoverControl key={editing.id} organizationId={editing.id} siteCoverUrl={editing.site_cover_url ?? null} disabled={Boolean(busy)} onChange={(url) => {
+          setEditing((current) => current?.id === editing.id ? { ...current, site_cover_url: url } : current);
+          setOrganizations((rows) => rows.map((row) => row.id === editing.id ? { ...row, site_cover_url: url } : row));
+        }} />
         <label className="block text-sm font-black text-zinc-700">Αλλαγή public header λογοτύπου{editing.public_header_logo_url && <img src={editing.public_header_logo_url} alt="Τρέχον public header logo" className="mt-2 h-16 max-w-48 rounded-xl border border-zinc-200 bg-zinc-50 object-contain p-2" />}<input name="publicHeaderLogo" type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="mt-2 block w-full text-sm font-semibold text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:font-black" /></label>
         <label className="block text-sm font-black text-zinc-700">Αλλαγή canonical λογοτύπου<input name="logo" type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="mt-2 block w-full text-sm font-semibold text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-3 file:py-2 file:font-black" /></label>
         <button type="submit" disabled={Boolean(busy)} className="w-full rounded-xl bg-orange-600 px-4 py-3 font-black text-white disabled:opacity-50">Αποθήκευση αλλαγών</button>

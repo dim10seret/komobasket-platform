@@ -37,6 +37,7 @@ describe("admin route authorization contracts", () => {
       "../app/api/admin/platform/[resource]/route.ts",
       "../app/api/admin/organization-public-settings/route.ts",
       "../app/api/admin/organization-public-header-logo/route.ts",
+      "../app/api/admin/organization-site-cover/route.ts",
       "../app/api/admin/league/route.ts",
       "../app/api/admin/league/[resource]/route.ts",
       "../app/api/admin/komocontrol/[resource]/route.ts",
