@@ -136,7 +136,7 @@ export type PreGameConfigurationOperationResult =
     | { ok: true; outcome: "created" | "existing" | "saved"; configuration: SafePreGameConfiguration; state: DesktopAuthState }
     | { ok: false; errorCode: PreGameConfigurationErrorCode | "SESSION_INVALID" | "OFFLINE_OPERATION_DENIED"; validation?: LiveConfigurationValidationIssue; state: DesktopAuthState };
 
-interface PreGameConfigurationStore {
+export interface PreGameConfigurationStore {
     getActiveLocalGameRun(gameId: string): StoredLocalGameRun | null;
     readLocalGameRunConfiguration(runId: string): StoredLocalGameRunConfiguration | null;
     createOrOpenLocalGameRunConfiguration(input: CreateLocalGameRunConfigurationInput): LocalGameRunConfigurationStoreResult;
@@ -340,7 +340,7 @@ function runtimeMatchEngine(initialState: unknown): RuntimeMatchEngine {
 
 export class PreGameConfigurationManager {
     constructor(
-        private readonly setup: MatchSetupManager,
+        private readonly setup: Pick<MatchSetupManager, "getVerifiedPackageMatchSetup">,
         private readonly store: PreGameConfigurationStore,
         private readonly deviceId: string,
         private readonly now: () => Date = () => new Date(),

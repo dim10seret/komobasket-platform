@@ -22,7 +22,7 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(livePrimaryActions.map((action) => action.id)).toEqual(["SHOOT", "FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
     });
     it("uses the FULL-style court composition with the locked SIMPLE action columns", () => {
-        expect(livePrimaryActionsForMode("FULL").map((action) => action.id)).toEqual(["SHOOT", "FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
+        expect(livePrimaryActionsForMode("FULL").map((action) => action.id)).toEqual(["FOUL", "TURN_OVER", "SUBS", "TIME_OUT", "TECH_FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"]);
         expect(simplePrimaryActionColumns).toEqual([["FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL"], ["SUBS", "TECH_FOUL", "TIME_OUT"]]);
         expect(livePrimaryActionsForMode("SIMPLE").map((action) => action.id)).toEqual(["FOUL", "SHOOTING_FOUL", "OFFENSIVE_FOUL", "SUBS", "TECH_FOUL", "TIME_OUT"]);
         expect(livePrimaryActions.map((action) => action.id)).toContain("TURN_OVER");
@@ -893,7 +893,7 @@ describe("Full Stats Live Control presentation contract", () => {
         expect(source).toContain('setFlow({ ...next, foulType: "PERSONAL_FOUL", context: "NON_SHOOTING" });');
         expect(source).toContain('const activeCourtSelectionFlow = isCourtShotSelectionFlow(flow);');
         const courtHandler = source.slice(source.indexOf('const selectCourtPosition ='), source.indexOf('const flowPlayerLabel ='));
-        expect(courtHandler.indexOf('if (activeCourtSelectionFlow)')).toBeLessThan(courtHandler.indexOf('if (gameplay.gameMode === "SIMPLE")'));
+        expect(courtHandler.indexOf('if (activeCourtSelectionFlow)')).toBeLessThan(courtHandler.indexOf('if (simpleCourtSelectionActive || fullCourtSelectionActive)'));
         expect(courtHandler).toContain('applyActiveCourtFlowSelection(current, shotLocation)');
         expect(courtHandler).not.toContain('appendIntent');
         expect(source).not.toContain('onClick={() => selectShotPoints(3)}>3PT</button>');

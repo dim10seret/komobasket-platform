@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { MatchSetup, MatchSetupManager } from "../games/match-setup.cjs";
 import {
-    LocalDatabase,
+    type LocalDatabase,
+    type InitializeLocalMatchGameplayInput,
     type LocalMatchEventWrite,
     type StoredLocalGameplaySyncState,
     type StoredLocalGameRun,
@@ -412,6 +413,16 @@ function accepted(result: RuntimeEventResult): void {
     throw new MatchGameplayFlowError("GAMEPLAY_EVENT_REJECTED", dependentEventIds);
 }
 
+// Structural port: the production LocalDatabase remains the default implementation.
+// Demo uses a disjoint RAM store; no SQL implementation is imported at runtime.
+export type MatchGameplayStore = Pick<LocalDatabase,
+    "readLocalGameRun" | "readLocalGameRunConfiguration" | "readLocalMatchEngineSnapshot"
+    | "readLocalMatchEvents" | "readLocalGameplaySyncState" | "readLocalResumableLiveFlow"
+    | "saveLocalResumableLiveFlow" | "initializeLocalMatchGameplay" | "appendLocalMatchEvent"
+    | "appendLocalMatchEvents" | "rewriteLocalMatchEventHistory" | "finalizeLocalMatchGameplay">;
+export type VolatileGameplayStart = (input: Omit<InitializeLocalMatchGameplayInput, "encryptedLiveAuthorization">) => StoredLocalMatchEngineSnapshot;
+export type MatchGameplaySetup = Pick<MatchSetupManager, "getVerifiedPackageMatchSetup" | "getMatchSetup">;
+
 export class MatchGameplayManager {
     private readonly sessions = new Map<string, RuntimeMatchSession>();
     private readonly mutationQueues = new Map<string, Promise<void>>();
@@ -419,13 +430,14 @@ export class MatchGameplayManager {
     private readonly maxCachedSessions: number;
 
     constructor(
-        private readonly setup: MatchSetupManager,
-        private readonly database: LocalDatabase,
+        private readonly setup: MatchGameplaySetup,
+        private readonly database: MatchGameplayStore,
         private readonly deviceId: string,
         private readonly now: () => Date = () => new Date(),
         private readonly id: () => string = () => randomUUID(),
         private readonly sealLiveAuthorization: ((details: LiveRunAuthorizationSealDetails) => string) | null = null,
         maxCachedSessions = 8,
+        private readonly volatileStart: VolatileGameplayStart | null = null,
     ) {
         this.maxCachedSessions = Number.isSafeInteger(maxCachedSessions) && maxCachedSessions > 0 ? maxCachedSessions : 8;
     }
@@ -467,8 +479,8 @@ export class MatchGameplayManager {
         const engine = await loadEngine(snapshot.initialState);
         accepted(engine.process(initialEvent));
         const timestamp = new Date(occurredAt).toISOString();
-        if (!this.sealLiveAuthorization) throw new MatchGameplayFlowError("GAMEPLAY_INVALID");
-        const encryptedLiveAuthorization = this.sealLiveAuthorization({
+        if (!this.sealLiveAuthorization && !this.volatileStart) throw new MatchGameplayFlowError("GAMEPLAY_INVALID");
+        const encryptedLiveAuthorization = this.sealLiveAuthorization?.({
             runId: run.runId,
             gameId: run.gameId,
             packageId: run.packageId,
@@ -483,7 +495,7 @@ export class MatchGameplayManager {
             startedAtUtc: timestamp,
         });
         try {
-            const storedSnapshot = this.database.initializeLocalMatchGameplay({
+            const startInput: Omit<InitializeLocalMatchGameplayInput, "encryptedLiveAuthorization"> = {
                 runId: run.runId,
                 organizationId: owner.organizationId,
                 scorerId: owner.scorerId,
@@ -495,9 +507,13 @@ export class MatchGameplayManager {
                 initialStateJson: snapshot.initialStateJson,
                 initialStateHash: snapshot.initialStateHash,
                 initialEvent: eventWrite(initialEvent, timestamp),
-                encryptedLiveAuthorization,
                 startedAtUtc: timestamp,
-            });
+            };
+            const storedSnapshot = this.volatileStart
+                ? this.volatileStart(startInput)
+                : encryptedLiveAuthorization !== undefined
+                    ? this.database.initializeLocalMatchGameplay({ ...startInput, encryptedLiveAuthorization })
+                    : (() => { throw new MatchGameplayFlowError("GAMEPLAY_INVALID"); })();
             const startedRun: StoredLocalGameRun = { ...run, startedAtUtc: timestamp, lastAcceptedSequence: 1, updatedAtUtc: timestamp };
             return this.cacheRecovery(startedRun, "live", storedSnapshot, engine);
         } catch (error) {
@@ -917,11 +933,11 @@ export class MatchGameplayManager {
 
     private async projectPreparedScorerEventMutation(runId: string, owner: MatchGameplayOwner | null, scorerEventGroupId: string, expectedHistoryRevision: number, mode: MatchGameplayScorerEventEditMode, inputEvents: MatchGameplayScorerEventDraftEvent[], prepared: PreparedScorerEventMutation): Promise<MatchGameplayScorerEventMutationPreview> {
         const persistedAtUtc = this.now().toISOString(); const virtualRows = prepared.canonicalEvents.map((event) => ({ runId, ...eventWrite(event, persistedAtUtc) })); const virtualRun = { ...prepared.current.run, lastAcceptedSequence: prepared.canonicalEvents.length };
-        const virtualDatabase = Object.create(this.database) as LocalDatabase;
+        const virtualDatabase = Object.create(this.database) as MatchGameplayStore;
         virtualDatabase.readLocalGameRun = (requestedRunId: string) => requestedRunId === runId ? virtualRun : null;
         virtualDatabase.readLocalMatchEngineSnapshot = (requestedRunId: string) => requestedRunId === runId ? prepared.current.snapshot : null;
         virtualDatabase.readLocalMatchEvents = (requestedRunId: string) => requestedRunId === runId ? virtualRows : [];
-        const virtualManager = new MatchGameplayManager(this.setup, virtualDatabase, this.deviceId, this.now, this.id, this.sealLiveAuthorization, this.maxCachedSessions);
+        const virtualManager = new MatchGameplayManager(this.setup, virtualDatabase, this.deviceId, this.now, this.id, this.sealLiveAuthorization, this.maxCachedSessions, this.volatileStart);
         const projectedMode = mode.mode === "CURRENT_OPEN" && inputEvents.every((event) => event.facts.scorerEventTerminal === undefined) ? mode : { mode: "HISTORY" as const };
         const context = await virtualManager.scorerEventEditContext(runId, owner, scorerEventGroupId, projectedMode); if (!context || context.group.canonicalEventIds.length !== inputEvents.length || prepared.replacementEventIds.length !== inputEvents.length) throw new MatchGameplayFlowError("GAMEPLAY_EVENT_REJECTED");
         const actualToDraft = new Map(prepared.replacementEventIds.map((eventId, index) => [eventId, inputEvents[index]!.draftId])); const remap = (eventId: string): string => actualToDraft.get(eventId) ?? eventId;

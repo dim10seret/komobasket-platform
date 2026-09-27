@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
 interface PreGameConfigurationProps {
+    training?: boolean;
     configuration: KomoControlPreGameConfiguration;
     busy: boolean;
     startPending?: boolean;
@@ -143,7 +144,7 @@ export function livePlayerControlPolicy(live: boolean, wasParticipating: boolean
     };
 }
 
-function PlayerDraftRow({ player, value, rowNumber, captain, starter, starterLimitReached, side, readOnly, live, startInvalid, onChange, onCaptain, onStarter }: {
+function PlayerDraftRow({ player, value, rowNumber, captain, starter, starterLimitReached, side, readOnly, live, training, startInvalid, onChange, onCaptain, onStarter }: {
     player: KomoControlPreGameConfigurationPlayer;
     value: KomoControlPreGameConfigurationPlayerDraft;
     rowNumber: number;
@@ -154,6 +155,7 @@ function PlayerDraftRow({ player, value, rowNumber, captain, starter, starterLim
     readOnly: boolean;
     live: boolean;
     startInvalid: boolean;
+    training: boolean;
     onChange: (value: KomoControlPreGameConfigurationPlayerDraft) => void;
     onCaptain: () => void;
     onStarter: (selected: boolean) => void;
@@ -171,7 +173,7 @@ function PlayerDraftRow({ player, value, rowNumber, captain, starter, starterLim
             <span className={value.participating ? "pregame-player-status is-participating" : "pregame-player-status"}>{value.participating ? "Συμμετέχει" : "Εκτός"}</span>
             <label className="pregame-number-field">
                 <input type="text" inputMode="numeric" maxLength={2} value={value.gameShirtNumber ?? ""} disabled={readOnly || controls.shirtNumberLocked} placeholder="—" aria-invalid={startInvalid || undefined} aria-label={`Αριθμός αγώνα για ${player.displayName}`} onChange={(event) => onChange({ ...value, gameShirtNumber: event.target.value === "" ? null : event.target.value })} />
-                <small>{overridden ? "Override" : packageNumber === null ? "Χωρίς αρχικό" : `Pkg ${packageNumber}`}</small>
+                <small>{training ? "DEMO" : overridden ? "Override" : packageNumber === null ? "Χωρίς αρχικό" : `Pkg ${packageNumber}`}</small>
             </label>
             <label className="pregame-role-toggle" aria-label={`Αρχηγός ${player.displayName}`}>
                 <input type="radio" name={`captain-${side}`} checked={captain} disabled={readOnly || controls.captainStarterLocked || !value.participating} onChange={onCaptain} />
@@ -183,7 +185,7 @@ function PlayerDraftRow({ player, value, rowNumber, captain, starter, starterLim
     );
 }
 
-function TeamDraft({ team, draft, placement, minPlayers, maxPlayers, startingPlayers, filter, rosterExpanded, readOnly, live, readinessIssue, onFilterChange, onRosterExpandedChange, onChange }: {
+function TeamDraft({ team, draft, placement, minPlayers, maxPlayers, startingPlayers, filter, rosterExpanded, readOnly, live, training, readinessIssue, onFilterChange, onRosterExpandedChange, onChange }: {
     team: KomoControlPreGameConfigurationTeam;
     draft: KomoControlPreGameConfigurationTeamDraft;
     placement: "LEFT" | "RIGHT";
@@ -193,6 +195,7 @@ function TeamDraft({ team, draft, placement, minPlayers, maxPlayers, startingPla
     filter: RosterViewFilter;
     rosterExpanded: boolean;
     readOnly: boolean;
+    training: boolean;
     live: boolean;
     readinessIssue: KomoControlStartReadinessIssue | KomoControlLiveConfigurationValidationIssue | null;
     onFilterChange: (filter: RosterViewFilter) => void;
@@ -254,7 +257,7 @@ function TeamDraft({ team, draft, placement, minPlayers, maxPlayers, startingPla
                 {view.players.map((player) => {
                     const value = players.get(player.playerId);
                     if (!value) return null;
-                    return <PlayerDraftRow key={player.playerId} player={player} value={value} rowNumber={team.players.findIndex((candidate) => candidate.playerId === player.playerId) + 1} side={team.side} readOnly={readOnly} live={live} startInvalid={invalidPlayerIds.has(player.playerId)} captain={draft.captainPlayerId === player.playerId} starter={starters.has(player.playerId)} starterLimitReached={starters.size >= startingPlayers}
+                    return <PlayerDraftRow training={training} key={player.playerId} player={player} value={value} rowNumber={team.players.findIndex((candidate) => candidate.playerId === player.playerId) + 1} side={team.side} readOnly={readOnly} live={live} startInvalid={invalidPlayerIds.has(player.playerId)} captain={draft.captainPlayerId === player.playerId} starter={starters.has(player.playerId)} starterLimitReached={starters.size >= startingPlayers}
                         onChange={(next) => onChange(next.participating === value.participating ? { ...draft, players: draft.players.map((entry) => entry.playerId === next.playerId ? next : entry) } : withPlayerParticipation({ ...draft, players: draft.players.map((entry) => entry.playerId === next.playerId ? next : entry) }, next.playerId, next.participating))}
                         onCaptain={() => onChange({ ...draft, captainPlayerId: player.playerId })}
                         onStarter={(selectedStarter) => onChange({ ...draft, starterPlayerIds: selectedStarter ? [...draft.starterPlayerIds, player.playerId] : draft.starterPlayerIds.filter((id) => id !== player.playerId) })} />;
@@ -264,21 +267,21 @@ function TeamDraft({ team, draft, placement, minPlayers, maxPlayers, startingPla
             {view.collapsible ? <div className="pregame-roster-toggle"><button type="button" className="text-button" onClick={() => onRosterExpandedChange(!rosterExpanded)}>{rosterExpanded ? "Απόκρυψη" : `Προβολή όλων (${team.players.length})`}</button></div> : null}
             <div className="pregame-staff">
                 <h3>Προπονητικό επιτελείο</h3>
-                {team.staff.length === 0 ? <p>Δεν υπάρχει Staff στο Package.</p> : <><div className="pregame-staff-header"><span>ΟΝΟΜΑ</span><span>ΡΟΛΟΣ</span><span>ΣΥΜΜΕΤΕΧΕΙ</span></div>{team.staff.map((member) => {
+                {team.staff.length === 0 ? <p>{training ? "Δεν υπάρχει πρόσθετο Staff." : "Δεν υπάρχει Staff στο Package."}</p> : <><div className="pregame-staff-header"><span>ΟΝΟΜΑ</span><span>ΡΟΛΟΣ</span><span>ΣΥΜΜΕΤΕΧΕΙ</span></div>{team.staff.map((member) => {
                     const value = staff.get(member.staffId);
                     if (!value) return null;
                     return <label className="pregame-staff-row" key={member.staffId}><strong>{member.displayName}</strong><span>{member.roleLabel ?? member.role}</span><input type="checkbox" disabled={readOnly || live} aria-label={`Συμμετοχή Staff ${member.displayName}`} checked={value.participating} onChange={(event) => onChange({ ...draft, staff: draft.staff.map((entry) => entry.staffId === member.staffId ? { ...entry, participating: event.target.checked } : entry) })} /></label>;
                 })}</>}
             </div>
             <div className="pregame-extra-bench">
-                <div className="pregame-extra-bench-heading"><div><h3>Πρόσθετος πάγκος</h3><small>Μόνο για αυτό το Run · {draft.extraBench.length}/10</small></div>{!extraBenchFormOpen ? <button type="button" className="text-button" disabled={readOnly || draft.extraBench.length >= 10} onClick={() => { setEditingExtraBenchId(null); setExtraBenchName(""); setExtraBenchRole("coach"); setExtraBenchFormOpen(true); }}>+ Προσθήκη</button> : null}</div>
+                <div className="pregame-extra-bench-heading"><div><h3>Πρόσθετος πάγκος</h3><small>{training ? "Μόνο σε αυτή την εκπαίδευση" : "Μόνο για αυτό το Run"} · {draft.extraBench.length}/10</small></div>{!extraBenchFormOpen ? <button type="button" className="text-button" disabled={readOnly || draft.extraBench.length >= 10} onClick={() => { setEditingExtraBenchId(null); setExtraBenchName(""); setExtraBenchRole("coach"); setExtraBenchFormOpen(true); }}>+ Προσθήκη</button> : null}</div>
                 {extraBenchFormOpen ? <div className="pregame-extra-bench-form">
                     <label><span>Ονοματεπώνυμο</span><input type="text" maxLength={100} value={extraBenchName} onChange={(event) => setExtraBenchName(event.target.value)} /></label>
                     <label><span>Ιδιότητα</span><select value={extraBenchRole} onChange={(event) => setExtraBenchRole(event.target.value as ExtraBenchRole)}>{extraBenchRoles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
                     <button type="button" className="secondary-button" disabled={!extraBenchNameValid || (!editingExtraBenchId && draft.extraBench.length >= 10)} onClick={saveExtraBench}>{editingExtraBenchId ? "Αποθήκευση αλλαγών" : "+ Προσθήκη"}</button>
                     <button type="button" className="text-button" onClick={closeExtraBenchForm}>Ακύρωση</button>
                 </div> : null}
-                {draft.extraBench.length === 0 ? <p className="pregame-extra-bench-empty">Δεν έχει προστεθεί Run-only Staff.</p> : <ul className="pregame-extra-bench-list">{draft.extraBench.map((entry) => <li key={entry.entryId}><span><strong>{entry.name}</strong><small>{extraBenchRoles.find((role) => role.value === entry.role)?.label}</small></span><div className="pregame-extra-bench-list-actions"><button type="button" className="text-button" disabled={readOnly} onClick={() => openExtraBenchEdit(entry)}>Επεξεργασία</button><button type="button" className="text-button" disabled={readOnly} onClick={() => { if (editingExtraBenchId === entry.entryId) closeExtraBenchForm(); onChange({ ...draft, extraBench: draft.extraBench.filter((candidate) => candidate.entryId !== entry.entryId) }); }}>Αφαίρεση</button></div></li>)}</ul>}
+                {draft.extraBench.length === 0 ? <p className="pregame-extra-bench-empty">{training ? "Δεν έχει προστεθεί πρόσθετο Staff." : "Δεν έχει προστεθεί Run-only Staff."}</p> : <ul className="pregame-extra-bench-list">{draft.extraBench.map((entry) => <li key={entry.entryId}><span><strong>{entry.name}</strong><small>{extraBenchRoles.find((role) => role.value === entry.role)?.label}</small></span><div className="pregame-extra-bench-list-actions"><button type="button" className="text-button" disabled={readOnly} onClick={() => openExtraBenchEdit(entry)}>Επεξεργασία</button><button type="button" className="text-button" disabled={readOnly} onClick={() => { if (editingExtraBenchId === entry.entryId) closeExtraBenchForm(); onChange({ ...draft, extraBench: draft.extraBench.filter((candidate) => candidate.entryId !== entry.entryId) }); }}>Αφαίρεση</button></div></li>)}</ul>}
             </div>
             <div className="pregame-team-rules"><span>Ελάχιστο: <strong>{minPlayers}</strong></span><span>Μέγιστο: <strong>{maxPlayers}</strong></span><span>Starter που απαιτούνται: <strong>{startingPlayers}</strong></span></div>
         </section>
@@ -289,7 +292,7 @@ export function savedDraftConfirmationVisible(currentRevision: number, savedRevi
 export function startReadinessPlayerIds(issue: KomoControlStartReadinessIssue | KomoControlLiveConfigurationValidationIssue | null | undefined, side: KomoControlTeamSide): Set<string> { return new Set(issue?.teamSide === side ? issue.affectedPlayers.map((player) => player.playerId) : []); }
 export function startMatchButtonPresentation(readOnly: boolean, busy: boolean, dirty: boolean, startPending: boolean): { disabled: boolean; label: string } { return { disabled: readOnly || busy || dirty, label: startPending ? "Έναρξη…" : "Έναρξη αγώνα" }; }
 
-export function PreGameConfiguration({ configuration, busy, startPending = false, error, startReadiness = null, configurationValidation = null, savedRevision, readOnly = false, footer, onBack, onDraftEdited, onSave, onStartMatch }: PreGameConfigurationProps) {
+export function PreGameConfiguration({ configuration, busy, startPending = false, error, startReadiness = null, configurationValidation = null, savedRevision, readOnly = false, footer, onBack, onDraftEdited, onSave, onStartMatch, training = false }: PreGameConfigurationProps) {
     const [draft, setDraft] = useState<EditableDraft>(() => editableDraft(configuration));
     const [officialsOpen, setOfficialsOpen] = useState(false);
     const [rosterFilters, setRosterFilters] = useState<RosterFilters>(() => initialRosterFilters());
@@ -301,7 +304,7 @@ export function PreGameConfiguration({ configuration, busy, startPending = false
     const rightSide = oppositeSide(draft.presentation.leftSide);
     const displayedSides = displayedTeamSides(draft.presentation.leftSide);
     const sameColor = draft.teams[0].gameColor !== null && draft.teams[0].gameColor === draft.teams[1].gameColor;
-    const displayStatus = configurationDisplayStatus(dirty);
+    const displayStatus = training ? { phase: "ΠΡΟΕΤΟΙΜΑΣΙΑ DEMO", savedLabel: dirty ? "Εκκρεμείς αλλαγές" : "Προσωρινά στη μνήμη", saveConfirmation: "Η προετοιμασία ενημερώθηκε στη μνήμη" } : configurationDisplayStatus(dirty);
     const live = configuration.lifecycle === "live";
     const validationIssue = configurationValidation ?? startReadiness;
     const startButton = startMatchButtonPresentation(readOnly, busy, dirty, startPending);
@@ -313,20 +316,20 @@ export function PreGameConfiguration({ configuration, busy, startPending = false
         <main className="home-shell pregame-shell">
             <section className="home-card pregame-card">
                 <header className="pregame-topbar">
-                    <div className="pregame-title-block"><button type="button" className="pregame-back-button" onClick={onBack} disabled={busy}>← <span>Προετοιμασία αγώνα</span></button><h1>Συμμετοχές και αριθμοί</h1><p>Package v{configuration.packageVersion} · Run {configuration.runId.slice(-8)}</p></div>
+                    <div className="pregame-title-block"><button type="button" className="pregame-back-button" onClick={onBack} disabled={busy}>← <span>Προετοιμασία αγώνα</span></button><h1>Συμμετοχές και αριθμοί</h1><p>{training ? "Εκπαίδευση scorer · RAM ONLY" : <>Package v{configuration.packageVersion} · Run {configuration.runId.slice(-8)}</>}</p></div>
                     <div className="pregame-placement"><div><strong>LEFT</strong><span>{draft.presentation.leftSide}</span></div><button type="button" className="secondary-button" disabled={readOnly} onClick={() => updateDraft({ ...draft, presentation: { leftSide: rightSide } })}>⇄ Αλλαγή πλευρών</button><div><strong>RIGHT</strong><span>{rightSide}</span></div></div>
                     <div className="pregame-status-board"><div><strong>{displayStatus.phase}</strong><span className={dirty ? "is-dirty" : "is-saved"}>{displayStatus.savedLabel}</span></div></div>
                 </header>
-                {live ? <aside className="pregame-live-correction-note" role="status"><strong>Διόρθωση ενεργού αγώνα</strong><span>Ο αγώνας είναι σε εξέλιξη. Μπορείτε να προσθέσετε παίκτη, να διαχειριστείτε τον Run-only πρόσθετο πάγκο ή να διορθώσετε αριθμό φανέλας, χρώμα ομάδας και πλευρές. Η αγωνιστική ιστορία παραμένει ενεργή.</span></aside> : null}
+                {live ? <aside className="pregame-live-correction-note" role="status"><strong>Διόρθωση ενεργού αγώνα</strong><span>{training ? "Οι διορθώσεις της εκπαίδευσης παραμένουν μόνο στη μνήμη." : <>Ο αγώνας είναι σε εξέλιξη. Μπορείτε να προσθέσετε παίκτη, να διαχειριστείτε τον Run-only πρόσθετο πάγκο ή να διορθώσετε αριθμό φανέλας, χρώμα ομάδας και πλευρές. Η αγωνιστική ιστορία παραμένει ενεργή.</>}</span></aside> : null}
                 {sameColor ? <p className="pregame-color-warning">HOME και AWAY έχουν το ίδιο χρώμα. Επιτρέπεται, αλλά η οπτική διάκριση θα είναι μικρότερη.</p> : null}
                 <div className="pregame-teams">
                     {displayedSides.map((side, index) => {
                         const teamIndex = authoritativeTeamIndex(side);
-                        return <TeamDraft key={side} team={configuration.teams[teamIndex]} draft={draft.teams[teamIndex]} placement={index === 0 ? "LEFT" : "RIGHT"} minPlayers={configuration.settings.minPlayers} maxPlayers={configuration.settings.maxPlayers} startingPlayers={configuration.settings.startingPlayers} filter={rosterFilters[side]} rosterExpanded={rosterExpanded[side]} readOnly={readOnly} live={live} readinessIssue={validationIssue?.teamSide === side ? validationIssue : null} onFilterChange={(filter) => setRosterFilters((current) => ({ ...current, [side]: filter }))} onRosterExpandedChange={(expanded) => setRosterExpanded((current) => ({ ...current, [side]: expanded }))} onChange={(team) => updateTeam(side, team)} />;
+                        return <TeamDraft training={training} key={side} team={configuration.teams[teamIndex]} draft={draft.teams[teamIndex]} placement={index === 0 ? "LEFT" : "RIGHT"} minPlayers={configuration.settings.minPlayers} maxPlayers={configuration.settings.maxPlayers} startingPlayers={configuration.settings.startingPlayers} filter={rosterFilters[side]} rosterExpanded={rosterExpanded[side]} readOnly={readOnly} live={live} readinessIssue={validationIssue?.teamSide === side ? validationIssue : null} onFilterChange={(filter) => setRosterFilters((current) => ({ ...current, [side]: filter }))} onRosterExpandedChange={(expanded) => setRosterExpanded((current) => ({ ...current, [side]: expanded }))} onChange={(team) => updateTeam(side, team)} />;
                     })}
                 </div>
                 {error ? <p className="form-message error" role="alert">{error}</p> : null}
-                <div className="pregame-actions"><aside className="pregame-action-guidance" aria-label="Οδηγίες πριν την έναρξη"><span className="pregame-guidance-icon" aria-hidden="true">i</span><span>{readOnly ? "Η διαμόρφωση είναι διαθέσιμη μόνο για ανάγνωση." : live ? "Οι επιτρεπτές διορθώσεις αποθηκεύονται πρώτα τοπικά. Συμμετέχοντες που ξεκίνησαν, αρχηγός, βασικοί και πάγκος παραμένουν κλειδωμένοι." : "Συμπληρώστε συμμετοχές, αριθμούς, αρχηγούς, βασικούς, Staff, χρώματα και θέση παρουσίασης. Οι αλλαγές ισχύουν μόνο για αυτό το Run."}</span></aside><div className="pregame-save-cluster">{showSavedConfirmation ? <p className="pregame-save-confirmation" role="status" aria-live="polite">{displayStatus.saveConfirmation}</p> : null}<button type="button" className="secondary-button" disabled={busy} onClick={() => setOfficialsOpen(true)}>Διαιτητές &amp; Γραμματεία</button><button type="button" className="primary-button" disabled={readOnly || busy || !dirty} onClick={() => void onSave({ gameId: configuration.gameId, expectedRevision: configuration.revision, teams: draft.teams, presentation: draft.presentation, officials: draft.officials })}>{busy ? "Αποθήκευση…" : "Αποθήκευση Draft"}</button>{onStartMatch ? <button type="button" className="start-match-button" disabled={startButton.disabled} aria-busy={startPending} onClick={() => void onStartMatch()}>{startButton.label}</button> : null}</div></div>
+                <div className="pregame-actions"><aside className="pregame-action-guidance" aria-label="Οδηγίες πριν την έναρξη"><span className="pregame-guidance-icon" aria-hidden="true">i</span><span>{training ? "Επιλέξτε συμμετοχές, αρχηγούς και βασικούς. Όλες οι αλλαγές είναι προσωρινές." : readOnly ? "Η διαμόρφωση είναι διαθέσιμη μόνο για ανάγνωση." : live ? "Οι επιτρεπτές διορθώσεις αποθηκεύονται πρώτα τοπικά. Συμμετέχοντες που ξεκίνησαν, αρχηγός, βασικοί και πάγκος παραμένουν κλειδωμένοι." : "Συμπληρώστε συμμετοχές, αριθμούς, αρχηγούς, βασικούς, Staff, χρώματα και θέση παρουσίασης. Οι αλλαγές ισχύουν μόνο για αυτό το Run."}</span></aside><div className="pregame-save-cluster">{showSavedConfirmation ? <p className="pregame-save-confirmation" role="status" aria-live="polite">{displayStatus.saveConfirmation}</p> : null}<button type="button" className="secondary-button" disabled={busy} onClick={() => setOfficialsOpen(true)}>Διαιτητές &amp; Γραμματεία</button><button type="button" className="primary-button" disabled={readOnly || busy || !dirty} onClick={() => void onSave({ gameId: configuration.gameId, expectedRevision: configuration.revision, teams: draft.teams, presentation: draft.presentation, officials: draft.officials })}>{training ? (busy ? "Εφαρμογή…" : "Εφαρμογή προετοιμασίας") : (busy ? "Αποθήκευση…" : "Αποθήκευση Draft")}</button>{onStartMatch ? <button type="button" className="start-match-button" disabled={startButton.disabled} aria-busy={startPending} onClick={() => void onStartMatch()}>{startButton.label}</button> : null}</div></div>
                 {officialsOpen ? <OfficialsDialog value={draft.officials} readOnly={Boolean(readOnly)} busy={busy} onClose={() => setOfficialsOpen(false)} onSave={async (officials) => { const next = { ...draft, officials }; updateDraft(next); const saved = await onSave({ gameId: configuration.gameId, expectedRevision: configuration.revision, teams: next.teams, presentation: next.presentation, officials: next.officials }); if (saved) setOfficialsOpen(false); }}/> : null}
                 {footer}
             </section>

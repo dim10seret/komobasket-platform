@@ -54,7 +54,7 @@ export interface GameplayScorerEventMutationPreviewInput { scorerEventGroupId: s
 export interface GameplayHistoryQueryInput { limit?: number; beforeSequence?: number | null; period?: GameplayPeriod | null; }
 
 export type SafeGameplaySyncState = {
-    status: "synced" | "pending" | "retry-needed" | "conflict";
+    status: "synced" | "pending" | "retry-needed" | "conflict" | "disabled";
     acknowledgedRevision: number;
     lastAttemptAtUtc: string | null;
     lastSuccessAtUtc: string | null;
@@ -646,19 +646,19 @@ export function safeGameplayScorerEventMutationPreview(preview: MatchGameplaySco
 
 export function safeGameplay(
     recovery: MatchGameplayRecovery,
-    sync: StoredLocalGameplaySyncState,
+    sync: StoredLocalGameplaySyncState | null,
 ): SafeMatchGameplay {
     const state = recovery.state;
     const home = object(state.home);
     const away = object(state.away);
     const currentPeriod = period(state.period);
     const currentRevision = recovery.eventHistoryRevision;
-    const configurationPending = sync.lastErrorCode?.startsWith("SYNC_PENDING_CONFIGURATION") === true;
-    const pending = currentRevision > sync.lastAcknowledgedHistoryRevision
+    const configurationPending = sync?.lastErrorCode?.startsWith("SYNC_PENDING_CONFIGURATION") === true;
+    const pending = sync !== null && (currentRevision > sync.lastAcknowledgedHistoryRevision
         || configurationPending
-        || (recovery.lifecycle === "finalized" && sync.lastAcknowledgedFinalizationHash === null);
-    const lastErrorCode = publicSyncError(sync.lastErrorCode);
-    const syncStatus = lastErrorCode === "SYNC_RUN_CONFLICT" || lastErrorCode === "SYNC_INTEGRITY_CONFLICT"
+        || (recovery.lifecycle === "finalized" && sync.lastAcknowledgedFinalizationHash === null));
+    const lastErrorCode = publicSyncError(sync?.lastErrorCode ?? null);
+    const syncStatus = sync === null ? "disabled" : lastErrorCode === "SYNC_RUN_CONFLICT" || lastErrorCode === "SYNC_INTEGRITY_CONFLICT"
         ? "conflict"
         : lastErrorCode && pending
             ? "retry-needed"
@@ -696,9 +696,9 @@ export function safeGameplay(
         penalty: safePenalty(state.penaltyResolution),
         sync: {
             status: syncStatus,
-            acknowledgedRevision: sync.lastAcknowledgedHistoryRevision,
-            lastAttemptAtUtc: sync.lastAttemptAtUtc,
-            lastSuccessAtUtc: sync.lastSuccessAtUtc,
+            acknowledgedRevision: sync?.lastAcknowledgedHistoryRevision ?? 0,
+            lastAttemptAtUtc: sync?.lastAttemptAtUtc ?? null,
+            lastSuccessAtUtc: sync?.lastSuccessAtUtc ?? null,
             lastErrorCode,
         },
     };
