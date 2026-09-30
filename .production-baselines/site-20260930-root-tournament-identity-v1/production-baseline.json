@@ -1,0 +1,212 @@
+{
+  "product": "KomoBasket Site / Platform",
+  "environment": "production",
+  "baseline_name": "Root Tournament Identity v1",
+  "source_git_commit": "4a2a5725a05b50a598e9aa68ca6d42e1619736de",
+  "cloudflare_deployment_id": "43e5c555-85b4-4a6b-a4ab-ac5c887de346",
+  "cloudflare_version_id": "1ef03ea3-f623-490b-b74e-982b4036bc9c",
+  "traffic_percent": 100,
+  "previous_canonical_baseline": "production-site-20260926-organization-site-cover-v1",
+  "previous_live_deployment": "e624d1f4-9999-4704-978a-0060648abc92",
+  "previous_live_version": "fcfb26ac-5e91-465d-b7a6-7d1102b40700",
+  "git_tag": "production-site-20260930-root-tournament-identity-v1",
+  "tag_target": "4a2a5725a05b50a598e9aa68ca6d42e1619736de",
+  "release_status": "LIVE AT 100%; AUTHENTICATED ADMIN AND PUBLIC READ-ONLY PRODUCTION SMOKE PASS",
+  "source_delta_files": [
+    "cloudflare/league-schema.sql",
+    "cloudflare/migrations/0038_phase_tournament_name.sql",
+    "src/app/(central)/stats/page.tsx",
+    "src/app/(hosted)/[organizationSlug]/statistics/page.tsx",
+    "src/components/admin/platform/sections/CompetitionSection.tsx",
+    "src/components/competition/PublicCompetitionStatistics.tsx",
+    "src/components/competition/PublicCompetitionsView.tsx",
+    "src/components/hosted/HostedOrganizationHomeData.tsx",
+    "src/lib/phase-root-source.ts",
+    "src/lib/public-competition-statistics.ts",
+    "src/services/league-admin.service.ts",
+    "src/services/public-competition-statistics.service.ts",
+    "src/services/public-competition.service.ts",
+    "src/components/competition/PublicCompetitionStatistics.test.ts",
+    "src/components/competition/public-competition-program-results.test.mjs",
+    "src/components/hosted/hosted-organization-statistics-home.test.mjs",
+    "src/components/admin/platform/sections/root-tournament-identity.test.mjs",
+    "src/lib/phase-root-source.test.ts",
+    "src/lib/public-competition-statistics.test.ts",
+    "src/services/public-competition-statistics.organization.test.mjs",
+    "src/services/public-competition.organization.test.mjs",
+    "src/services/root-tournament-identity.test.ts"
+  ],
+  "source_delta_classification": {
+    "runtime_schema_migration": 13,
+    "tests": 9,
+    "unexpected": 0
+  },
+  "excluded_local_artifacts": [
+    ".tmp_phase1b_font/",
+    "komocontrol/demo/",
+    "komocontrol/electron/demo/",
+    "komocontrol/src/demo/",
+    "output/",
+    "scripts/benchmark-organization-user-local.mjs"
+  ],
+  "d1": {
+    "database_name": "komobasket-news",
+    "database_id": "d7947fb0-124a-4bc0-bdff-a7e1e9664a70",
+    "binding": "NEWS_DB",
+    "before": {
+      "applied": 37,
+      "pending": 0
+    },
+    "migrations_applied": [
+      "0038_phase_tournament_name.sql"
+    ],
+    "after": {
+      "applied": 38,
+      "pending": 0
+    },
+    "column": {
+      "table": "league_phases",
+      "name": "tournament_name",
+      "type": "TEXT",
+      "nullable": true,
+      "default": null
+    },
+    "quick_check": "ok",
+    "fk_violations": 0,
+    "production_backfill": "NONE",
+    "tournament_name_non_null_after_migration": 0,
+    "row_counts_before_and_after": [
+      {
+        "table_name": "league_organizations",
+        "before": 5,
+        "after": 5
+      },
+      {
+        "table_name": "league_competitions",
+        "before": 14,
+        "after": 14
+      },
+      {
+        "table_name": "league_phases",
+        "before": 28,
+        "after": 28
+      },
+      {
+        "table_name": "league_games",
+        "before": 405,
+        "after": 405
+      },
+      {
+        "table_name": "league_roster_memberships",
+        "before": 1658,
+        "after": 1658
+      }
+    ],
+    "business_data_preserved": true
+  },
+  "validation": {
+    "focused_admin_root": {
+      "passed": 24,
+      "failed": 0
+    },
+    "root_tournament": {
+      "passed": 160,
+      "failed": 0
+    },
+    "site_only": {
+      "passed": 925,
+      "failed": 0
+    },
+    "canonical_node": {
+      "passed": 44,
+      "failed": 0
+    },
+    "typescript": "PASS",
+    "next_build": "PASS",
+    "opennext_build": "PASS",
+    "provenance": "Previously certified exact source retained; no source changes after validation."
+  },
+  "production_smoke": {
+    "public_competition": "PASS",
+    "program_results": "PASS",
+    "standings": "PASS",
+    "statistics": "PASS",
+    "mvp_top_performance_route_and_fallback": "PASS; no populated current production example available",
+    "hosted_homepage": "PASS",
+    "single_root_backward_compatibility": "PASS",
+    "null_tournament_name_fallback": "PASS",
+    "authenticated_admin_platform": "PASS",
+    "competitions_load": "PASS",
+    "phases_load": "PASS",
+    "root_grouping": "PASS",
+    "descendant_grouping": "PASS",
+    "new_root_none_ui": "PASS",
+    "tournament_name_field": "PASS",
+    "inherited_context": "PASS",
+    "desktop": "PASS",
+    "mobile_390px": "PASS",
+    "page_horizontal_overflow": false,
+    "broken_images": 0,
+    "console_errors": 0,
+    "production_data_writes_during_smoke": 0,
+    "cloudflare_access": "UNCHANGED; unauthenticated protection and authenticated access verified"
+  },
+  "architecture_preserved": {
+    "komocontrol": true,
+    "match_engine": true,
+    "game_package": true,
+    "scoring": true,
+    "sync": true,
+    "roster_architecture": true,
+    "transfers_departures": true,
+    "historical_game_snapshots": true,
+    "finalized_match_reports": true
+  },
+  "safety": {
+    "source_edits_during_release": false,
+    "production_migrations": [
+      "0038"
+    ],
+    "other_production_business_writes": false,
+    "production_test_data_created": false,
+    "production_tournament_data_created_or_edited": false,
+    "configuration_changes": false,
+    "credential_fallback": false,
+    "force_push": false,
+    "new_deploy_during_admin_smoke": false
+  },
+  "build": {
+    "rebuilt_during_release": false,
+    "deploy_command": "node node_modules/@opennextjs/cloudflare/dist/cli/index.js deploy",
+    "worker_sha256": "d05223bf4d44c84108a102ab62aa3bc9c5568f0c3ac2064c37be5cc65c64bc45"
+  },
+  "site_source_manifest": "site-source-sha256.txt",
+  "site_source_manifest_entries": 427,
+  "site_source_manifest_sha256": "b05a6be11052c0428de361e13ae4c2f006a37b0d3f478999c272c60902065b33",
+  "manifest_policy": {
+    "basis": "Previous canonical manifest paths plus deployable runtime/schema/migration paths introduced by the released source commit.",
+    "excludes": [
+      "tests",
+      "KomoControl desktop",
+      "generated outputs",
+      "temporary artifacts",
+      "local databases",
+      "backups",
+      "secrets"
+    ],
+    "hashes": "SHA-256 of released working-tree file bytes, independently rehashed from disk and verified against the released source commit using Git clean-filter object IDs.",
+    "worker_bundle_identity_claim": false
+  },
+  "manifest_verification": {
+    "entries": 427,
+    "independent_hashes_recomputed": 427,
+    "matches": 427,
+    "missing": 0,
+    "malformed": 0,
+    "duplicates": 0,
+    "hash_mismatches": 0,
+    "source_commit_mismatches": 0
+  },
+  "deployed_at_utc": "2026-09-30T14:02:10.606247Z",
+  "recorded_at_utc": "2026-09-30T14:55:15.485Z"
+}
