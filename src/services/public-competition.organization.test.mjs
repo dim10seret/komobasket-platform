@@ -51,6 +51,7 @@ function databaseFixture() {
               lifecycle_status: "active",
               phase_order: 1,
               previous_phase_id: null,
+              tournament_name: null,
               participant_count: 2,
               round_count: 1,
               wins_required: null,
@@ -138,5 +139,13 @@ describe("public competition organization isolation", () => {
     expect(context.competitions.some((competition) => competition.id === "competition_komobasket")).toBe(false);
     expect(context.games.some((game) => game.id === "game_komobasket")).toBe(false);
     expect(context.teamView).toBeNull();
+  });
+
+  it("projects the legacy single root as one Tournament with the root-name fallback", async () => {
+    const fixture = databaseFixture();
+    const context = await getPublicCompetitionContextForOrganizationWithDb(fixture.database, "organization_runbasket");
+    expect(context.tournaments).toEqual([{ rootPhaseId: "phase_runbasket", slug: "regular-season", name: "Regular Season", phaseIds: ["phase_runbasket"], finalized: false }]);
+    expect(context.selectedTournament?.rootPhaseId).toBe("phase_runbasket");
+    expect(context.selectedPhase?.rootPhaseId).toBe("phase_runbasket");
   });
 });

@@ -36,6 +36,20 @@ describe("public competition statistics", () => {
   it("keeps same-name canonical identities separate", () => { const same = buildPublicCompetitionStatistics({ games: [game("same", 1, [player("a", "ΙΔΙΟ", line({ points: 2 }))], [player("b", "ΙΔΙΟ", line({ points: 3 }))])], rounds: [] }); expect(same.rankings.points).toHaveLength(2); });
   it("rejects one canonical player across two teams", () => expect(() => buildPublicCompetitionStatistics({ games: [game("bad", 1, [player("same", "ΠΑΙΚΤΗΣ", line())], [player("same", "ΠΑΙΚΤΗΣ", line())])], rounds: [] })).toThrow("PUBLIC_COMPETITION_PLAYER_DUPLICATE"));
   it("projects canonical matchdays", () => expect(result.matchdays.map((entry) => entry.label)).toEqual(["1η Αγωνιστική", "2η Αγωνιστική"]));
+  it("keeps identical round numbers isolated by phase identity", () => {
+    const isolated = buildPublicCompetitionStatistics({
+      games: [
+        { ...game("league", 1, [player("league-player", "LEAGUE", line({ efficiency: 12 }))]), phaseId: "league-phase" },
+        { ...game("cup", 1, [player("cup-player", "CUP", line({ efficiency: 20 }))]), phaseId: "cup-phase" },
+      ],
+      rounds: [
+        { phaseId: "league-phase", phaseOrder: 1, roundNumber: 1, label: "League · 1η", totalRealGames: 1 },
+        { phaseId: "cup-phase", phaseOrder: 2, roundNumber: 1, label: "Cup · 1η", totalRealGames: 1 },
+      ],
+    });
+    expect(isolated.matchdays.map((entry) => entry.id)).toEqual(["league-phase-round-1", "cup-phase-round-1"]);
+    expect(isolated.matchdays.map((entry) => entry.topPerformance?.player.displayName)).toEqual(["LEAGUE", "CUP"]);
+  });
   it("selects highest single-game EFF only for a completed matchday", () => expect(result.matchdays[1].topPerformance?.player.displayName).toBe("ΒΑΣΙΛΗΣ"));
   it("uses pinned shirt number in completed-matchday Top Performance", () => expect(result.matchdays[1].topPerformance?.player.shirtNumber).toBe("11"));
   it("shows opponent and score for a completed matchday", () => expect(result.matchdays[1].topPerformance).toMatchObject({ teamName: "JUGOPIASTIKA", opponentName: "ΛΕΚΑΒΕΞ", finalScore: { team: 7, opponent: 14 } }));

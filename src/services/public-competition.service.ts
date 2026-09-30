@@ -5,6 +5,7 @@ import { projectAdministrativeGameResult } from "@/lib/administrative-game-resul
 import { resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
 import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame, type SeriesProgressionResult } from "@/lib/series-progression";
 import { calculateStandings, type StandingsTieBreakerKey } from "@/lib/standings-calculator";
+import { buildPhaseTournamentGroups, resolvePhaseTournamentGraph } from "@/lib/phase-root-source";
 import { buildPublicTeamStatistics, type PublicTeamStatistics } from "@/lib/public-team-statistics";
 import { selectCompetitionLatestMovements } from "@/lib/competition-latest-movements";
 import type { PlatformMatchReportMode } from "@/lib/platform-match-report";
@@ -74,6 +75,9 @@ export type PublicPhase = {
   id: string;
   slug: string;
   name: string;
+  previousPhaseId: string | null;
+  rootPhaseId: string;
+  tournamentName: string;
   phaseOrder: number;
   lifecycleStatus: string | null;
   format: "standings" | "series" | "custom";
@@ -83,6 +87,14 @@ export type PublicPhase = {
   winsRequired: number | null;
   directAdvancements: PublicDirectAdvancement[];
   standingsPresentation: PublicStandingsPresentation;
+};
+
+export type PublicTournament = {
+  rootPhaseId: string;
+  slug: string;
+  name: string;
+  phaseIds: string[];
+  finalized: boolean;
 };
 
 export type PublicCompetition = {
@@ -131,6 +143,7 @@ function isPublicTeamGameStatus(status: string | null): status is PublicTeamGame
 export type PublicCompetitionContext = {
   seasons: PublicSeason[];
   competitions: PublicCompetition[];
+  tournaments: PublicTournament[];
   phases: PublicPhase[];
   games: PublicGame[];
   standings: PublicStandingRow[];
@@ -139,6 +152,7 @@ export type PublicCompetitionContext = {
   teamView: PublicTeamView | null;
   selectedSeason: PublicSeason | null;
   selectedCompetition: PublicCompetition | null;
+  selectedTournament: PublicTournament | null;
   selectedPhase: PublicPhase | null;
 };
 
@@ -164,6 +178,7 @@ type PublicPhaseRow = {
   lifecycle_status: string | null;
   phase_order: number | null;
   previous_phase_id: string | null;
+  tournament_name: string | null;
   participant_count: number | null;
   round_count: number | null;
   wins_required: number | null;
@@ -279,7 +294,7 @@ function parseDirectAdvancements(settingsJson: string | null): PublicDirectAdvan
   });
 }
 
-function normalizePhase(row: PublicPhaseRow): PublicPhase {
+function normalizePhase(row: PublicPhaseRow, rootPhaseId: string, tournamentName: string): PublicPhase {
   const format = String(row.format ?? "custom");
   const normalizedFormat = format === "standings" || format === "series" ? format : "custom";
   const settings = parseJsonRecord(row.rule_settings_json);
@@ -295,6 +310,9 @@ function normalizePhase(row: PublicPhaseRow): PublicPhase {
     id: row.id,
     slug: row.slug,
     name: row.name,
+    previousPhaseId: row.previous_phase_id,
+    rootPhaseId,
+    tournamentName,
     phaseOrder: row.phase_order ?? Number.MAX_SAFE_INTEGER,
     lifecycleStatus: row.lifecycle_status,
     format: normalizedFormat,
@@ -491,6 +509,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
   input: {
     seasonSlug?: string | null;
     competitionSlug?: string | null;
+    tournamentSlug?: string | null;
     phaseSlug?: string | null;
     teamId?: string | null;
   } = {},
@@ -532,10 +551,10 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
     }))
     : [];
   const selectedCompetition = competitions.find((competition) => competition.slug === input.competitionSlug) ?? competitions[0] ?? null;
-  if (!selectedCompetition) return { seasons, competitions, phases: [], games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition: null, selectedPhase: null };
+  if (!selectedCompetition) return { seasons, competitions, tournaments: [], phases: [], games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition: null, selectedTournament: null, selectedPhase: null };
 
   const phaseResult = await db.prepare(`
-    SELECT p.id, p.slug, p.name, p.format, p.phase_type, p.lifecycle_status, p.previous_phase_id, p.settings_json,
+    SELECT p.id, p.slug, p.name, p.format, p.phase_type, p.lifecycle_status, p.previous_phase_id, p.tournament_name, p.settings_json,
            COALESCE(p.phase_order, p.order_index) AS phase_order,
            pr.phase_kind, pr.wins_required, pr.carry_over_enabled, pr.carry_over_source_phase_id,
            pr.settings_json AS rule_settings_json,
@@ -549,10 +568,28 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
      ORDER BY COALESCE(p.phase_order, p.order_index), p.id
   `).bind(selectedCompetition.id).all<PublicPhaseRow>();
   const phaseRows = phaseResult.results ?? [];
-  const phases = phaseRows.map(normalizePhase);
-  const selectedPhase = phases.find((phase) => phase.slug === input.phaseSlug) ?? phases[0] ?? null;
+  const tournamentInputs = phaseRows.map((row) => ({ ...row, competition_id: selectedCompetition.id }));
+  const tournamentGraph = resolvePhaseTournamentGraph(tournamentInputs);
+  const phases = phaseRows.map((row) => {
+    const rootPhaseId = tournamentGraph.rootPhaseIdByPhaseId.get(row.id) ?? row.id;
+    return normalizePhase(row, rootPhaseId, tournamentGraph.effectiveTournamentNameByRootPhaseId.get(rootPhaseId) ?? row.name);
+  });
+  const phaseById = new Map(phases.map((phase) => [phase.id, phase]));
+  const tournaments = buildPhaseTournamentGroups(tournamentInputs).flatMap<PublicTournament>((group) => {
+    const root = phaseById.get(group.rootPhaseId);
+    return root ? [{ rootPhaseId: group.rootPhaseId, slug: root.slug, name: group.tournamentName, phaseIds: group.phases.map((phase) => phase.id), finalized: group.finalized }] : [];
+  });
+  const requestedPhase = phases.find((phase) => phase.slug === input.phaseSlug) ?? null;
+  const selectedTournament = tournaments.find((tournament) => tournament.slug === input.tournamentSlug)
+    ?? tournaments.find((tournament) => requestedPhase && tournament.rootPhaseId === requestedPhase.rootPhaseId)
+    ?? tournaments[0]
+    ?? null;
+  const selectedTournamentPhaseIds = new Set(selectedTournament?.phaseIds ?? []);
+  const selectedPhase = (requestedPhase && selectedTournamentPhaseIds.has(requestedPhase.id) ? requestedPhase : null)
+    ?? phases.find((phase) => selectedTournamentPhaseIds.has(phase.id))
+    ?? null;
   const selectedPhaseRow = phaseRows.find((row) => row.id === selectedPhase?.id) ?? null;
-  if (!selectedPhase || !selectedPhaseRow) return { seasons, competitions, phases, games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition, selectedPhase: null };
+  if (!selectedTournament || !selectedPhase || !selectedPhaseRow) return { seasons, competitions, tournaments, phases, games: [], standings: [], seriesHistory: [], bracket: null, teamView: null, selectedSeason, selectedCompetition, selectedTournament, selectedPhase: null };
 
   const [teamResult, gameResult, matchReportAvailability] = await Promise.all([
     db.prepare(`SELECT t.id, COALESCE(NULLIF(TRIM(st.display_name), ''), t.name) AS name, NULLIF(TRIM(t.logo_url), '') AS logo_url
@@ -597,7 +634,10 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
     ...projectAdministrativeGameResult(game),
     finalized_statistics_available: matchReportAvailability[game.id]?.available === true,
   }));
-  const bracket = buildCompetitionBracketProjection(phaseRows, phases, selectedCompetition.id, canonicalGames, teams);
+  const tournamentPhaseRows = phaseRows.filter((phase) => selectedTournamentPhaseIds.has(phase.id));
+  const tournamentPhases = phases.filter((phase) => selectedTournamentPhaseIds.has(phase.id));
+  const tournamentGames = canonicalGames.filter((game) => selectedTournamentPhaseIds.has(game.phase_id));
+  const bracket = buildCompetitionBracketProjection(tournamentPhaseRows, tournamentPhases, selectedCompetition.id, tournamentGames, teams);
   const games = canonicalGames.filter((game) => game.phase_id === selectedPhase.id)
     .map((row) => normalizePublicGame(row, selectedPhase.format))
     .filter((game): game is PublicGame => game !== null);
@@ -624,16 +664,16 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
       selectedTeam.id,
       organizationId,
     )]);
-    const publicPhaseById = new Map(phases.map((phase) => [phase.id, phase]));
+    const publicPhaseById = new Map(tournamentPhases.map((phase) => [phase.id, phase]));
     const phaseById = new Map<string, { name: string; format: PublicPhase["format"]; order: number }>();
-    for (const row of phaseRows) {
+    for (const row of tournamentPhaseRows) {
       const phase = publicPhaseById.get(row.id);
       if (phase && typeof row.phase_order === "number") {
         phaseById.set(row.id, { name: phase.name, format: phase.format, order: row.phase_order });
       }
     }
     const statusRank: Record<PublicTeamGame['status'], number> = { scheduled: 0, completed: 1, postponed: 2, cancelled: 3 };
-    const normalizedTeamGames = canonicalGames.flatMap((row): PublicTeamGame[] => {
+    const normalizedTeamGames = tournamentGames.flatMap((row): PublicTeamGame[] => {
       if (row.home_team_id !== selectedTeam.id && row.away_team_id !== selectedTeam.id) return [];
       const phase = phaseById.get(row.phase_id);
       if (!phase || !isPublicTeamGameStatus(row.status)) return [];
@@ -654,7 +694,11 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
       gameMode: selectedCompetition.gameMode,
       roster,
       games: normalizedTeamGames,
-      statistics: buildPublicTeamStatistics({ team: { id: selectedTeam.id, name: selectedTeam.name }, roster, games: statisticalGames }),
+      statistics: buildPublicTeamStatistics({
+        team: { id: selectedTeam.id, name: selectedTeam.name },
+        roster,
+        games: statisticalGames.filter((game) => tournamentGames.some((candidate) => candidate.id === game.gameId)),
+      }),
     };
   }
   let standings: PublicStandingRow[] = [];
@@ -688,7 +732,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
       } });
     }
   }
-  return { seasons, competitions, phases, games, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedPhase: { ...selectedPhase, directAdvancements } };
+  return { seasons, competitions, tournaments, phases, games, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedTournament, selectedPhase: { ...selectedPhase, directAdvancements } };
 }
 
 export async function getPublicCompetitionContextForOrganization(
@@ -696,6 +740,7 @@ export async function getPublicCompetitionContextForOrganization(
   input: {
     seasonSlug?: string | null;
     competitionSlug?: string | null;
+    tournamentSlug?: string | null;
     phaseSlug?: string | null;
     teamId?: string | null;
   } = {},
@@ -775,6 +820,7 @@ export async function listPublicCompetitionMovementsForOrganization(
 export async function getPublicCompetitionContext(input: {
   seasonSlug?: string | null;
   competitionSlug?: string | null;
+  tournamentSlug?: string | null;
   phaseSlug?: string | null;
   teamId?: string | null;
 } = {}): Promise<PublicCompetitionContext> {

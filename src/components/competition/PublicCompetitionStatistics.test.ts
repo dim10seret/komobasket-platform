@@ -48,6 +48,8 @@ describe("public Statistics and MVP V1 presentation", () => {
   it("renders a Top 20 ranking table", () => { expect(component).toContain("Top 20"); expect(component).toContain("ΠΑΙΚΤΗΣ"); expect(component).toContain("ΟΜΑΔΑ"); expect(component).toContain("ΕΠΙΔΟΣΗ"); });
   it("shows made-attempted shooting rankings", () => { expect(component).toContain("threePointMade"); expect(component).toContain("twoPointAttempts"); expect(component).toContain("freeThrowMade"); });
   it("renders the matchday selector", () => { expect(component).toContain("Αγωνιστική"); expect(component).toContain("statistics.matchdays.map"); });
+  it("renders a root Tournament selector only when multiple roots exist", () => { expect(component).toContain("data.tournaments.length > 1"); expect(component).toContain("Θεσμός"); expect(component).toContain('params.set("tournament", tournament)'); });
+  it("passes Tournament query state through central Statistics", () => { expect(page).toContain("tournament?: string"); expect(page).toContain("tournamentSlug: query.tournament"); });
   it("renders Top Performance game statistics", () => { for (const label of ["PTS", "REB", "AST", "STL", "BLK", "EFF"]) expect(component).toContain(`"${label}"`); });
   it("explains that incomplete matchday performance waits for every game", () => expect(component).toContain("Το Top Performance θα ανακοινωθεί μετά την ολοκλήρωση όλων των αγώνων της αγωνιστικής."));
   it("never renders a provisional card in the incomplete branch", () => expect(component).toContain('matchday?.incomplete ? <p className="mt-5'));

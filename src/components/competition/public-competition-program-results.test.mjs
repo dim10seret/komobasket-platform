@@ -139,6 +139,9 @@ describe("public standalone Program and Results", () => {
     expect(source).toContain('id="program-results"');
     expect(source).toContain('<PublicCompactSelector label="Σεζόν"');
     expect(source).toContain('<PublicCompactSelector label="Διοργάνωση"');
+    expect(source).toContain('<PublicCompactSelector label="Θεσμός"');
+    expect(source).toContain("context.selectedTournament?.phaseIds");
+    expect(source).toContain('params.set("tournament", context.selectedTournament.slug)');
     expect(source).not.toContain("const visibleRounds");
     expect(source).toContain("programBlock?: string");
     expect(source).toContain("← Προηγούμενη");

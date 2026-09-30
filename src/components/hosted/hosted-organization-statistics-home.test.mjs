@@ -3,7 +3,7 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import HostedOrganizationHomeData, { PublicHomeCompetitiveBlocks, selectHostedHomePhaseContext, selectHostedLatestResultsBlock, selectHostedNextCompetitiveBlock } from "./HostedOrganizationHomeData";
+import HostedOrganizationHomeData, { PublicHomeCompetitiveBlocks, selectHostedHomePhaseContext, selectHostedLatestResultsBlock, selectHostedNextCompetitiveBlock, selectHostedTournamentHomeGroups } from "./HostedOrganizationHomeData";
 
 const source = (relativePath) => fs.readFileSync(path.resolve(import.meta.dirname, relativePath), "utf8");
 const statisticsService = source("../../services/public-competition-statistics.service.ts");
@@ -33,12 +33,23 @@ const fixtureGame = (id, roundNumber, publicStatus, options = {}) => ({
   homeTeam: fixtureTeam(`${id}-home`, `${id} HOME`),
   awayTeam: fixtureTeam(`${id}-away`, `${id} AWAY`),
 });
-const fixtureContext = (format, games, seriesHistory = [], phase = {}) => ({
-  seasons: [], competitions: [], phases: [], games, standings: [], seriesHistory, bracket: null, teamView: null,
-  selectedSeason: { id: "season-run", slug: "2026-27", name: "2026-27" },
-  selectedCompetition: { id: "competition-run", slug: "run-cup", name: "RUN CUP", type: "league", lifecycleStatus: "online", gameMode: "FULL" },
-  selectedPhase: { id: "phase-run", slug: "phase", name: "Phase", phaseOrder: phase.phaseOrder ?? 1, lifecycleStatus: phase.lifecycleStatus ?? "active", format, phaseType: format, participantCount: 8, roundCount: 8, winsRequired: format === "series" ? 2 : null, directAdvancements: [], standingsPresentation: { directQualification: [], playOut: [], eliminated: [] }, ...phase },
-});
+const fixtureContext = (format, games, seriesHistory = [], phase = {}) => {
+  const phaseId = phase.id ?? "phase-run";
+  const rootPhaseId = phase.rootPhaseId ?? phaseId;
+  const tournamentName = phase.tournamentName ?? phase.name ?? "Phase";
+  const tournamentSlug = phase.tournamentSlug ?? rootPhaseId;
+  const selectedPhase = { id: phaseId, slug: "phase", name: "Phase", previousPhaseId: phaseId === rootPhaseId ? null : rootPhaseId, rootPhaseId, tournamentName, phaseOrder: phase.phaseOrder ?? 1, lifecycleStatus: phase.lifecycleStatus ?? "active", format, phaseType: format, participantCount: 8, roundCount: 8, winsRequired: format === "series" ? 2 : null, directAdvancements: [], standingsPresentation: { directQualification: [], playOut: [], eliminated: [] }, ...phase };
+  const rootPhase = { ...selectedPhase, id: rootPhaseId, slug: tournamentSlug, name: tournamentName, previousPhaseId: null, phaseOrder: phase.rootPhaseOrder ?? selectedPhase.phaseOrder };
+  const phases = phase.phases ?? (phaseId === rootPhaseId ? [selectedPhase] : [rootPhase, selectedPhase]);
+  const selectedTournament = { rootPhaseId, slug: tournamentSlug, name: tournamentName, phaseIds: phases.map((entry) => entry.id), finalized: false };
+  return {
+    seasons: [], competitions: [], tournaments: [selectedTournament], phases, games, standings: [], seriesHistory, bracket: null, teamView: null,
+    selectedSeason: { id: "season-run", slug: "2026-27", name: "2026-27" },
+    selectedCompetition: { id: "competition-run", slug: "run-cup", name: "RUN CUP", type: "league", lifecycleStatus: "online", gameMode: "FULL" },
+    selectedTournament,
+    selectedPhase,
+  };
+};
 
 describe("hosted organization statistics and dynamic home", () => {
   it("parameterizes statistics while preserving the central wrapper", () => { expect(statisticsService).toContain("readPublicCompetitionStatisticsForOrganizationWithDb"); expect(statisticsService).toContain("readAuthoritativeCompetitionStatisticalGamesWithDb(database, selectedCompetitionRow.competition_id, organizationId)"); expect(statisticsService).toContain("readPublicCompetitionStatisticsForOrganization(PUBLIC_KOMOBASKET_ORGANIZATION_ID, input)"); });
@@ -234,6 +245,7 @@ describe("hosted organization statistics and dynamic home", () => {
     for (const value of [">4<", ">3<", ">1<", "315–290", "+25", ">0<", ">17<"]) expect(body).toContain(value);
     expect(html).toContain('href="/runbasket/statistics"');
     expect(html).toContain("Στατιστικά &amp; MVP");
+    expect(html).not.toContain('aria-label="Θεσμός ');
   });
 
   it.each(["series", "custom"])("renders the current %s phase and canonical round instead of standings", (format) => {
@@ -268,6 +280,56 @@ describe("hosted organization statistics and dynamic home", () => {
     expect(html).toContain("CURRENT PHASE");
     expect(html).not.toContain("COMPLETED PHASE");
     expect(html).not.toContain("ΒΑΘΜΟΛΟΓΙΑ");
+  });
+
+  it("resolves and renders one independent current phase, latest result and upcoming block per root Tournament", () => {
+    const league = fixtureContext("standings", [
+      fixtureGame("league-final", 1, "completed", { homeScore: 71, awayScore: 66 }),
+      fixtureGame("league-next", 2, "scheduled", { roundLabel: "2η Αγωνιστική" }),
+    ], [], { id: "league-current", name: "LEAGUE CURRENT", rootPhaseId: "league-root", tournamentName: "KomoBasket League", tournamentSlug: "league", rootPhaseOrder: 1, phaseOrder: 3 });
+    league.standings = [{ rank: 1, team: fixtureTeam("league-team", "LEAGUE TABLE TEAM"), gamesPlayed: 1, wins: 1, losses: 0, pointsFor: 71, pointsAgainst: 66, pointDifference: 5, standingsPoints: 2 }];
+    const cupHistory = [{
+      matchupId: "cup-matchup", label: "Cup Series", maximumSeriesRounds: 3,
+      rounds: [
+        { roundNumber: 1, kind: "game", sourcePhaseName: null, game: fixtureGame("cup-final", 1, "completed", { roundLabel: "ΓΥΡΟΣ 1" }) },
+        { roundNumber: 2, kind: "game", sourcePhaseName: null, game: fixtureGame("cup-next", 2, "scheduled", { roundLabel: "ΓΥΡΟΣ 2" }) },
+      ],
+      summary: { teamAId: "cup-a", teamAName: "CUP TEAM A", teamBId: "cup-b", teamBName: "CUP TEAM B", winsRequired: 2, currentWinsA: 1, currentWinsB: 0, qualifiedTeamId: null, qualifiedTeamName: null, transferredRoundCount: 0 },
+    }];
+    const cup = fixtureContext("series", [], cupHistory, { id: "cup-current", name: "CUP CURRENT", rootPhaseId: "cup-root", tournamentName: "Komo Cup", tournamentSlug: "cup", rootPhaseOrder: 2, phaseOrder: 4 });
+    const groups = selectHostedTournamentHomeGroups([cup, league]);
+    expect(groups.map((group) => [group.rootPhaseId, group.currentContext?.selectedPhase?.id])).toEqual([["league-root", "league-current"], ["cup-root", "cup-current"]]);
+
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "runbasket", context: league, phaseContexts: [cup, league] }));
+    const leagueStart = html.indexOf('aria-label="Θεσμός KomoBasket League"');
+    const cupStart = html.indexOf('aria-label="Θεσμός Komo Cup"');
+    expect(leagueStart).toBeGreaterThanOrEqual(0);
+    expect(cupStart).toBeGreaterThan(leagueStart);
+    const leagueHtml = html.slice(leagueStart, cupStart);
+    const cupHtml = html.slice(cupStart);
+    for (const value of ["LEAGUE CURRENT", "LEAGUE TABLE TEAM", "league-final HOME", "league-next HOME", "tournament=league"]) expect(leagueHtml).toContain(value);
+    expect(leagueHtml).not.toContain("CUP CURRENT");
+    for (const value of ["CUP CURRENT", "CUP TEAM A", "cup-final HOME", "cup-next HOME", "tournament=cup", "Πρόκριση στις 2 νίκες"]) expect(cupHtml).toContain(value);
+    expect(cupHtml).not.toContain("LEAGUE CURRENT");
+  });
+
+  it("keeps a cross-root carry-over inside the target Tournament without merging root identity", () => {
+    const league = fixtureContext("standings", [fixtureGame("league-next", 2, "scheduled")], [], { id: "league-current", name: "LEAGUE SOURCE", rootPhaseId: "league-root", tournamentName: "KomoBasket League", tournamentSlug: "league", rootPhaseOrder: 1 });
+    const transferredGame = fixtureGame("league-carried", 1, "completed", { homeScore: 80, awayScore: 70, roundLabel: "ΓΥΡΟΣ 1" });
+    const cup = fixtureContext("series", [], [{
+      matchupId: "cup-carried", label: "Cup carried series", maximumSeriesRounds: 3,
+      rounds: [
+        { roundNumber: 1, kind: "transferred", sourcePhaseName: "LEAGUE SOURCE", game: transferredGame },
+        { roundNumber: 2, kind: "game", sourcePhaseName: null, game: fixtureGame("cup-next", 2, "scheduled", { roundLabel: "ΓΥΡΟΣ 2" }) },
+      ],
+      summary: { teamAId: transferredGame.homeTeam.id, teamAName: "CUP TEAM A", teamBId: transferredGame.awayTeam.id, teamBName: "CUP TEAM B", winsRequired: 2, currentWinsA: 1, currentWinsB: 0, qualifiedTeamId: null, qualifiedTeamName: null, transferredRoundCount: 1 },
+    }], { id: "cup-current", name: "CUP CURRENT", rootPhaseId: "cup-root", tournamentName: "Komo Cup", tournamentSlug: "cup", rootPhaseOrder: 2 });
+    const html = renderToStaticMarkup(createElement(HostedOrganizationHomeData, { organizationSlug: "runbasket", context: league, phaseContexts: [league, cup] }));
+    const cupHtml = html.slice(html.indexOf('aria-label="Θεσμός Komo Cup"'));
+    expect(cupHtml).toContain("Μεταφορά");
+    expect(cupHtml).toContain("1 νίκη από μεταφορά");
+    expect(cupHtml).toContain("CUP CURRENT");
+    expect(selectHostedTournamentHomeGroups([league, cup]).map((group) => group.rootPhaseId)).toEqual(["league-root", "cup-root"]);
   });
 
   it.each([null, fixtureContext("standings", [fixtureGame("final", 1, "completed")], [], { lifecycleStatus: "finalized" })])("shows a neutral empty summary when no current phase resolves", (context) => {

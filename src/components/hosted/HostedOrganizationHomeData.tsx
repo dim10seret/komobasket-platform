@@ -52,6 +52,42 @@ export function selectHostedHomePhaseContext(contexts: PublicCompetitionContext[
     }) ?? null;
 }
 
+export type HostedTournamentHomeGroup = {
+  rootPhaseId: string;
+  tournamentName: string;
+  contexts: PublicCompetitionContext[];
+  currentContext: PublicCompetitionContext | null;
+};
+
+export function selectHostedTournamentHomeGroups(contexts: PublicCompetitionContext[]): HostedTournamentHomeGroup[] {
+  const competitionId = contexts.find((context) => context.selectedCompetition)?.selectedCompetition?.id;
+  if (!competitionId) return [];
+  const groups = new Map<string, { rootPhaseId: string; tournamentName: string; rootPhaseOrder: number; contexts: PublicCompetitionContext[] }>();
+  for (const context of contexts) {
+    const phase = context.selectedPhase;
+    if (!phase || context.selectedCompetition?.id !== competitionId) continue;
+    const rootPhaseId = phase.rootPhaseId || context.selectedTournament?.rootPhaseId || phase.id;
+    const rootPhase = context.phases.find((candidate) => candidate.id === rootPhaseId);
+    const existing = groups.get(rootPhaseId);
+    const group = existing ?? {
+      rootPhaseId,
+      tournamentName: context.selectedTournament?.name || phase.tournamentName || rootPhase?.name || phase.name,
+      rootPhaseOrder: rootPhase?.phaseOrder ?? (phase.id === rootPhaseId ? phase.phaseOrder : Number.MAX_SAFE_INTEGER),
+      contexts: [],
+    };
+    group.contexts.push(context);
+    groups.set(rootPhaseId, group);
+  }
+  return [...groups.values()]
+    .sort((left, right) => left.rootPhaseOrder - right.rootPhaseOrder || left.rootPhaseId.localeCompare(right.rootPhaseId))
+    .map(({ rootPhaseId, tournamentName, contexts: groupContexts }) => ({
+      rootPhaseId,
+      tournamentName,
+      contexts: groupContexts,
+      currentContext: selectHostedHomePhaseContext(groupContexts),
+    }));
+}
+
 export function selectHostedLatestResultsBlock(contexts: PublicCompetitionContext[]): HostedNextCompetitiveBlock | null {
   const competitionId = contexts.find((context) => context.selectedCompetition)?.selectedCompetition?.id;
   if (!competitionId) return null;
@@ -244,28 +280,35 @@ function HostedCurrentSeriesSummary({ context }: { context: PublicCompetitionCon
   </div>;
 }
 
-export default function HostedOrganizationHomeData({ organizationSlug, context, phaseContexts = [] }: { organizationSlug: string; context: PublicCompetitionContext | null; phaseContexts?: PublicCompetitionContext[] }) {
+function HostedSingleTournamentHomeData({ organizationSlug, context, phaseContexts = [], showCompetitionDirectory = true, tournamentHeading = null, includeTournamentContext = false }: { organizationSlug: string; context: PublicCompetitionContext | null; phaseContexts?: PublicCompetitionContext[]; showCompetitionDirectory?: boolean; tournamentHeading?: string | null; includeTournamentContext?: boolean }) {
   const competitionsPath = hostedOrganizationPath(organizationSlug, "competitions");
-  const statisticsPath = hostedOrganizationPath(organizationSlug, "statistics");
+  const statisticsBasePath = hostedOrganizationPath(organizationSlug, "statistics");
   const selectedSeason = context?.selectedSeason ?? null;
   const competitionHref = (competitionSlug: string) => selectedSeason ? `${competitionsPath}?${new URLSearchParams({ season: selectedSeason.slug, competition: competitionSlug })}` : competitionsPath;
   const currentContext = selectHostedHomePhaseContext(phaseContexts.length > 0 ? phaseContexts : context ? [context] : []);
   const currentPhase = currentContext?.selectedPhase ?? null;
   const standings = currentContext?.selectedPhase?.format === "standings" ? currentContext.standings.slice(0, 5) : [];
   const currentRound = selectHostedNextCompetitiveBlock(currentContext);
+  const tournamentParams = currentContext?.selectedSeason && currentContext.selectedCompetition
+    ? new URLSearchParams({ season: currentContext.selectedSeason.slug, competition: currentContext.selectedCompetition.slug })
+    : null;
+  if (includeTournamentContext && tournamentParams && currentContext?.selectedTournament) tournamentParams.set("tournament", currentContext.selectedTournament.slug);
+  const statisticsPath = includeTournamentContext && tournamentParams ? `${statisticsBasePath}?${tournamentParams}` : statisticsBasePath;
+  if (currentPhase && tournamentParams) tournamentParams.set("phase", currentPhase.slug);
   const currentPhaseHref = currentContext?.selectedSeason && currentContext.selectedCompetition && currentPhase
-    ? `${competitionsPath}?${new URLSearchParams({ season: currentContext.selectedSeason.slug, competition: currentContext.selectedCompetition.slug, phase: currentPhase.slug })}#program-results`
+    ? `${competitionsPath}?${tournamentParams}#program-results`
     : competitionsPath;
-  return <section className="bg-stone-50 px-5 py-12 sm:px-7 sm:py-16" aria-label="Αγωνιστική εικόνα Οργανισμού">
+  return <section className="bg-stone-50 px-5 py-12 sm:px-7 sm:py-16" aria-label={tournamentHeading ? `Θεσμός ${tournamentHeading}` : "Αγωνιστική εικόνα Οργανισμού"}>
     <div className="mx-auto max-w-6xl space-y-10">
-      <section><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.2em] text-orange-600">Δημόσιες διοργανώσεις</p><h2 className="mt-2 text-3xl font-black">ΔΙΟΡΓΑΝΩΣΕΙΣ</h2></div><Link href={competitionsPath} className="rounded-full bg-zinc-950 px-5 py-2.5 text-sm font-black text-white">Όλες οι διοργανώσεις</Link></div>{context?.competitions.length ? <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{context.competitions.map((competition) => <Link key={competition.id} href={competitionHref(competition.slug)} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:border-orange-400"><span className="text-xs font-black uppercase tracking-wide text-orange-700">{selectedSeason?.name}</span><strong className="mt-2 block text-xl text-zinc-950">{competition.name}</strong></Link>)}</div> : <p className="mt-5 rounded-2xl border border-zinc-200 bg-white p-6 font-bold text-zinc-600">Δεν υπάρχουν διαθέσιμες διοργανώσεις.</p>}</section>
+      {showCompetitionDirectory ? <section><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.2em] text-orange-600">Δημόσιες διοργανώσεις</p><h2 className="mt-2 text-3xl font-black">ΔΙΟΡΓΑΝΩΣΕΙΣ</h2></div><Link href={competitionsPath} className="rounded-full bg-zinc-950 px-5 py-2.5 text-sm font-black text-white">Όλες οι διοργανώσεις</Link></div>{context?.competitions.length ? <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{context.competitions.map((competition) => <Link key={competition.id} href={competitionHref(competition.slug)} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:border-orange-400"><span className="text-xs font-black uppercase tracking-wide text-orange-700">{selectedSeason?.name}</span><strong className="mt-2 block text-xl text-zinc-950">{competition.name}</strong></Link>)}</div> : <p className="mt-5 rounded-2xl border border-zinc-200 bg-white p-6 font-bold text-zinc-600">Δεν υπάρχουν διαθέσιμες διοργανώσεις.</p>}</section> : null}
+      {tournamentHeading ? <header className="rounded-3xl border border-orange-200 bg-orange-50 px-5 py-4 shadow-sm sm:px-7"><p className="text-xs font-black uppercase tracking-[.2em] text-orange-700">Θεσμός</p><h2 className="mt-1 text-2xl font-black text-zinc-950">{tournamentHeading}</h2></header> : null}
       <PublicHomeCompetitiveBlocks
         context={context}
         phaseContexts={phaseContexts}
         gameBasePath={`${competitionsPath}/games`}
         liveGameHref={(gameId) => hostedCompetitionGamePath(organizationSlug, gameId, true)}
       />
-      {currentPhase?.format === "standings" ? <section className="rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.18em] text-orange-400">{context?.selectedCompetition?.name ?? "Βαθμολογία"}</p><h2 className="mt-2 text-2xl font-black">ΒΑΘΜΟΛΟΓΙΑ</h2></div><Link href={statisticsPath} className="rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Στατιστικά &amp; MVP</Link></div>{standings.length ? <div className="mt-5 max-w-full overflow-x-auto rounded-2xl border border-zinc-700" tabIndex={0} aria-label="Βαθμολογία Οργανισμού"><table className="w-full min-w-[720px] border-collapse text-sm"><thead><tr className="bg-zinc-900 text-xs font-black uppercase tracking-wide text-zinc-300"><th className="px-3 py-3 text-center">Θ</th><th className="px-3 py-3 text-left">ΟΜΑΔΑ</th><th className="px-3 py-3 text-center">ΑΓ</th><th className="px-3 py-3 text-center">Ν</th><th className="px-3 py-3 text-center">Η</th><th className="px-3 py-3 text-center">ΥΠ</th><th className="px-3 py-3 text-center">Δ</th><th className="px-3 py-3 text-center">Β</th></tr></thead><tbody>{standings.map((row) => <tr key={row.team.id} className="border-t border-zinc-700 bg-zinc-950"><td className="px-3 py-3 text-center font-black text-orange-400">{row.rank}</td><td className="whitespace-nowrap px-3 py-3 font-black">{row.team.name}</td><td className="px-3 py-3 text-center tabular-nums">{row.gamesPlayed}</td><td className="px-3 py-3 text-center tabular-nums">{row.wins}</td><td className="px-3 py-3 text-center tabular-nums">{row.losses}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointsFor}–{row.pointsAgainst}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointDifference > 0 ? `+${row.pointDifference}` : row.pointDifference}</td><td className="px-3 py-3 text-center font-black tabular-nums">{row.standingsPoints}</td></tr>)}</tbody></table></div> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη βαθμολογία για την επιλεγμένη διοργάνωση και φάση.</p>}</section> : <section className="min-w-0 rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7" aria-label="Τρέχουσα φάση">
+      {currentPhase?.format === "standings" ? <section className="rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.18em] text-orange-400">{tournamentHeading ? currentPhase?.name ?? tournamentHeading : context?.selectedCompetition?.name ?? "Βαθμολογία"}</p><h2 className="mt-2 text-2xl font-black">ΒΑΘΜΟΛΟΓΙΑ</h2></div><Link href={statisticsPath} className="rounded-full border border-zinc-600 px-5 py-2.5 text-sm font-black hover:border-orange-400">Στατιστικά &amp; MVP</Link></div>{standings.length ? <div className="mt-5 max-w-full overflow-x-auto rounded-2xl border border-zinc-700" tabIndex={0} aria-label="Βαθμολογία Οργανισμού"><table className="w-full min-w-[720px] border-collapse text-sm"><thead><tr className="bg-zinc-900 text-xs font-black uppercase tracking-wide text-zinc-300"><th className="px-3 py-3 text-center">Θ</th><th className="px-3 py-3 text-left">ΟΜΑΔΑ</th><th className="px-3 py-3 text-center">ΑΓ</th><th className="px-3 py-3 text-center">Ν</th><th className="px-3 py-3 text-center">Η</th><th className="px-3 py-3 text-center">ΥΠ</th><th className="px-3 py-3 text-center">Δ</th><th className="px-3 py-3 text-center">Β</th></tr></thead><tbody>{standings.map((row) => <tr key={row.team.id} className="border-t border-zinc-700 bg-zinc-950"><td className="px-3 py-3 text-center font-black text-orange-400">{row.rank}</td><td className="whitespace-nowrap px-3 py-3 font-black">{row.team.name}</td><td className="px-3 py-3 text-center tabular-nums">{row.gamesPlayed}</td><td className="px-3 py-3 text-center tabular-nums">{row.wins}</td><td className="px-3 py-3 text-center tabular-nums">{row.losses}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointsFor}–{row.pointsAgainst}</td><td className="px-3 py-3 text-center tabular-nums">{row.pointDifference > 0 ? `+${row.pointDifference}` : row.pointDifference}</td><td className="px-3 py-3 text-center font-black tabular-nums">{row.standingsPoints}</td></tr>)}</tbody></table></div> : <p className="mt-5 rounded-2xl bg-zinc-900 p-5 font-bold text-zinc-300">Δεν υπάρχει διαθέσιμη βαθμολογία για την επιλεγμένη διοργάνωση και φάση.</p>}</section> : <section className="min-w-0 rounded-3xl bg-zinc-950 p-5 text-white shadow-xl sm:p-7" aria-label="Τρέχουσα φάση">
         <h2 className="text-2xl font-black">ΤΡΕΧΟΥΣΑ ΦΑΣΗ</h2>
         {currentPhase ? <>
           <h3 className="mt-4 whitespace-normal break-normal text-xl font-black">{currentPhase.name}</h3>
@@ -276,4 +319,21 @@ export default function HostedOrganizationHomeData({ organizationSlug, context, 
       </section>}
     </div>
   </section>;
+}
+
+export default function HostedOrganizationHomeData({ organizationSlug, context, phaseContexts = [] }: { organizationSlug: string; context: PublicCompetitionContext | null; phaseContexts?: PublicCompetitionContext[] }) {
+  const sourceContexts = phaseContexts.length > 0 ? phaseContexts : context ? [context] : [];
+  const tournamentGroups = selectHostedTournamentHomeGroups(sourceContexts);
+  if (tournamentGroups.length <= 1) {
+    return <HostedSingleTournamentHomeData organizationSlug={organizationSlug} context={context} phaseContexts={phaseContexts} />;
+  }
+  return <>{tournamentGroups.map((group, index) => <HostedSingleTournamentHomeData
+    key={group.rootPhaseId}
+    organizationSlug={organizationSlug}
+    context={group.currentContext ?? group.contexts[0] ?? context}
+    phaseContexts={group.contexts}
+    showCompetitionDirectory={index === 0}
+    tournamentHeading={group.tournamentName}
+    includeTournamentContext
+  />)}</>;
 }

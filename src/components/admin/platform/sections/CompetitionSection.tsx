@@ -3,7 +3,7 @@
 import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
 
 import type { FormEvent, MouseEvent } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Row,
   Snapshot,
@@ -37,6 +37,7 @@ import {
 import { deriveSeriesPhaseCompletion } from "@/lib/series-phase-completion";
 import { ProgramGamesSection } from "./ProgramGamesSection";
 import { selectCompetitionLatestMovements } from "@/lib/competition-latest-movements";
+import { buildPhaseTournamentGroups } from "@/lib/phase-root-source";
 
 export function CompetitionFields({
   competition,
@@ -171,8 +172,8 @@ export function CompetitionWorkspaceManager({
   const selectedSeason = selectedCompetition
     ? seasonById.get(String(selectedCompetition.season_id ?? ""))
     : null;
-  const selectedCompetitionPhases = useMemo(() => {
-    return data.phases
+  const selectedCompetitionPhaseGroups = useMemo(() => {
+    const phases = data.phases
       .filter((phase) => String(phase.competition_id ?? "") === String(workspaceCompetitionId))
       .sort((left, right) => {
         const leftOrder = Number(left.phase_order ?? left.order_index ?? 0);
@@ -180,7 +181,28 @@ export function CompetitionWorkspaceManager({
         if (leftOrder !== rightOrder) return leftOrder - rightOrder;
         return String(left.id).localeCompare(String(right.id));
       });
+    try {
+      return buildPhaseTournamentGroups(phases.map((phase) => ({
+        ...phase,
+        id: String(phase.id ?? ""),
+        competition_id: String(phase.competition_id ?? ""),
+      })));
+    } catch {
+      return phases.map((phase) => ({
+        rootPhaseId: String(phase.id ?? ""),
+        tournamentName: String(phase.tournament_name ?? phase.name ?? "—"),
+        phases: [phase],
+        finalized: String(phase.lifecycle_status ?? "active") === "finalized",
+      }));
+    }
   }, [data.phases, workspaceCompetitionId]);
+  const selectedCompetitionPhases = useMemo(
+    () => selectedCompetitionPhaseGroups.flatMap((group) => group.phases),
+    [selectedCompetitionPhaseGroups],
+  );
+  const tournamentGroupByPhaseId = useMemo(() => new Map(
+    selectedCompetitionPhaseGroups.flatMap((group) => group.phases.map((phase) => [String(phase.id), group] as const)),
+  ), [selectedCompetitionPhaseGroups]);
   const [openPhaseId, setOpenPhaseId] = useState<string | null>(null);
   const hasInitializedOpenPhase = useRef(false);
   const [editingPhaseId, setEditingPhaseId] = useState<string | null>(null);
@@ -190,7 +212,8 @@ export function CompetitionWorkspaceManager({
   const [activateLatestPhaseAfterAdd, setActivateLatestPhaseAfterAdd] = useState(false);
   const [newPhaseName, setNewPhaseName] = useState("");
   const [newPhaseFormat, setNewPhaseFormat] = useState<"standings" | "series">("standings");
-  const [newPhasePreviousId, setNewPhasePreviousId] = useState("");
+  const [newPhasePreviousId, setNewPhasePreviousId] = useState<string | null>(null);
+  const [newPhaseTournamentName, setNewPhaseTournamentName] = useState("");
   const [finalizePhaseDialog, setFinalizePhaseDialog] = useState<{ phaseId: string; phaseName: string; competitionId: string; phaseFormat: string } | null>(null);
   const [finalizePhaseConfirmation, setFinalizePhaseConfirmation] = useState("");
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
@@ -416,13 +439,6 @@ export function CompetitionWorkspaceManager({
       setActivePhaseId(String(selectedCompetitionPhases[0].id));
     }
   }, [activePhaseId, activateLatestPhaseAfterAdd, selectedCompetitionPhases]);
-
-  useEffect(() => {
-    if (!showAddPhaseForm || addPhaseChoice !== "new") return;
-    if (newPhasePreviousId && selectedCompetitionPhases.some((phase) => String(phase.id) === newPhasePreviousId)) return;
-    const fallbackPrevious = selectedCompetitionPhases[selectedCompetitionPhases.length - 1];
-    setNewPhasePreviousId(fallbackPrevious ? String(fallbackPrevious.id) : "");
-  }, [addPhaseChoice, newPhasePreviousId, selectedCompetitionPhases, showAddPhaseForm]);
 
   useEffect(() => {
     if (workspaceCompetitionId) {
@@ -793,7 +809,8 @@ export function CompetitionWorkspaceManager({
                           setSeriesContinuationSeed(null);
                           setNewPhaseName("");
                           setNewPhaseFormat("standings");
-                          setNewPhasePreviousId("");
+                          setNewPhasePreviousId(null);
+                           setNewPhaseTournamentName("");
                           setActivateLatestPhaseAfterAdd(true);
                         }}
                         className="grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2"
@@ -809,6 +826,22 @@ export function CompetitionWorkspaceManager({
                             placeholder="Προημιτελικά"
                           />
                         </Field>
+                        {!newPhasePreviousId ? (
+                          <Field label="Όνομα Θεσμού / Σειράς Φάσεων">
+                            <input
+                              required
+                              name="tournamentName"
+                              value={newPhaseTournamentName}
+                              onChange={(event) => setNewPhaseTournamentName(event.target.value)}
+                              className={inputClass}
+                              placeholder="KomoBasket League / Komo Cup"
+                            />
+                          </Field>
+                        ) : (
+                          <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+                            Θεσμός / Σειρά Φάσεων: <span className="font-black">{tournamentGroupByPhaseId.get(newPhasePreviousId)?.tournamentName ?? "—"}</span>
+                          </div>
+                        )}
                         <Field label="Μορφή">
                           <select
                             name="format"
@@ -823,8 +856,8 @@ export function CompetitionWorkspaceManager({
                         <Field label="Ακολουθεί τη Φάση">
                           <select
                             name="previousPhaseId"
-                            value={newPhasePreviousId}
-                            onChange={(event) => setNewPhasePreviousId(event.target.value)}
+                            value={newPhasePreviousId ?? ""}
+                            onChange={(event) => setNewPhasePreviousId(event.target.value || null)}
                             className={inputClass}
                           >
                             <option value="">Καμία</option>
@@ -849,7 +882,8 @@ export function CompetitionWorkspaceManager({
                               setSeriesContinuationSeed(null);
                               setNewPhaseName("");
                               setNewPhaseFormat("standings");
-                              setNewPhasePreviousId("");
+                              setNewPhasePreviousId(null);
+                              setNewPhaseTournamentName("");
                             }}
                             className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                           >
@@ -875,6 +909,11 @@ export function CompetitionWorkspaceManager({
                 const isEditingPhase = editingPhaseId === phaseIdValue;
                 const phaseOrder = Number(phase.phase_order ?? phase.order_index ?? 0) || index + 1;
                 const phaseFormat = String(phase.format ?? phase.phase_kind ?? "standings");
+                const tournamentGroup = tournamentGroupByPhaseId.get(phaseIdValue);
+                const previousTournamentGroup = index > 0
+                  ? tournamentGroupByPhaseId.get(String(selectedCompetitionPhases[index - 1]?.id ?? ""))
+                  : null;
+                const showTournamentHeader = tournamentGroup?.rootPhaseId !== previousTournamentGroup?.rootPhaseId;
                 const lifecycleStatus = String((phase as Row).lifecycle_status ?? "active");
                 const isFinalized = lifecycleStatus === "finalized";
                 const phaseGames = data.games.filter((game) => String(game.phase_id ?? "") === phaseIdValue);
@@ -939,6 +978,22 @@ export function CompetitionWorkspaceManager({
                   const summaries = describeSeriesMatchupsFromPhase(data, seriesSummaryPhase);
                   return (
                     <>
+                      {String(phase.previous_phase_id ?? "").trim() ? (
+                        <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+                          Θεσμός / Σειρά Φάσεων: <span className="font-black">{tournamentGroup?.tournamentName ?? "—"}</span>
+                        </div>
+                      ) : (
+                        <PlatformForm
+                          onSubmit={(event) => updateEntity("phases", phaseIdValue, event, "Το όνομα του Θεσμού / Σειράς Φάσεων ενημερώθηκε.")}
+                          className="rounded-xl border border-sky-200 bg-sky-50 p-3"
+                        >
+                          <input type="hidden" name="action" value="updateTournamentName" />
+                          <Field label="Όνομα Θεσμού / Σειράς Φάσεων">
+                            <input required name="tournamentName" defaultValue={String(phase.tournament_name ?? phase.name ?? "")} className={inputClass} />
+                          </Field>
+                          <PlatformButton mutation disabled={busy} className={`${buttonClass} mt-3`}>Αποθήκευση ονόματος</PlatformButton>
+                        </PlatformForm>
+                      )}
                       <div className="mt-4 flex flex-wrap items-center gap-3">
                         <span className={isFinalized ? "inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-emerald-700" : "inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700"}>
                           {isFinalized ? "Οριστικοποιημένη" : "Σε εξέλιξη"}
@@ -1029,7 +1084,19 @@ export function CompetitionWorkspaceManager({
                 })();
 
                 return (
-                  <article key={`phase-${phaseIdValue}`} className={`rounded-2xl border ${isExpanded ? "border-orange-300 bg-white" : "border-zinc-200 bg-zinc-50"} p-4 sm:p-5`}>
+                  <Fragment key={`phase-${phaseIdValue}`}>
+                    {showTournamentHeader ? (
+                      <div className="rounded-2xl border border-sky-300 bg-sky-50 px-4 py-3">
+                        <p className="text-xs font-black uppercase tracking-[0.12em] text-sky-700">Θεσμός / Σειρά Φάσεων</p>
+                        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="text-lg font-black text-zinc-950">{tournamentGroup?.tournamentName ?? String(phase.name ?? "—")}</h3>
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-black ${tournamentGroup?.finalized ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                            {tournamentGroup?.finalized ? "Ολοκληρωμένο" : "Σε εξέλιξη"}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
+                  <article className={`rounded-2xl border ${isExpanded ? "border-orange-300 bg-white" : "border-zinc-200 bg-zinc-50"} p-4 sm:p-5`}>
                     <PlatformButton mutation
                       type="button"
                       onClick={() => {
@@ -1064,6 +1131,7 @@ export function CompetitionWorkspaceManager({
                       </div>
                     ) : null}
                   </article>
+                  </Fragment>
                 );
               })}
               {finalizePhaseDialog && (

@@ -23,6 +23,7 @@ export type PublicTopPerformance = {
 
 export type PublicStatisticsMatchday = {
   id: string;
+  phaseId: string | null;
   label: string;
   roundNumber: number;
   finalizedEligibleGames: number;
@@ -45,10 +46,13 @@ export type PublicCompetitionStatistics = {
 };
 
 export type PublicCompetitionStatisticsSourceGame = PublicTeamStatisticsSourceGame & {
+  phaseId?: string | null;
   roundNumber: number | null;
 };
 
 export type PublicCompetitionStatisticsRound = {
+  phaseId?: string | null;
+  phaseOrder?: number;
   roundNumber: number;
   label: string;
   totalRealGames: number;
@@ -122,10 +126,11 @@ export function buildPublicCompetitionStatistics(input: { games: PublicCompetiti
     gamesIncluded: input.games.length,
     leaders: { points: leader("points"), threePointers: leader("threePointers"), rebounds: leader("rebounds"), assists: leader("assists"), efficiency: leader("efficiency") },
     rankings,
-    matchdays: [...input.rounds].sort((left, right) => left.roundNumber - right.roundNumber).map((round) => {
-      const eligible = input.games.filter((game) => game.roundNumber === round.roundNumber);
+    matchdays: [...input.rounds].sort((left, right) => (left.phaseOrder ?? 0) - (right.phaseOrder ?? 0) || left.roundNumber - right.roundNumber || String(left.phaseId ?? "").localeCompare(String(right.phaseId ?? ""))).map((round) => {
+      const phaseId = round.phaseId ?? null;
+      const eligible = input.games.filter((game) => (game.phaseId ?? null) === phaseId && game.roundNumber === round.roundNumber);
       const complete = round.totalRealGames > 0 && eligible.length === round.totalRealGames;
-      return { id: `round-${round.roundNumber}`, label: round.label, roundNumber: round.roundNumber, finalizedEligibleGames: eligible.length, totalRealGames: round.totalRealGames, incomplete: !complete && round.totalRealGames > 0, topPerformance: complete ? topPerformance(eligible) : null };
+      return { id: `${phaseId ?? "legacy"}-round-${round.roundNumber}`, phaseId, label: round.label, roundNumber: round.roundNumber, finalizedEligibleGames: eligible.length, totalRealGames: round.totalRealGames, incomplete: !complete && round.totalRealGames > 0, topPerformance: complete ? topPerformance(eligible) : null };
     }),
   };
 }

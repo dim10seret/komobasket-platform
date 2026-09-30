@@ -30,6 +30,7 @@ export type PublicCompetitionsViewProps = {
   searchParams: Promise<{
     season?: string;
     competition?: string;
+    tournament?: string;
     phase?: string;
     round?: string;
     view?: string;
@@ -38,18 +39,20 @@ export type PublicCompetitionsViewProps = {
   }>;
 };
 
-function competitionHref(basePath: string, season: string, competition?: string, phase?: string, round?: number, all?: boolean, team?: string) {
+function competitionHref(basePath: string, season: string, competition?: string, phase?: string, round?: number, all?: boolean, team?: string, tournament?: string) {
   const params = new URLSearchParams({ season });
   if (competition) params.set("competition", competition);
   if (phase) params.set("phase", phase);
   if (round) params.set("round", String(round));
   if (all) params.set("view", "all");
   if (team) params.set("team", team);
+  if (tournament) params.set("tournament", tournament);
   return `${basePath}?${params}`;
 }
 
-function competitionBracketViewHref(basePath: string, season: string, competition: string, phase: string) {
+function competitionBracketViewHref(basePath: string, season: string, competition: string, phase: string, tournament?: string) {
   const params = new URLSearchParams({ season, competition, phase, view: "bracket" });
+  if (tournament) params.set("tournament", tournament);
   return `${basePath}?${params}`;
 }
 
@@ -136,10 +139,13 @@ async function PublicCompetitionProgramResults({
   if (!context.selectedSeason || !context.selectedCompetition) return null;
   const season = context.selectedSeason;
   const competition = context.selectedCompetition;
-  const phaseContexts = context.phases.length > 0
-    ? await Promise.all(context.phases.map((phase) => getPublicCompetitionContextForOrganization(organizationId, {
+  const selectedPhaseIds = new Set(context.selectedTournament?.phaseIds ?? []);
+  const visiblePhases = context.phases.filter((phase) => selectedPhaseIds.has(phase.id));
+  const phaseContexts = visiblePhases.length > 0
+    ? await Promise.all(visiblePhases.map((phase) => getPublicCompetitionContextForOrganization(organizationId, {
       seasonSlug: season.slug,
       competitionSlug: competition.slug,
+      tournamentSlug: context.selectedTournament?.slug,
       phaseSlug: phase.slug,
     })))
     : [context];
@@ -150,8 +156,13 @@ async function PublicCompetitionProgramResults({
     if (competitionSlug) params.set("competition", competitionSlug);
     return `${basePath}?${params.toString()}#program-results`;
   };
+  const tournamentHref = (tournamentSlug: string) => {
+    const params = new URLSearchParams({ season: season.slug, competition: competition.slug, tournament: tournamentSlug });
+    return `${basePath}?${params.toString()}#program-results`;
+  };
   const blockHref = (blockKey: string) => {
     const params = new URLSearchParams({ season: season.slug, competition: competition.slug, programBlock: blockKey });
+    if (context.selectedTournament) params.set("tournament", context.selectedTournament.slug);
     if (context.selectedPhase) params.set("phase", context.selectedPhase.slug);
     return `${basePath}?${params.toString()}#program-results`;
   };
@@ -160,9 +171,10 @@ async function PublicCompetitionProgramResults({
       <p className="text-xs font-black uppercase tracking-[0.16em] text-orange-700">Επίσημη αγωνιστική εικόνα</p>
       <h2 className="mt-2 text-2xl font-black">Πρόγραμμα &amp; Αποτελέσματα</h2>
     </div>
-    <div className="mt-5 grid gap-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2">
+    <div className={`mt-5 grid gap-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 ${context.tournaments.length > 1 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
       <PublicCompactSelector label="Σεζόν" value={season.name} options={context.seasons.map((item) => ({ id: item.id, label: item.name, href: selectorHref(item.slug) }))} />
       <PublicCompactSelector label="Διοργάνωση" value={competition.name} options={context.competitions.map((item) => ({ id: item.id, label: item.name, href: selectorHref(season.slug, item.slug) }))} />
+      {context.tournaments.length > 1 && context.selectedTournament ? <PublicCompactSelector label="Θεσμός" value={context.selectedTournament.name} options={context.tournaments.map((item) => ({ id: item.rootPhaseId, label: item.name, href: tournamentHref(item.slug) }))} /> : null}
     </div>
     {selected ? <>
       <div className="mt-5 rounded-2xl bg-zinc-950 px-4 py-3 text-white">
@@ -180,20 +192,21 @@ async function PublicCompetitionProgramResults({
 }
 export default async function PublicCompetitionsView({ organizationId, basePath, pageHero, searchParams }: PublicCompetitionsViewProps) {
   const query = await searchParams;
-  const href = (season: string, competition?: string, phase?: string, round?: number, all?: boolean, team?: string) => competitionHref(basePath, season, competition, phase, round, all, team);
-  const bracketViewHref = (season: string, competition: string, phase: string) => competitionBracketViewHref(basePath, season, competition, phase);
+  const href = (season: string, competition?: string, phase?: string, round?: number, all?: boolean, team?: string, tournament?: string) => competitionHref(basePath, season, competition, phase, round, all, team, tournament);
+  const bracketViewHref = (season: string, competition: string, phase: string, tournament?: string) => competitionBracketViewHref(basePath, season, competition, phase, tournament);
   const gameBasePath = `${basePath}/games`;
   let context: Awaited<ReturnType<typeof getPublicCompetitionContextForOrganization>> | null = null;
-  try { context = await getPublicCompetitionContextForOrganization(organizationId, { seasonSlug: query.season, competitionSlug: query.competition, phaseSlug: query.phase, teamId: query.team }); } catch {}
+  try { context = await getPublicCompetitionContextForOrganization(organizationId, { seasonSlug: query.season, competitionSlug: query.competition, tournamentSlug: query.tournament, phaseSlug: query.phase, teamId: query.team }); } catch {}
   const latestMovements = context?.selectedSeason && context.selectedCompetition
     ? await listPublicCompetitionMovementsForOrganization(organizationId, context.selectedSeason.id, context.selectedCompetition.id)
     : [];
   const phase = context?.selectedPhase ?? null;
   const bracket = context?.bracket ?? null;
-  const teamHref = context?.selectedSeason && context.selectedCompetition && phase ? (teamId: string) => href(context!.selectedSeason!.slug, context!.selectedCompetition!.slug, phase.slug, undefined, false, teamId) : undefined;
-  const backHref = context?.selectedSeason && context.selectedCompetition && phase ? href(context.selectedSeason.slug, context.selectedCompetition.slug, phase.slug) : basePath;
+  const teamHref = context?.selectedSeason && context.selectedCompetition && phase ? (teamId: string) => href(context!.selectedSeason!.slug, context!.selectedCompetition!.slug, phase.slug, undefined, false, teamId, context!.selectedTournament?.slug) : undefined;
+  const backHref = context?.selectedSeason && context.selectedCompetition && phase ? href(context.selectedSeason.slug, context.selectedCompetition.slug, phase.slug, undefined, false, undefined, context.selectedTournament?.slug) : basePath;
   if (context?.teamView && teamHref && context.selectedSeason && context.selectedCompetition) return <>{pageHero}<TeamView view={context.teamView} backHref={backHref} teamHref={teamHref} gameBasePath={gameBasePath} rosterScope={{ organizationId, seasonId: context.selectedSeason.id, competitionId: context.selectedCompetition.id, teamId: context.teamView.team.id }} /></>;
   const bracketView = query.view === "bracket" && bracket?.meaningful === true;
-  return <>{pageHero}<main className="min-h-[calc(100vh-5rem)] bg-[radial-gradient(circle_at_top,_#fed7aa,_#f4f4f5_42%,_#ffffff_78%)] py-8 sm:py-12"><section className="mx-auto max-w-6xl px-4 sm:px-6">{!pageHero && <><p className="text-sm font-black uppercase tracking-[0.18em] text-orange-700">KomoBasket League</p><h1 className="mt-2 text-4xl font-black tracking-tight text-zinc-950 sm:text-5xl">Διοργανώσεις</h1><p className="mt-3 max-w-2xl text-base leading-7 text-zinc-600">Επιλέξτε σεζόν, διοργάνωση και φάση για να παρακολουθήσετε την επίσημη αγωνιστική εικόνα.</p></>}{!context?.selectedSeason ? <div className="mt-8 rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm"><p className="text-lg font-black">Δεν υπάρχει διαθέσιμη διοργάνωση αυτή τη στιγμή.</p></div> : <div className="mt-8 space-y-5"><section className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm"><div className="grid gap-5 lg:grid-cols-[0.7fr_1fr_1.5fr_auto] lg:items-end"><PublicCompactSelector label="Σεζόν" value={context.selectedSeason.name} options={context.seasons.map((season) => ({ id: season.id, label: season.name, href: href(season.slug) }))} /><PublicCompactSelector label="Διοργάνωση" value={context.selectedCompetition!.name} options={context.competitions.map((competition) => ({ id: competition.id, label: competition.name, href: href(context.selectedSeason!.slug, competition.slug) }))} /><div><p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-500">Φάση</p><div className="mt-2 flex flex-wrap gap-2">{context.phases.map((item) => <Link key={item.id} href={href(context.selectedSeason!.slug, context.selectedCompetition!.slug, item.slug)} className={`rounded-xl border px-3 py-2 text-sm font-black ${item.id === phase?.id ? "border-zinc-950 bg-zinc-950 text-white" : "border-zinc-200 text-zinc-700"}`}>{item.name}</Link>)}</div></div><PublicCompetitionLatestMovements seasonName={context.selectedSeason.name} competitionName={context.selectedCompetition!.name} movements={latestMovements} /></div></section>{phase && <p className="px-1 text-sm font-bold text-zinc-700"><strong className="text-zinc-950">{phase.name}</strong> · {summary(phase)}</p>}{phase && bracket?.meaningful && <nav className="flex flex-wrap gap-2 px-1"><Link href={href(context.selectedSeason!.slug, context.selectedCompetition!.slug, phase.slug)} className={`rounded-full border px-4 py-2 text-sm font-black ${bracketView ? "border-zinc-300 text-zinc-700" : "border-zinc-950 bg-zinc-950 text-white"}`}>Πρόγραμμα &amp; Αποτελέσματα</Link><Link href={bracketViewHref(context.selectedSeason!.slug, context.selectedCompetition!.slug, phase.slug)} className={`rounded-full border px-4 py-2 text-sm font-black ${bracketView ? "border-zinc-950 bg-zinc-950 text-white" : "border-orange-300 bg-orange-50 text-orange-800"}`}>Απεικόνιση Διασταυρώσεων</Link></nav>}{bracketView && bracket ? <CompetitionBracket projection={bracket} /> : <>{phase?.format === "standings" && <Standings phase={phase} rows={context.standings} teamHref={teamHref} />}<PublicCompetitionProgramResults context={context} organizationId={organizationId} basePath={basePath} gameBasePath={gameBasePath} teamHref={teamHref} manualBlockKey={query.programBlock} /></>}</div>}</section></main></>;
+  const tournamentPhases = context?.selectedTournament ? context.phases.filter((item) => context!.selectedTournament!.phaseIds.includes(item.id)) : [];
+  return <>{pageHero}<main className="min-h-[calc(100vh-5rem)] bg-[radial-gradient(circle_at_top,_#fed7aa,_#f4f4f5_42%,_#ffffff_78%)] py-8 sm:py-12"><section className="mx-auto max-w-6xl px-4 sm:px-6">{!pageHero && <><p className="text-sm font-black uppercase tracking-[0.18em] text-orange-700">KomoBasket League</p><h1 className="mt-2 text-4xl font-black tracking-tight text-zinc-950 sm:text-5xl">Διοργανώσεις</h1><p className="mt-3 max-w-2xl text-base leading-7 text-zinc-600">Επιλέξτε σεζόν, διοργάνωση, θεσμό και φάση για να παρακολουθήσετε την επίσημη αγωνιστική εικόνα.</p></>}{!context?.selectedSeason ? <div className="mt-8 rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm"><p className="text-lg font-black">Δεν υπάρχει διαθέσιμη διοργάνωση αυτή τη στιγμή.</p></div> : <div className="mt-8 space-y-5"><section className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm"><div className={`grid gap-5 lg:items-end ${context.tournaments.length > 1 ? "lg:grid-cols-[0.7fr_1fr_1fr_1.5fr_auto]" : "lg:grid-cols-[0.7fr_1fr_1.5fr_auto]"}`}><PublicCompactSelector label="Σεζόν" value={context.selectedSeason.name} options={context.seasons.map((season) => ({ id: season.id, label: season.name, href: href(season.slug) }))} /><PublicCompactSelector label="Διοργάνωση" value={context.selectedCompetition!.name} options={context.competitions.map((competition) => ({ id: competition.id, label: competition.name, href: href(context.selectedSeason!.slug, competition.slug) }))} />{context.tournaments.length > 1 && context.selectedTournament ? <PublicCompactSelector label="Θεσμός" value={context.selectedTournament.name} options={context.tournaments.map((item) => ({ id: item.rootPhaseId, label: item.name, href: href(context.selectedSeason!.slug, context.selectedCompetition!.slug, undefined, undefined, false, undefined, item.slug) }))} /> : null}<div><p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-500">Φάση</p><div className="mt-2 flex flex-wrap gap-2">{tournamentPhases.map((item) => <Link key={item.id} href={href(context.selectedSeason!.slug, context.selectedCompetition!.slug, item.slug, undefined, false, undefined, context.selectedTournament?.slug)} className={`rounded-xl border px-3 py-2 text-sm font-black ${item.id === phase?.id ? "border-zinc-950 bg-zinc-950 text-white" : "border-zinc-200 text-zinc-700"}`}>{item.name}</Link>)}</div></div><PublicCompetitionLatestMovements seasonName={context.selectedSeason.name} competitionName={context.selectedCompetition!.name} movements={latestMovements} /></div></section>{phase && <p className="px-1 text-sm font-bold text-zinc-700"><strong className="text-zinc-950">{phase.name}</strong> · {summary(phase)}</p>}{phase && bracket?.meaningful && <nav className="flex flex-wrap gap-2 px-1"><Link href={href(context.selectedSeason!.slug, context.selectedCompetition!.slug, phase.slug, undefined, false, undefined, context.selectedTournament?.slug)} className={`rounded-full border px-4 py-2 text-sm font-black ${bracketView ? "border-zinc-300 text-zinc-700" : "border-zinc-950 bg-zinc-950 text-white"}`}>Πρόγραμμα &amp; Αποτελέσματα</Link><Link href={bracketViewHref(context.selectedSeason!.slug, context.selectedCompetition!.slug, phase.slug, context.selectedTournament?.slug)} className={`rounded-full border px-4 py-2 text-sm font-black ${bracketView ? "border-zinc-950 bg-zinc-950 text-white" : "border-orange-300 bg-orange-50 text-orange-800"}`}>Απεικόνιση Διασταυρώσεων</Link></nav>}{bracketView && bracket ? <CompetitionBracket projection={bracket} /> : <>{phase?.format === "standings" && <Standings phase={phase} rows={context.standings} teamHref={teamHref} />}<PublicCompetitionProgramResults context={context} organizationId={organizationId} basePath={basePath} gameBasePath={gameBasePath} teamHref={teamHref} manualBlockKey={query.programBlock} /></>}</div>}</section></main></>;
 }
 
