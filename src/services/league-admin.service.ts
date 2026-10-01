@@ -16,6 +16,8 @@ import {
   type SeriesProgressionTransferredGame,
 } from "@/lib/series-progression";
 import {
+  getConfiguredSeriesCarryOverMeetingNumbers,
+  isConfiguredSeriesCarryOverMeeting,
   resolveFinalizedStandingsPositions,
   resolveSeriesCarryOver,
   resolveSeriesParticipantSourcePhaseId,
@@ -1137,6 +1139,7 @@ type SeriesMaterializationDryRunResult = {
   sourcePhaseId: string | null;
   sourcePhaseName: string | null;
   carryOverEnabled: boolean;
+  configuredCarryOverMeetingNumbers: number[];
   seriesMatchupCount: number;
   existingSeriesGameCount: number;
   existingPlanningSlotCount: number;
@@ -1424,6 +1427,7 @@ export async function dryRunSeriesInitialMaterializationPlan(
   );
 
   const carryOver = resolveSeriesCarryOver(allPhases, allGames, allTeams, normalizeSeriesPhaseLike(current));
+  const configuredCarryOverMeetingNumbers = new Set(getConfiguredSeriesCarryOverMeetingNumbers(current));
   const materializedGames = allGames
     .filter((game) =>
       String(game.phase_id ?? "") === String(phaseId) &&
@@ -1453,6 +1457,7 @@ export async function dryRunSeriesInitialMaterializationPlan(
     .filter((slot) =>
       slot.matchup_id === matchupId
       && !String(slot.real_game_id ?? "").trim()
+      && !configuredCarryOverMeetingNumbers.has(Number(slot.series_round_number))
       && !materializedGames.some((game) =>
         String(game.matchupId ?? "") === matchupId
         && game.seriesRoundNumber === Number(slot.series_round_number)
@@ -1811,6 +1816,7 @@ export async function dryRunSeriesInitialMaterializationPlan(
     sourcePhaseId: carryOver.sourcePhaseId,
     sourcePhaseName: carryOver.sourcePhaseName,
     carryOverEnabled: carryOver.carryOverEnabled,
+    configuredCarryOverMeetingNumbers: [...configuredCarryOverMeetingNumbers],
     seriesMatchupCount: plans.length,
     existingSeriesGameCount: materializedGames.length,
     existingPlanningSlotCount: planningSlots.length,
@@ -2050,6 +2056,7 @@ export async function saveOfficialGameResultAndProgressSeriesWithDb(
 
   if (isSeriesGame) {
     const dryRun = await dryRunSeriesInitialMaterializationPlan(db, phaseId, competitionId);
+    const configuredCarryOverMeetingNumbers = new Set(dryRun.configuredCarryOverMeetingNumbers);
     if (dryRun.scheduleId !== scheduleId) throw new Error("Ο αγώνας δεν ανήκει στον κανονικό προγραμματισμό της φάσης.");
     const matchupPlan = dryRun.plans.find((plan) => plan.matchupId === matchupId && plan.progression)?.progression ?? null;
     if (!matchupPlan) throw new Error("Δεν ήταν δυνατή η επίλυση του Series matchup.");
@@ -2101,7 +2108,11 @@ export async function saveOfficialGameResultAndProgressSeriesWithDb(
       venue: game.venue === null ? null : String(game.venue),
     }));
     const planningSlots: SeriesProgressionPlanningSlot[] = planningRows
-      .filter((slot) => !String(slot.real_game_id ?? "").trim() && !materializedRounds.has(Number(slot.series_round_number)))
+      .filter((slot) =>
+        !String(slot.real_game_id ?? "").trim()
+        && !materializedRounds.has(Number(slot.series_round_number))
+        && !configuredCarryOverMeetingNumbers.has(Number(slot.series_round_number))
+      )
       .map((slot) => ({
         seriesRoundNumber: Number(slot.series_round_number),
         scheduledDate: slot.scheduled_date,
@@ -2143,7 +2154,9 @@ export async function saveOfficialGameResultAndProgressSeriesWithDb(
         throw new Error("Δεν ήταν δυνατός ο προσδιορισμός του επόμενου Series αγώνα.");
       }
       const planning = planningRows.find(
-        (slot) => Number(slot.series_round_number) === transition?.materializeRoundNumber && !slot.real_game_id,
+        (slot) => Number(slot.series_round_number) === transition?.materializeRoundNumber
+          && !slot.real_game_id
+          && !configuredCarryOverMeetingNumbers.has(Number(slot.series_round_number)),
       ) ?? null;
       exactMaterialization = {
         id: createEntityId("game"),
@@ -2625,10 +2638,11 @@ export async function createSeriesPlanningSchedule(input: Record<string, unknown
   return createSeriesPlanningScheduleWithDb(db, input, actor);
 }
 
-export async function saveSeriesPlanningSlot(input: Record<string, unknown>, actor: string) {
-  const db = await database();
-  if (!db) throw new Error("Ο προσωρινός προγραμματισμός είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
-
+export async function saveSeriesPlanningSlotWithDb(
+  db: D1DatabaseBinding,
+  input: Record<string, unknown>,
+  actor: string,
+) {
   const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
   const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
   const matchupId = String(input.matchupId ?? input.matchup_id ?? "").trim();
@@ -2685,6 +2699,9 @@ export async function saveSeriesPlanningSlot(input: Record<string, unknown>, act
     || !String(matchupSlotB.type ?? "")
   ) {
     throw new Error("Το matchup δεν αντιστοιχεί σε αγωνιστικό ζευγάρι.");
+  }
+  if (isConfiguredSeriesCarryOverMeeting(phase, seriesRoundNumber)) {
+    throw new Error("Η συγκεκριμένη συνάντηση αναμένει μεταφορά αποτελέσματος από την προηγούμενη φάση και δεν μπορεί να προγραμματιστεί.");
   }
 
   const existingSlot = await db.prepare(`
@@ -2813,6 +2830,12 @@ export async function saveSeriesPlanningSlot(input: Record<string, unknown>, act
     noPlanning: false,
     planningSlotId: String(savedSlot.id ?? planningSlotId),
   };
+}
+
+export async function saveSeriesPlanningSlot(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Ο προσωρινός προγραμματισμός είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
+  return saveSeriesPlanningSlotWithDb(db, input, actor);
 }
 
 type FinalizationDrivenMaterializationPlan = {

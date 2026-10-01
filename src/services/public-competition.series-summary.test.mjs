@@ -7,12 +7,12 @@ vi.mock("@/services/platform-match-report.service", () => ({
 }));
 import { getPublicCompetitionContextForOrganizationWithDb } from "./public-competition.service";
 
-function fixture({ organization = "org-a", winsRequired = 2, transferred = false, decided = false, provisional = false, symbolic = false } = {}) {
+function fixture({ organization = "org-a", winsRequired = 2, transferred = false, carryOverEnabled = transferred, decided = false, provisional = false, provisionalRound = 3, symbolic = false } = {}) {
   const competition = `${organization}-competition`;
   const phaseId = `${organization}-phase`;
   const a = `${organization}-a`, b = `${organization}-b`;
   const calls = [];
-  const basePhase = { slug: "series", name: "SERIES PHASE", format: "series", phase_type: "series", phase_kind: "series", lifecycle_status: "active", phase_order: 2, previous_phase_id: null, participant_count: 2, round_count: 3, wins_required: winsRequired, carry_over_enabled: transferred ? 1 : 0, carry_over_source_phase_id: transferred ? `${phaseId}-source` : null, settings_json: "{}", standings_presentation_json: "[]" };
+  const basePhase = { slug: "series", name: "SERIES PHASE", format: "series", phase_type: "series", phase_kind: "series", lifecycle_status: "active", phase_order: 2, previous_phase_id: null, participant_count: 2, round_count: 3, wins_required: winsRequired, carry_over_enabled: carryOverEnabled ? 1 : 0, carry_over_source_phase_id: transferred ? `${phaseId}-source` : null, settings_json: "{}", standings_presentation_json: "[]" };
   const symbolicSourcePhaseId = `${phaseId}-symbolic-source`;
   const symbolicMatchupOne = "stage2-cert-semifinal-1";
   const symbolicMatchupTwo = "stage2-cert-semifinal-2";
@@ -79,7 +79,7 @@ function fixture({ organization = "org-a", winsRequired = 2, transferred = false
           if (query.includes("FROM league_phases p")) return { results: phases };
           if (query.includes("FROM league_competition_teams ct JOIN")) return { results: [{ id: a, name: `${organization} A`, logo_url: null }, { id: b, name: `${organization} B`, logo_url: null }] };
           if (query.includes("FROM league_games g")) return { results: games };
-          if (query.includes("FROM league_series_planning_slots slot")) return { results: provisional ? [{ id: "planning-3", competition_id: competition, phase_id: phaseId, schedule_id: "schedule", matchup_id: "pair", series_round_number: 3, scheduled_date: "2026-10-20", scheduled_time: "20:00", venue: "Arena", real_game_id: null }] : [] };
+          if (query.includes("FROM league_series_planning_slots slot")) return { results: provisional ? [{ id: `planning-${provisionalRound}`, competition_id: competition, phase_id: phaseId, schedule_id: "schedule", matchup_id: "pair", series_round_number: provisionalRound, scheduled_date: "2026-10-20", scheduled_time: "20:00", venue: "Arena", real_game_id: null }] : [] };
           return { results: [] };
         },
         async first() { return null; },
@@ -142,6 +142,11 @@ describe("canonical public series summary projection", () => {
       scheduledTime: "20:00",
       venue: "Arena",
     }));
+  });
+  it("ignores an old provisional slot for an explicitly reserved carry-over meeting", async () => {
+    const result = await read(fixture({ carryOverEnabled: true, provisional: true, provisionalRound: 1 }));
+    expect(result.games.some((game) => game.id === "series:org-a-phase:pair:1")).toBe(false);
+    expect(result.provisionalGames).toEqual([]);
   });
   it("filters planning rows whose canonical identity already has a real game", async () => {
     const value = fixture();

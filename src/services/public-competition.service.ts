@@ -2,7 +2,7 @@ import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import { projectAdministrativeGameResult } from "@/lib/administrative-game-result";
-import { resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
+import { getConfiguredSeriesCarryOverMeetingNumbers, resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
 import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame, type SeriesProgressionResult } from "@/lib/series-progression";
 import { calculateStandings, type StandingsTieBreakerKey } from "@/lib/standings-calculator";
 import { buildPhaseTournamentGroups, resolvePhaseTournamentGraph } from "@/lib/phase-root-source";
@@ -609,6 +609,9 @@ async function loadPublicProvisionalGames(
     phases.find((entry) => entry.id === sourcePhaseId)?.rule_settings_json ?? null,
   );
   const definitions = new Map(bracketDefinitions(phase.rule_settings_json).map((definition) => [definition.id, definition]));
+  const configuredCarryOverMeetingNumbers = new Set(
+    getConfiguredSeriesCarryOverMeetingNumbers(toSeriesPhase(phase, competitionId)),
+  );
 
   const roundRobin = (roundRobinResult.results ?? []).map((slot): PublicProvisionalGame => ({
     kind: "provisional",
@@ -625,7 +628,9 @@ async function loadPublicProvisionalGames(
     homeParticipantLabel: standingPlanningLabel(slot.home_participant_key, phaseNames),
     awayParticipantLabel: standingPlanningLabel(slot.away_participant_key, phaseNames),
   }));
-  const series = (seriesResult.results ?? []).map((slot): PublicProvisionalGame => {
+  const series = (seriesResult.results ?? [])
+    .filter((slot) => !configuredCarryOverMeetingNumbers.has(Number(slot.series_round_number ?? 0)))
+    .map((slot): PublicProvisionalGame => {
     const definition = definitions.get(String(slot.matchup_id ?? ""));
     const roundNumber = Number(slot.series_round_number ?? 0);
     return {
@@ -643,7 +648,7 @@ async function loadPublicProvisionalGames(
       homeParticipantLabel: seriesPlanningLabel(definition?.slotA, sourcePhaseName, teamById, sourceMatchups),
       awayParticipantLabel: seriesPlanningLabel(definition?.slotB, sourcePhaseName, teamById, sourceMatchups),
     };
-  });
+    });
   return [...roundRobin, ...series].filter((entry) => entry.roundNumber >= 1)
     .sort((left, right) => left.roundNumber - right.roundNumber || left.gameOrder - right.gameOrder || left.id.localeCompare(right.id));
 }

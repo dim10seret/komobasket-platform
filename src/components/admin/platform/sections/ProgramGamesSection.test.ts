@@ -44,12 +44,25 @@ describe("transferred Series result presentation", () => {
     const transferredBranch = schedulingCell.slice(transferredBranchStart, ifNeededBranchStart);
     const ifNeededBranch = schedulingCell.slice(ifNeededBranchStart);
 
-    expect(seriesTable).toContain('const isIfNeeded = round.rowState === "if_needed"');
-    expect(seriesTable).toContain('isIfNeeded\n                                              ? "Εάν χρειαστεί"');
+    expect(seriesTable).toContain('const isIfNeeded = round.rowState === "if_needed" && !isPendingCarryOver');
+    expect(seriesTable).toMatch(/isIfNeeded\s*\?\s*"Εάν χρειαστεί"/);
     expect(transferredBranch).not.toContain("openPlanningDialog");
     expect(ifNeededBranch).toContain("openPlanningDialog");
     expect(ifNeededBranch).toContain('round.planningSlot ? "Επεξεργασία" : "Προγραμματισμός"');
     expect(ifNeededBranch).not.toContain("Δεν απαιτείται προγραμματισμός");
+  });
+
+  it("derives pending carry-over only from the configured meeting number and removes scheduling", () => {
+    expect(source).toContain("getConfiguredSeriesCarryOverMeetingNumbers(phase)");
+    expect(source).toContain('entry.displayState === "pending_carry_over"');
+    expect(seriesTable).toContain("Αναμονή μεταφοράς αποτελέσματος");
+    expect(seriesTable).toContain("Το αποτέλεσμα της συνάντησης θα μεταφερθεί από την προηγούμενη φάση όταν αυτή οριστικοποιηθεί.");
+    const pendingBranchStart = seriesTable.indexOf(") : isPendingCarryOver ? (");
+    const ordinaryBranchStart = seriesTable.indexOf(") : isIfNeeded ? (", pendingBranchStart);
+    const pendingBranch = seriesTable.slice(pendingBranchStart, ordinaryBranchStart);
+    expect(pendingBranch).not.toContain("openPlanningDialog");
+    expect(pendingBranch).not.toContain("Προγραμματισμός");
+    expect(seriesTable.slice(ordinaryBranchStart)).toContain("openPlanningDialog");
   });
 
   it("uses a neutral heading for mixed transferred and conditional rows", () => {
@@ -57,9 +70,10 @@ describe("transferred Series result presentation", () => {
     const helperEnd = source.indexOf("const parseStandingParticipantKey", helperStart);
     const helper = source.slice(helperStart, helperEnd);
 
-    expect(helper).toContain("new Set(rowStates)");
+    expect(helper).toContain("new Set(displayStates)");
     expect(helper).toContain("states.length === 1 ? states[0] : undefined");
-    expect(source).toContain("nextRows.map((entry) => entry.round.rowState)");
+    expect(source).toContain("nextRows.map((entry) => entry.displayState)");
+    expect(source).toContain('if (displayState === "pending_carry_over") return `${base} — αναμονή μεταφοράς`;');
   });
 
   it("does not infer transfer state from previous-phase position labels", () => {

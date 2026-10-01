@@ -296,6 +296,25 @@ const getMeetingOrder = (meetingNumbers: number[]) => {
   return [...new Set(meetingNumbers)].sort((left, right) => left - right);
 };
 
+export const getConfiguredSeriesCarryOverMeetingNumbers = (
+  phase?: SeriesCarryOverPhaseLike,
+) => {
+  if (!phase || Number(phase.carry_over_enabled ?? 0) !== 1) return [];
+  const settings = getSeriesSettings(phase);
+  return getMeetingOrder(
+    Array.isArray(settings.carryOverMeetingNumbers)
+      ? settings.carryOverMeetingNumbers
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value >= 1)
+      : [],
+  );
+};
+
+export const isConfiguredSeriesCarryOverMeeting = (
+  phase: SeriesCarryOverPhaseLike | undefined,
+  meetingNumber: number,
+) => getConfiguredSeriesCarryOverMeetingNumbers(phase).includes(meetingNumber);
+
 const resolveSourceGameWinner = (game: SeriesCarryOverGameLike, teamAId: string, teamBId: string) => {
   const homeTeamId = String(game.home_team_id ?? "").trim();
   const awayTeamId = String(game.away_team_id ?? "").trim();

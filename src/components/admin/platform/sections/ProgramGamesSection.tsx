@@ -21,6 +21,7 @@ import {
 import { calculateSeriesProgression, calculateSeriesRoundWindow, type SeriesProgressionRoundRow } from "@/lib/series-progression";
 import {
   classifySeriesBracketEntry,
+  getConfiguredSeriesCarryOverMeetingNumbers,
   resolveSeriesCarryOver,
 } from "@/lib/series-carry-over";
 import type { PlatformMatchReport, PlatformMatchReportAvailability } from "@/lib/platform-match-report";
@@ -71,9 +72,12 @@ type GeneratedGameRow = Row & {
 
 type ResultEditorMode = "manual" | "administrative-correction" | "administrative-interruption";
 
+type SeriesRoundDisplayState = SeriesProgressionRoundRow["rowState"] | "pending_carry_over";
+
 type SeriesRoundViewRow = {
   matchupId: string;
   matchupLabel: string;
+  displayState: SeriesRoundDisplayState;
   round: SeriesProgressionRoundRow;
 };
 
@@ -252,15 +256,16 @@ const getRoundOrdinalLabel = (roundNumber: number) => {
   return `${suffix} Γύρος`;
 };
 
-const getSeriesRoundLabel = (roundNumber: number, rowState?: string) => {
+const getSeriesRoundLabel = (roundNumber: number, displayState?: SeriesRoundDisplayState) => {
   const base = getRoundOrdinalLabel(roundNumber);
-  if (roundNumber === 1 && rowState === "transferred") return `${base} — από μεταφορά`;
-  if (rowState === "if_needed") return `${base} — εάν χρειαστεί`;
+  if (displayState === "pending_carry_over") return `${base} — αναμονή μεταφοράς`;
+  if (displayState === "transferred") return `${base} — από μεταφορά`;
+  if (displayState === "if_needed") return `${base} — εάν χρειαστεί`;
   return base;
 };
 
-const getGroupedSeriesRoundLabel = (roundNumber: number, rowStates: string[]) => {
-  const states = [...new Set(rowStates)];
+const getGroupedSeriesRoundLabel = (roundNumber: number, displayStates: SeriesRoundDisplayState[]) => {
+  const states = [...new Set(displayStates)];
   return getSeriesRoundLabel(roundNumber, states.length === 1 ? states[0] : undefined);
 };
 
@@ -359,6 +364,7 @@ const buildSeriesRounds = (
   const bracketConfig = parseObject(phaseSettings.bracketConfiguration);
   const matchups = Array.isArray(bracketConfig.matchups) ? bracketConfig.matchups : [];
   const carryOver = resolveSeriesCarryOver(data.phases, data.games, data.teams, phase);
+  const configuredCarryOverMeetingNumbers = new Set(getConfiguredSeriesCarryOverMeetingNumbers(phase));
 
   const materializedSeriesGames = scheduleGames
     .filter((game) => String(game.series_matchup_id ?? "").trim() && Number.isInteger(Number(game.series_round_number ?? 0)))
@@ -424,6 +430,7 @@ const buildSeriesRounds = (
         String(slot.schedule_id ?? "") === scheduleId
         && String(slot.matchup_id ?? "") === matchupId
         && !String(slot.real_game_id ?? "").trim()
+        && !configuredCarryOverMeetingNumbers.has(Number(slot.series_round_number))
         && !matchupGames.some((game) => game.seriesRoundNumber === Number(slot.series_round_number)),
       )
       .map((slot) => ({
@@ -449,16 +456,21 @@ const buildSeriesRounds = (
     for (const round of progression.rounds) {
       const existing = seriesRoundsByNumber.get(round.seriesRoundNumber);
       const nextRows: SeriesRoundViewRow[] = existing?.rows ?? [];
+      const displayState: SeriesRoundDisplayState = round.rowState === "if_needed"
+        && configuredCarryOverMeetingNumbers.has(round.seriesRoundNumber)
+        ? "pending_carry_over"
+        : round.rowState;
       nextRows.push({
         matchupId,
         matchupLabel: String(matchupResolution?.label ?? `${teamA.name} — ${teamB.name}`),
+        displayState,
         round,
       });
       seriesRoundsByNumber.set(round.seriesRoundNumber, {
         roundNumber: round.seriesRoundNumber,
         roundLabel: getGroupedSeriesRoundLabel(
           round.seriesRoundNumber,
-          nextRows.map((entry) => entry.round.rowState),
+          nextRows.map((entry) => entry.displayState),
         ),
         rows: nextRows,
       });
@@ -1433,7 +1445,8 @@ export function ProgramGamesSection({
                                           const round = entry.round;
                                           const isRealGame = round.rowState === "real_game";
                                           const isTransferred = round.rowState === "transferred";
-                                          const isIfNeeded = round.rowState === "if_needed";
+                                           const isPendingCarryOver = entry.displayState === "pending_carry_over";
+                                           const isIfNeeded = round.rowState === "if_needed" && !isPendingCarryOver;
                                           const isQualified = round.rowState === "qualified";
                                           const realGame = round.realGameId ? seriesGamesById.get(String(round.realGameId)) ?? null : null;
                                           const sourceGame = round.sourceGameId ? sourceGamesById.get(String(round.sourceGameId)) ?? null : null;
@@ -1444,11 +1457,13 @@ export function ProgramGamesSection({
                                           const displayAway = String(round.awayTeamName ?? round.expectedAwayTeamName ?? "—");
                                           const displayResult = isQualified
                                             ? `Πρόκριση ${String(round.winnerTeamName ?? "—")} από τον ${round.qualificationRoundNumber ?? round.seriesRoundNumber}ο Γύρο`
-                                            : isIfNeeded
-                                              ? "Εάν χρειαστεί"
-                                              : round.homeScore !== null && round.awayScore !== null
-                                                ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
-                                                : "—";
+                                             : isPendingCarryOver
+                                               ? "Αναμονή μεταφοράς αποτελέσματος"
+                                               : isIfNeeded
+                                                 ? "Εάν χρειαστεί"
+                                                 : round.homeScore !== null && round.awayScore !== null
+                                                   ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
+                                                   : "—";
                                           const planningDateValue = isIfNeeded ? String(round.planningSlot?.scheduledDate ?? "").trim() : "";
                                           const planningTimeValue = isIfNeeded ? String(round.planningSlot?.scheduledTime ?? "").trim() : "";
                                           const planningVenueValue = isIfNeeded ? String(round.planningSlot?.venue ?? "").trim() : "";
@@ -1487,6 +1502,10 @@ export function ProgramGamesSection({
                                                   <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-black text-amber-900">
                                                     Από μεταφορά
                                                   </span>
+                                                 ) : isPendingCarryOver ? (
+                                                   <span className="inline-flex rounded-full border border-sky-300 bg-sky-50 px-3 py-1 text-xs font-black text-sky-900">
+                                                     Αναμονή μεταφοράς
+                                                   </span>
                                                 ) : (
                                                   <PlatformButton
                                                     type="button"
@@ -1559,6 +1578,10 @@ export function ProgramGamesSection({
                                                   <p className="mt-2 max-w-56 text-xs font-bold leading-snug text-amber-900">
                                                     Δεν απαιτείται προγραμματισμός: αποτέλεσμα από προηγούμενη φάση
                                                   </p>
+                                                 ) : isPendingCarryOver ? (
+                                                   <p className="mt-2 max-w-56 text-xs font-bold leading-snug text-sky-900">
+                                                     Το αποτέλεσμα της συνάντησης θα μεταφερθεί από την προηγούμενη φάση όταν αυτή οριστικοποιηθεί.
+                                                   </p>
                                                 ) : isIfNeeded ? (
                                                   <PlatformButton
                                                     type="button"
@@ -1712,7 +1735,7 @@ export function ProgramGamesSection({
                                       </tbody>
                                     </table>
                                   </div>
-                                  {activeSeriesRound?.rows?.some((entry) => entry.round.rowState === "if_needed") ? (
+                                  {activeSeriesRound?.rows?.some((entry) => entry.displayState === "if_needed") ? (
                                     <div className="mt-3 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
                                       Ρεπό: <span className="font-black text-zinc-900">—</span>
                                     </div>
@@ -1731,6 +1754,7 @@ export function ProgramGamesSection({
                                       : (round as typeof generatedRounds[number]).games.map((game) => ({
                                         matchupId: String(game.id),
                                         matchupLabel: String(game.home_team_name ?? "—"),
+                                        displayState: "real_game" as const,
                                         round: {
                                           seriesRoundNumber: Number(game.round_number ?? 0),
                                           rowState: "real_game" as const,
@@ -1756,7 +1780,8 @@ export function ProgramGamesSection({
                                       const round = entry.round;
                                       const isRealGame = round.rowState === "real_game";
                                       const isTransferred = round.rowState === "transferred";
-                                      const isIfNeeded = round.rowState === "if_needed";
+                                       const isPendingCarryOver = entry.displayState === "pending_carry_over";
+                                       const isIfNeeded = round.rowState === "if_needed" && !isPendingCarryOver;
                                       const isQualified = round.rowState === "qualified";
                                       const realGame = round.realGameId ? seriesGamesById.get(String(round.realGameId)) ?? null : null;
                                       const sourceGame = round.sourceGameId ? sourceGamesById.get(String(round.sourceGameId)) ?? null : null;
@@ -1765,11 +1790,13 @@ export function ProgramGamesSection({
                                       const displayAway = String(round.awayTeamName ?? round.expectedAwayTeamName ?? "—");
                                       const displayResult = isQualified
                                         ? `Πρόκριση ${String(round.winnerTeamName ?? "—")} από τον ${round.qualificationRoundNumber ?? round.seriesRoundNumber}ο Γύρο`
-                                        : isIfNeeded
-                                          ? "Εάν χρειαστεί"
-                                          : round.homeScore !== null && round.awayScore !== null
-                                            ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
-                                            : "—";
+                                         : isPendingCarryOver
+                                           ? "Αναμονή μεταφοράς αποτελέσματος"
+                                           : isIfNeeded
+                                             ? "Εάν χρειαστεί"
+                                             : round.homeScore !== null && round.awayScore !== null
+                                               ? `${String(round.homeScore ?? "—")} – ${String(round.awayScore ?? "—")}`
+                                               : "—";
                                        const displayDate = backingGame ? parseDateForDisplay(String(backingGame.scheduled_date ?? "")) : "—";
                                        const displayTime = backingGame ? String(backingGame.scheduled_time ?? "").trim() || "—" : "—";
                                        const displayVenue = backingGame ? String(backingGame.venue ?? "").trim() || "—" : "—";
