@@ -259,6 +259,11 @@ const getSeriesRoundLabel = (roundNumber: number, rowState?: string) => {
   return base;
 };
 
+const getGroupedSeriesRoundLabel = (roundNumber: number, rowStates: string[]) => {
+  const states = [...new Set(rowStates)];
+  return getSeriesRoundLabel(roundNumber, states.length === 1 ? states[0] : undefined);
+};
+
 const parseStandingParticipantKey = (value: unknown) => {
   const match = /^standing:(.+):position:(\d+)$/.exec(String(value ?? ""));
   return match ? { sourcePhaseId: match[1], position: Number(match[2]) } : null;
@@ -451,7 +456,10 @@ const buildSeriesRounds = (
       });
       seriesRoundsByNumber.set(round.seriesRoundNumber, {
         roundNumber: round.seriesRoundNumber,
-        roundLabel: getSeriesRoundLabel(round.seriesRoundNumber, round.rowState),
+        roundLabel: getGroupedSeriesRoundLabel(
+          round.seriesRoundNumber,
+          nextRows.map((entry) => entry.round.rowState),
+        ),
         rows: nextRows,
       });
     }
@@ -1475,18 +1483,24 @@ export function ProgramGamesSection({
                                                 ) : null}
                                               </td>
                                               <td className="px-3 py-3 align-top">
-                                                <PlatformButton
-                                                  type="button"
-                                                  disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
-                                                  aria-disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
-                                                  title={matchReportPresentation.title}
-                                                  onClick={() => {
-                                                    if (isRealGame && realGame) void openMatchReport(String(realGame.id), matchReportAvailability);
-                                                  }}
-                                                  className={`inline-flex rounded-full border px-3 py-1 text-xs font-black transition focus-visible:outline focus-visible:outline-2 ${matchReportPresentation.className}`}
-                                                >
-                                                  {isTransferred ? "Από μεταφορά" : isRealGame ? matchReportPresentation.label : "—"}
-                                                </PlatformButton>
+                                                {isTransferred ? (
+                                                  <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-black text-amber-900">
+                                                    Από μεταφορά
+                                                  </span>
+                                                ) : (
+                                                  <PlatformButton
+                                                    type="button"
+                                                    disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
+                                                    aria-disabled={!isRealGame || !realGame || matchReportPresentation.disabled}
+                                                    title={matchReportPresentation.title}
+                                                    onClick={() => {
+                                                      if (isRealGame && realGame) void openMatchReport(String(realGame.id), matchReportAvailability);
+                                                    }}
+                                                    className={`inline-flex rounded-full border px-3 py-1 text-xs font-black transition focus-visible:outline focus-visible:outline-2 ${matchReportPresentation.className}`}
+                                                  >
+                                                    {isRealGame ? matchReportPresentation.label : "—"}
+                                                  </PlatformButton>
+                                                )}
                                               </td>
                                               <td className="px-3 py-3 align-top">
                                                 {backingGame?.video_url ? (
@@ -1541,7 +1555,11 @@ export function ProgramGamesSection({
                                                 <span className="block min-w-0 max-w-full whitespace-normal break-words leading-snug [overflow-wrap:anywhere]">
                                                   {displayVenue}
                                                 </span>
-                                                {isIfNeeded ? (
+                                                {isTransferred ? (
+                                                  <p className="mt-2 max-w-56 text-xs font-bold leading-snug text-amber-900">
+                                                    Δεν απαιτείται προγραμματισμός: αποτέλεσμα από προηγούμενη φάση
+                                                  </p>
+                                                ) : isIfNeeded ? (
                                                   <PlatformButton
                                                     type="button"
                                                     onClick={() => openPlanningDialog({

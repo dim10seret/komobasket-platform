@@ -25,6 +25,72 @@ describe("future-phase provisional scheduling", () => {
   });
 });
 
+describe("transferred Series result presentation", () => {
+  const tableStart = source.indexOf("{(activeSeriesRound.rows ?? []).map((entry) => {");
+  const tableEnd = source.indexOf("</tbody>", tableStart);
+  const seriesTable = source.slice(tableStart, tableEnd);
+
+  it("keeps the transferred score and renders a non-interactive status with an explanation", () => {
+    expect(seriesTable).toContain('const isTransferred = round.rowState === "transferred"');
+    expect(seriesTable).toContain('round.homeScore !== null && round.awayScore !== null');
+    expect(seriesTable).toContain("Από μεταφορά");
+    expect(seriesTable).toContain("Δεν απαιτείται προγραμματισμός: αποτέλεσμα από προηγούμενη φάση");
+  });
+
+  it("keeps conditional rows schedulable without transferred messaging", () => {
+    const schedulingCell = seriesTable.slice(seriesTable.indexOf("{displayVenue}"));
+    const transferredBranchStart = schedulingCell.indexOf("{isTransferred ? (");
+    const ifNeededBranchStart = schedulingCell.indexOf(") : isIfNeeded ? (", transferredBranchStart);
+    const transferredBranch = schedulingCell.slice(transferredBranchStart, ifNeededBranchStart);
+    const ifNeededBranch = schedulingCell.slice(ifNeededBranchStart);
+
+    expect(seriesTable).toContain('const isIfNeeded = round.rowState === "if_needed"');
+    expect(seriesTable).toContain('isIfNeeded\n                                              ? "Εάν χρειαστεί"');
+    expect(transferredBranch).not.toContain("openPlanningDialog");
+    expect(ifNeededBranch).toContain("openPlanningDialog");
+    expect(ifNeededBranch).toContain('round.planningSlot ? "Επεξεργασία" : "Προγραμματισμός"');
+    expect(ifNeededBranch).not.toContain("Δεν απαιτείται προγραμματισμός");
+  });
+
+  it("uses a neutral heading for mixed transferred and conditional rows", () => {
+    const helperStart = source.indexOf("const getGroupedSeriesRoundLabel");
+    const helperEnd = source.indexOf("const parseStandingParticipantKey", helperStart);
+    const helper = source.slice(helperStart, helperEnd);
+
+    expect(helper).toContain("new Set(rowStates)");
+    expect(helper).toContain("states.length === 1 ? states[0] : undefined");
+    expect(source).toContain("nextRows.map((entry) => entry.round.rowState)");
+  });
+
+  it("does not infer transfer state from previous-phase position labels", () => {
+    const predicateStart = seriesTable.indexOf("const isTransferred");
+    const predicateEnd = seriesTable.indexOf(";", predicateStart);
+    const formatterStart = source.indexOf("const describeStandingParticipant");
+    const formatterEnd = source.indexOf("const buildRoundRobinPlanningGames", formatterStart);
+    const formatter = source.slice(formatterStart, formatterEnd);
+    const fixtures = [
+      { participantKey: "standing:phase-source:position:8", position: 8, rowState: "if_needed" },
+      { participantKey: "standing:phase-source:position:9", position: 9, rowState: "if_needed" },
+    ];
+
+    expect(seriesTable.slice(predicateStart, predicateEnd + 1)).toBe(
+      'const isTransferred = round.rowState === "transferred";',
+    );
+    expect(formatter).toContain('`${parsed.position}η θέση · ${String(sourcePhase?.name ?? "προηγούμενη φάση")}`');
+    expect(formatter).not.toContain("Από μεταφορά");
+    for (const fixture of fixtures) {
+      const parsed = /^standing:(.+):position:(\d+)$/.exec(fixture.participantKey);
+      expect(Number(parsed?.[2])).toBe(fixture.position);
+      expect(`${Number(parsed?.[2])}η θέση · προηγούμενη φάση`).toBe(`${fixture.position}η θέση · προηγούμενη φάση`);
+      expect(fixture.rowState).toBe("if_needed");
+    }
+    const schedulingCell = seriesTable.slice(seriesTable.indexOf("{displayVenue}"));
+    const ifNeededBranch = schedulingCell.slice(schedulingCell.indexOf(") : isIfNeeded ? ("));
+    expect(ifNeededBranch).toContain("openPlanningDialog");
+    expect(ifNeededBranch).not.toContain("Από μεταφορά");
+  });
+});
+
 describe("Program & Games Match Report UI", () => {
   it("renders unavailable reports as grey and disabled", () => { expect(source).toContain("if (!availability?.available)"); expect(source).toContain("disabled: true"); expect(source).toContain("bg-zinc-100 text-zinc-500"); });
   it("renders finalized reports without incidents as green and enabled", () => { expect(source).toContain("disabled: false"); expect(source).toContain("bg-emerald-600 text-white"); });
