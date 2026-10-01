@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { selectPublicProgramResultsBlock, selectPublicProgramResultsNavigation } from "../hosted/HostedOrganizationHomeData.tsx";
+import { scopePublicProgramResultsContexts, selectPublicProgramResultsBlock, selectPublicProgramResultsNavigation } from "../hosted/HostedOrganizationHomeData.tsx";
 
 const source = fs.readFileSync(path.resolve(import.meta.dirname, "PublicCompetitionsView.tsx"), "utf8");
 const latestMovementsSource = fs.readFileSync(path.resolve(import.meta.dirname, "PublicCompetitionLatestMovements.tsx"), "utf8");
@@ -40,12 +40,30 @@ const provisional = (id, roundNumber, extras = {}) => ({
   homeParticipantLabel: extras.homeParticipantLabel ?? "1η θέση · Regular",
   awayParticipantLabel: extras.awayParticipantLabel ?? "2η θέση · Regular",
 });
-const context = ({ competition = "competition-a", phaseOrder = 1, lifecycleStatus = "active", format = "standings", games = [], seriesHistory = [] } = {}) => ({
+const context = ({ competition = "competition-a", phaseOrder = 1, lifecycleStatus = "active", format = "standings", games = [], seriesHistory = [], bracket = null } = {}) => ({
   seasons: [{ id: "season-a", slug: "2026-27", name: "2026-27" }],
-  competitions: [], phases: [], games, standings: [], seriesHistory, bracket: null, teamView: null,
+  competitions: [], phases: [], games, standings: [], seriesHistory, bracket, teamView: null,
   selectedSeason: { id: "season-a", slug: "2026-27", name: "2026-27" },
   selectedCompetition: { id: competition, slug: competition, name: competition, type: "league", lifecycleStatus: "online", gameMode: "FULL" },
   selectedPhase: { id: `phase-${phaseOrder}`, slug: `phase-${phaseOrder}`, name: `Phase ${phaseOrder}`, phaseOrder, lifecycleStatus, format, phaseType: format, participantCount: 8, roundCount: 8, winsRequired: format === "series" ? 2 : null, directAdvancements: [], standingsPresentation: { directQualification: [], playOut: [], eliminated: [] } },
+});
+
+const projectedSeries = ({ actual = false, meaningful = true } = {}) => ({
+  matchupId: "pair-a",
+  label: "8η θέση · ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ — 9η θέση · ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ",
+  maximumSeriesRounds: 3,
+  rounds: [
+    actual
+      ? { roundNumber: 1, kind: "game", sourcePhaseName: null, game: game("actual-series-game", 1, "scheduled") }
+      : { roundNumber: 1, kind: "pending_carry_over", sourcePhaseName: null, game: null },
+    { roundNumber: 2, kind: "projected", sourcePhaseName: null, game: null },
+  ],
+  summary: meaningful ? {
+    teamAId: "team-a", teamAName: "8η θέση · ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ",
+    teamBId: "team-b", teamBName: "9η θέση · ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ",
+    winsRequired: 2, currentWinsA: 0, currentWinsB: 0,
+    qualifiedTeamId: null, qualifiedTeamName: null, transferredRoundCount: 0,
+  } : undefined,
 });
 
 describe("public standalone Program and Results", () => {
@@ -168,6 +186,45 @@ describe("public standalone Program and Results", () => {
     expect(selected?.block.games[0]).toEqual(expect.objectContaining({ kind: "provisional", planningKind: "series" }));
     expect(source).toContain("isPublicProvisionalGame(game)");
     expect(source).toContain("Πρόγραμμα");
+  });
+
+  it("scopes a selected Series phase without changing regular-season tournament navigation", () => {
+    const regular = context({ phaseOrder: 1 });
+    const playOut = context({ phaseOrder: 2, format: "series", seriesHistory: [projectedSeries()] });
+    expect(scopePublicProgramResultsContexts(regular, [regular, playOut])).toEqual([regular, playOut]);
+    expect(scopePublicProgramResultsContexts(playOut, [regular, playOut])).toEqual([playOut]);
+  });
+
+  it("shows canonical projected pairings when a Series phase has no actual games", () => {
+    const navigation = selectPublicProgramResultsNavigation([context({ format: "series", seriesHistory: [projectedSeries()] })]);
+    expect(navigation.selected?.block.label).toBe("ΓΥΡΟΣ 1");
+    expect(navigation.selected?.block.games).toEqual([expect.objectContaining({
+      kind: "provisional",
+      projectionState: "pending_carry_over",
+      homeParticipantLabel: "8η θέση · ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ",
+      awayParticipantLabel: "9η θέση · ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ",
+      scheduledDate: null,
+      scheduledTime: null,
+      venue: null,
+    })]);
+    expect(navigation.next?.block.games[0]).toEqual(expect.objectContaining({ projectionState: "projected" }));
+  });
+
+  it("gives actual Series games priority over projected fallback rows", () => {
+    const navigation = selectPublicProgramResultsNavigation([context({ format: "series", seriesHistory: [projectedSeries({ actual: true })] })]);
+    expect(navigation.selected?.block.games.map((item) => item.id)).toEqual(["actual-series-game"]);
+    expect(navigation.blocks.flatMap((block) => block.block.games).some((item) => item.id.startsWith("series-projection:"))).toBe(false);
+  });
+
+  it("returns no block when a Series phase has neither games nor meaningful projections", () => {
+    expect(selectPublicProgramResultsNavigation([context({ format: "series" })]).selected).toBeNull();
+  });
+
+  it("renders distinct projected and empty-state messaging", () => {
+    expect(source).toContain("Αναμονή μεταφοράς αποτελέσματος");
+    expect(source).toContain("Αναμονή προγράμματος");
+    expect(source).toContain("Αναμονή σχεδιασμού");
+    expect(source).toContain("Το πρόγραμμα της φάσης δεν έχει ακόμη διαμορφωθεί.");
   });
 
   it("renders one standalone section with its own Season and Competition selectors and no Phase selector", () => {

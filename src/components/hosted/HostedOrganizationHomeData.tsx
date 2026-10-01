@@ -6,6 +6,7 @@ import {
   isPublicProvisionalGame,
   type PublicCompetitionContext,
   type PublicGame,
+  type PublicProvisionalGame,
   type PublicScheduleEntry,
 } from "@/services/public-competition.service";
 
@@ -47,6 +48,69 @@ export function selectHostedNextCompetitiveBlock(context: PublicCompetitionConte
     games,
   };
 }
+
+const projectedSeriesCandidates = (context: PublicCompetitionContext): PublicProvisionalGame[] => {
+  const phase = context.selectedPhase;
+  const competition = context.selectedCompetition;
+  if (!phase || phase.format !== "series" || !competition) return [];
+  const stage = context.bracket?.stages.find((candidate) => candidate.phaseId === phase.id);
+  const plannedKeys = new Set(context.games
+    .filter((game): game is PublicProvisionalGame => isPublicProvisionalGame(game) && game.planningKind === "series")
+    .map((game) => `${game.seriesMatchupId ?? ""}:${game.roundNumber}`));
+
+  return context.seriesHistory.flatMap((matchup, matchupIndex) => {
+    const bracketMatchup = stage?.matchups.find((candidate) => candidate.matchupId === matchup.matchupId);
+    const participantLabel = (slot: "A" | "B") => {
+      const participant = bracketMatchup?.participants.find((candidate) => candidate.slot === slot);
+      const summaryName = slot === "A" ? matchup.summary?.teamAName : matchup.summary?.teamBName;
+      return participant?.team?.name || participant?.originLabel || summaryName || "Εκκρεμεί";
+    };
+    const homeParticipantLabel = participantLabel("A");
+    const awayParticipantLabel = participantLabel("B");
+    if (homeParticipantLabel === "Εκκρεμεί" && awayParticipantLabel === "Εκκρεμεί") return [];
+    return matchup.rounds.flatMap((round): PublicProvisionalGame[] => {
+      if (round.game || (round.kind !== "projected" && round.kind !== "pending_carry_over")) return [];
+      if (plannedKeys.has(`${matchup.matchupId}:${round.roundNumber}`)) return [];
+      return [{
+        kind: "provisional",
+        id: `series-projection:${phase.id}:${matchup.matchupId}:${round.roundNumber}`,
+        planningKind: "series",
+        seriesMatchupId: matchup.matchupId,
+        projectionState: round.kind,
+        competitionId: competition.id,
+        phaseId: phase.id,
+        scheduleId: "",
+        roundNumber: round.roundNumber,
+        gameOrder: matchupIndex + 1,
+        scheduledDate: null,
+        scheduledTime: null,
+        venue: null,
+        homeParticipantLabel,
+        awayParticipantLabel,
+      }];
+    });
+  });
+};
+
+const publicSeriesCandidates = (context: PublicCompetitionContext): PublicScheduleEntry[] => {
+  const realGames = context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) => round.game ? [round.game] : []));
+  const plannedGames = context.games.filter((game): game is PublicProvisionalGame => isPublicProvisionalGame(game) && game.planningKind === "series");
+  const candidates = realGames.length > 0
+    ? [...realGames, ...plannedGames]
+    : [...plannedGames, ...projectedSeriesCandidates(context)];
+  return [...new Map(candidates.map((game) => [game.id, game])).values()];
+};
+
+const selectPublicNextCompetitiveBlock = (context: PublicCompetitionContext | null): HostedNextCompetitiveBlock | null => {
+  if (!context?.selectedPhase || context.selectedPhase.format !== "series") return selectHostedNextCompetitiveBlock(context);
+  const unresolved = publicSeriesCandidates(context)
+    .filter(isUnresolvedPublicGame)
+    .sort((left, right) => left.roundNumber - right.roundNumber || byCanonicalGameOrder(left, right));
+  const roundNumber = unresolved[0]?.roundNumber;
+  if (roundNumber === undefined) return null;
+  const games = unresolved.filter((game) => game.roundNumber === roundNumber);
+  return { kind: "series", label: canonicalRoundLabel(games, roundNumber) ?? `ΓΥΡΟΣ ${roundNumber}`, games };
+};
 
 const completedPhaseLifecycleStatuses = new Set(["complete", "completed", "finalized"]);
 
@@ -140,11 +204,7 @@ const fullCompetitiveBlock = (context: PublicCompetitionContext, selected: Hoste
   const roundNumber = selected.games[0]?.roundNumber;
   if (roundNumber === undefined) return selected;
   const candidates = context.selectedPhase?.format === "series"
-    ? [
-      ...context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) =>
-        round.roundNumber === roundNumber && round.kind !== "not_needed" && round.game ? [round.game] : [])),
-      ...context.games.filter((game) => isPublicProvisionalGame(game) && game.roundNumber === roundNumber),
-    ]
+    ? publicSeriesCandidates(context).filter((game) => game.roundNumber === roundNumber)
     : context.games.filter((game) => game.roundNumber === roundNumber);
   const games = [...new Map(candidates.map((game) => [game.id, game])).values()].sort(byCanonicalGameOrder);
   return { ...selected, games };
@@ -154,8 +214,12 @@ export function selectPublicProgramResultsBlock(contexts: PublicCompetitionConte
   const competitionId = contexts.find((context) => context.selectedCompetition)?.selectedCompetition?.id;
   if (!competitionId) return null;
   const scopedContexts = contexts.filter((context) => context.selectedCompetition?.id === competitionId);
-  const currentContext = selectHostedHomePhaseContext(scopedContexts);
-  const currentBlock = selectHostedNextCompetitiveBlock(currentContext);
+  const currentContext = [...scopedContexts]
+    .sort((left, right) => (left.selectedPhase?.phaseOrder ?? Number.MAX_SAFE_INTEGER) - (right.selectedPhase?.phaseOrder ?? Number.MAX_SAFE_INTEGER))
+    .find((context) => context.selectedPhase
+      && !completedPhaseLifecycleStatuses.has(context.selectedPhase.lifecycleStatus ?? "")
+      && selectPublicNextCompetitiveBlock(context) !== null) ?? null;
+  const currentBlock = selectPublicNextCompetitiveBlock(currentContext);
   if (currentContext && currentBlock) {
     return { context: currentContext, block: fullCompetitiveBlock(currentContext, currentBlock), completedFallback: false };
   }
@@ -188,10 +252,7 @@ export function listPublicNavigableCompetitiveBlocks(contexts: PublicCompetition
       const phase = context.selectedPhase!;
       const kind: HostedNextCompetitiveBlock["kind"] = phase.format === "series" ? "series" : "matchday";
       const candidates = phase.format === "series"
-        ? [
-          ...context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) => round.kind !== "not_needed" && round.game ? [round.game] : [])),
-          ...context.games.filter(isPublicProvisionalGame),
-        ]
+        ? publicSeriesCandidates(context)
         : context.games;
       const roundNumbers = [...new Set(candidates.map((game) => game.roundNumber))].sort((left, right) => left - right);
       return roundNumbers.flatMap((roundNumber) => {
@@ -207,6 +268,14 @@ export function listPublicNavigableCompetitiveBlocks(contexts: PublicCompetition
         }];
       });
     });
+}
+
+export function scopePublicProgramResultsContexts(
+  selectedContext: PublicCompetitionContext,
+  phaseContexts: PublicCompetitionContext[],
+) {
+  if (selectedContext.selectedPhase?.format !== "series") return phaseContexts;
+  return phaseContexts.filter((context) => context.selectedPhase?.id === selectedContext.selectedPhase?.id);
 }
 
 export function selectPublicProgramResultsNavigation(contexts: PublicCompetitionContext[], manualBlockKey?: string): PublicProgramResultsNavigation {

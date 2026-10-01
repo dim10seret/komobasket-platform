@@ -1,4 +1,4 @@
-import { selectPublicProgramResultsNavigation } from "@/components/hosted/HostedOrganizationHomeData";
+import { scopePublicProgramResultsContexts, selectPublicProgramResultsNavigation } from "@/components/hosted/HostedOrganizationHomeData";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -18,6 +18,7 @@ import {
   listPublicCompetitionMovementsForOrganization,
   type PublicCompetitionContext,
   type PublicGame,
+  type PublicProvisionalGame,
   type PublicPhase,
   type PublicScheduleEntry,
   type PublicStandingRow,
@@ -79,10 +80,17 @@ function Team({ game, side, teamHref, compact = false }: { game: PublicGame; sid
   return teamHref ? <Link href={teamHref(team.id)} className={`${className} rounded-md outline-offset-2 hover:text-orange-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-orange-600`}>{content}</Link> : <div className={className}>{content}</div>;
 }
 
+const provisionalPresentation = (game: PublicProvisionalGame) => game.projectionState === "pending_carry_over"
+  ? { label: "Αναμονή μεταφοράς αποτελέσματος", className: "bg-sky-50 text-sky-800" }
+  : game.projectionState === "projected"
+    ? { label: "Αναμονή προγράμματος", className: "bg-amber-50 text-amber-800" }
+    : { label: "Πρόγραμμα", className: "bg-orange-50 text-orange-800" };
+
 function CompactGameRow({ game, teamHref, gameBasePath }: { game: PublicScheduleEntry; teamHref?: (teamId: string) => string; gameBasePath: string }) {
   if (isPublicProvisionalGame(game)) {
     const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime, game.venue].filter(Boolean);
-    return <article className="grid min-h-12 min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm"><p className="min-w-0 text-right text-sm font-bold leading-5 text-zinc-700">{game.homeParticipantLabel}</p><div className="text-center"><span className="rounded-lg bg-orange-50 px-2.5 py-1 text-xs font-black uppercase tracking-wide text-orange-800">Πρόγραμμα</span>{details.length ? <p className="mt-1 text-[11px] font-bold text-zinc-500">{details.join(" · ")}</p> : null}</div><p className="min-w-0 text-left text-sm font-bold leading-5 text-zinc-700">{game.awayParticipantLabel}</p></article>;
+    const presentation = provisionalPresentation(game);
+    return <article className="grid min-h-12 min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm"><p className="min-w-0 text-right text-sm font-bold leading-5 text-zinc-700">{game.homeParticipantLabel}</p><div className="text-center"><span className={`inline-flex max-w-40 rounded-lg px-2.5 py-1 text-xs font-black uppercase leading-4 tracking-wide ${presentation.className}`}>{presentation.label}</span>{details.length ? <p className="mt-1 text-[11px] font-bold text-zinc-500">{details.join(" · ")}</p> : null}</div><p className="min-w-0 text-left text-sm font-bold leading-5 text-zinc-700">{game.awayParticipantLabel}</p></article>;
   }
   const hasResult = game.homeScore !== null && game.awayScore !== null;
   return <article className="grid min-h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm"><Team game={game} side="home" compact teamHref={teamHref} /><PublicGameResult game={game} gameBasePath={gameBasePath} className={`rounded-lg px-2.5 py-1 text-sm tabular-nums ${hasResult ? "bg-zinc-950 font-black text-white" : "bg-orange-50 font-bold text-orange-800"}`} /><Team game={game} side="away" compact teamHref={teamHref} /></article>;
@@ -92,7 +100,8 @@ function GameCard({ game, compact = false, teamHref, gameBasePath }: { game: Pub
   if (compact) return <CompactGameRow game={game} teamHref={teamHref} gameBasePath={gameBasePath} />;
   if (isPublicProvisionalGame(game)) {
     const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime, game.venue].filter(Boolean);
-    return <article className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm"><div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5 md:gap-4"><p className="min-w-0 text-right text-sm font-bold leading-5 text-zinc-700 sm:text-base">{game.homeParticipantLabel}</p><div className="flex min-w-20 flex-col items-center gap-1.5"><span className="w-full rounded-xl bg-orange-50 px-2.5 py-1.5 text-center text-xs font-black uppercase tracking-wide text-orange-800">Πρόγραμμα</span>{details.length ? <p className="max-w-44 text-center text-[11px] font-bold text-zinc-500">{details.join(" · ")}</p> : null}</div><p className="min-w-0 text-left text-sm font-bold leading-5 text-zinc-700 sm:text-base">{game.awayParticipantLabel}</p></div></article>;
+    const presentation = provisionalPresentation(game);
+    return <article className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm"><div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5 md:gap-4"><p className="min-w-0 text-right text-sm font-bold leading-5 text-zinc-700 sm:text-base">{game.homeParticipantLabel}</p><div className="flex min-w-20 max-w-44 flex-col items-center gap-1.5"><span className={`w-full rounded-xl px-2.5 py-1.5 text-center text-xs font-black uppercase leading-4 tracking-wide ${presentation.className}`}>{presentation.label}</span>{details.length ? <p className="max-w-44 text-center text-[11px] font-bold text-zinc-500">{details.join(" · ")}</p> : null}</div><p className="min-w-0 text-left text-sm font-bold leading-5 text-zinc-700 sm:text-base">{game.awayParticipantLabel}</p></div></article>;
   }
   const hasResult = game.homeScore !== null && game.awayScore !== null;
   const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime].filter(Boolean);
@@ -159,7 +168,7 @@ async function PublicCompetitionProgramResults({
       phaseSlug: phase.slug,
     })))
     : [context];
-  const navigation = selectPublicProgramResultsNavigation(phaseContexts, manualBlockKey);
+  const navigation = selectPublicProgramResultsNavigation(scopePublicProgramResultsContexts(context, phaseContexts), manualBlockKey);
   const selected = navigation.selected;
   const selectorHref = (seasonSlug: string, competitionSlug?: string) => {
     const params = new URLSearchParams({ season: seasonSlug });
@@ -197,7 +206,7 @@ async function PublicCompetitionProgramResults({
         {selected.completedFallback ? <p className="mt-1 text-xs font-bold text-zinc-400">Τελευταίο ολοκληρωμένο αγωνιστικό block</p> : null}
       </div>
       <div className="mt-5 space-y-3">{selected.block.games.map((game) => <GameCard key={game.id} game={game} teamHref={teamHref} gameBasePath={gameBasePath} />)}</div>
-    </> : <p className="mt-5 rounded-2xl bg-zinc-50 p-5 text-sm font-bold text-zinc-600">Το πρόγραμμα της διοργάνωσης δεν έχει ανακοινωθεί ακόμη.</p>}
+    </> : context.selectedPhase?.format === "series" ? <div className="mt-5 rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-5"><p className="text-base font-black text-zinc-900">Αναμονή σχεδιασμού</p><p className="mt-1 text-sm font-bold text-zinc-600">Το πρόγραμμα της φάσης δεν έχει ακόμη διαμορφωθεί.</p></div> : <p className="mt-5 rounded-2xl bg-zinc-50 p-5 text-sm font-bold text-zinc-600">Το πρόγραμμα της διοργάνωσης δεν έχει ανακοινωθεί ακόμη.</p>}
   </section>;
 }
 export default async function PublicCompetitionsView({ organizationId, basePath, pageHero, searchParams }: PublicCompetitionsViewProps) {

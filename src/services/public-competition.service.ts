@@ -62,6 +62,8 @@ export type PublicProvisionalGame = {
   kind: "provisional";
   id: string;
   planningKind: "round_robin" | "series";
+  seriesMatchupId?: string | null;
+  projectionState?: "projected" | "pending_carry_over";
   competitionId: string;
   phaseId: string;
   scheduleId: string;
@@ -81,7 +83,7 @@ export function isPublicProvisionalGame(entry: PublicScheduleEntry): entry is Pu
 }
 
 export type PublicStandingRow = { rank: number; team: PublicGameTeam; gamesPlayed: number; wins: number; losses: number; standingsPoints: number; pointsFor: number; pointsAgainst: number; pointDifference: number };
-export type PublicSeriesRound = { roundNumber: number; kind: "transferred" | "game" | "not_needed"; sourcePhaseName: string | null; game: PublicGame | null };
+export type PublicSeriesRound = { roundNumber: number; kind: "transferred" | "game" | "projected" | "pending_carry_over" | "not_needed"; sourcePhaseName: string | null; game: PublicGame | null };
 export type PublicSeriesSummary = Pick<SeriesProgressionResult,
   "teamAId" | "teamAName" | "teamBId" | "teamBName" | "winsRequired" |
   "currentWinsA" | "currentWinsB" | "qualifiedTeamId" | "qualifiedTeamName" | "transferredRoundCount"
@@ -640,6 +642,7 @@ async function loadPublicProvisionalGames(
       competitionId,
       phaseId: phase.id,
       scheduleId: slot.schedule_id,
+      seriesMatchupId: String(slot.matchup_id ?? "").trim() || null,
       roundNumber,
       gameOrder: roundNumber,
       scheduledDate: slot.scheduled_date,
@@ -876,14 +879,49 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
   let directAdvancements = selectedPhase.directAdvancements;
   if (selectedPhase.format === "series") {
     const carry = resolveSeriesCarryOver(phaseRows.map((row) => toSeriesPhase(row, selectedCompetition.id)), canonicalGames as SeriesCarryOverGameLike[], teams, toSeriesPhase(selectedPhaseRow, selectedCompetition.id));
+    const configuredCarryOverMeetingNumbers = new Set(getConfiguredSeriesCarryOverMeetingNumbers(toSeriesPhase(selectedPhaseRow, selectedCompetition.id)));
+    const winsRequired = Math.max(1, Number(selectedPhase.winsRequired ?? 2));
+    const maximumSeriesRounds = (winsRequired * 2) - 1;
+    const projectedRounds = () => Array.from({ length: maximumSeriesRounds }, (_, index): PublicSeriesRound => {
+      const roundNumber = index + 1;
+      return {
+        roundNumber,
+        kind: configuredCarryOverMeetingNumbers.has(roundNumber) ? "pending_carry_over" : "projected",
+        sourcePhaseName: null,
+        game: null,
+      };
+    });
     const direct = carry.matchups.filter((matchup) => matchup.entryKind === "direct_qualifier" && matchup.state === "resolved" && matchup.qualifiedTeamName).map((matchup) => ({ matchupId: matchup.matchupId, label: `${matchup.qualifiedTeamName} — Πρόκριση χωρίς αγώνα.`, participantSlotType: "canonical_direct_qualifier" }));
     if (direct.length) directAdvancements = direct;
     for (const matchup of carry.matchups) {
-      if (matchup.entryKind !== undefined || matchup.playable === false || matchup.state !== "resolved" || !matchup.teamAId || !matchup.teamBId) continue;
+      if (matchup.entryKind !== undefined || matchup.playable === false) continue;
+      if (matchup.state !== "resolved" || !matchup.teamAId || !matchup.teamBId) {
+        seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds, rounds: projectedRounds() });
+        continue;
+      }
       const transferred: SeriesProgressionTransferredGame[] = matchup.meetingResolutions.flatMap((meeting, index) => { const game = canonicalGames.find((item) => item.id === meeting.gameId); return meeting.state === "resolved" && game && game.home_score !== null && game.away_score !== null ? [{ sourceGameId: game.id, seriesRoundNumber: index + 1, homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: Number(game.home_score), awayScore: Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }] : []; });
       const materialized: SeriesProgressionMaterializedGame[] = canonicalGames.filter((game) => game.phase_id === selectedPhase.id && game.series_matchup_id === matchup.matchupId && game.series_round_number !== null).map((game) => ({ matchupId: matchup.matchupId, gameId: game.id, seriesRoundNumber: Number(game.series_round_number), homeTeamId: game.home_team_id, awayTeamId: game.away_team_id, homeScore: game.home_score === null ? null : Number(game.home_score), awayScore: game.away_score === null ? null : Number(game.away_score), status: String(game.status ?? ""), date: game.scheduled_date, time: game.scheduled_time, venue: game.game_venue }));
-      const progression = calculateSeriesProgression({ matchupId: matchup.matchupId, teamA: { id: matchup.teamAId, name: matchup.teamAName ?? matchup.teamAId }, teamB: { id: matchup.teamBId, name: matchup.teamBName ?? matchup.teamBId }, winsRequired: Math.max(1, Number(selectedPhase.winsRequired ?? 2)), transferredGames: transferred, materializedGames: materialized, planningSlots: [] });
-      const rounds = progression.rounds.flatMap<PublicSeriesRound>((round): PublicSeriesRound[] => { if (round.rowState === "transferred" && round.sourceGameId) { const game = canonicalGames.find((item) => item.id === round.sourceGameId); const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null; return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "transferred" as const, sourcePhaseName: matchup.sourcePhaseName, game: projected }] : []; } if (round.rowState === "real_game" && round.realGameId) { const game = canonicalGames.find((item) => item.id === round.realGameId); const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null; return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "game" as const, sourcePhaseName: null, game: projected }] : []; } return round.rowState === "qualified" ? [{ roundNumber: round.seriesRoundNumber, kind: "not_needed" as const, sourcePhaseName: null, game: null }] : []; });
+      const progression = calculateSeriesProgression({ matchupId: matchup.matchupId, teamA: { id: matchup.teamAId, name: matchup.teamAName ?? matchup.teamAId }, teamB: { id: matchup.teamBId, name: matchup.teamBName ?? matchup.teamBId }, winsRequired, transferredGames: transferred, materializedGames: materialized, planningSlots: [] });
+      const rounds = progression.rounds.flatMap<PublicSeriesRound>((round): PublicSeriesRound[] => {
+        if (round.rowState === "transferred" && round.sourceGameId) {
+          const game = canonicalGames.find((item) => item.id === round.sourceGameId);
+          const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null;
+          return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "transferred", sourcePhaseName: matchup.sourcePhaseName, game: projected }] : [];
+        }
+        if (round.rowState === "real_game" && round.realGameId) {
+          const game = canonicalGames.find((item) => item.id === round.realGameId);
+          const projected = game ? normalizePublicGame(game, "series", round.seriesRoundNumber) : null;
+          return projected ? [{ roundNumber: round.seriesRoundNumber, kind: "game", sourcePhaseName: null, game: projected }] : [];
+        }
+        if (round.rowState === "qualified") return [{ roundNumber: round.seriesRoundNumber, kind: "not_needed", sourcePhaseName: null, game: null }];
+        if (round.rowState === "if_needed") return [{
+          roundNumber: round.seriesRoundNumber,
+          kind: configuredCarryOverMeetingNumbers.has(round.seriesRoundNumber) ? "pending_carry_over" : "projected",
+          sourcePhaseName: null,
+          game: null,
+        }];
+        return [];
+      });
       seriesHistory.push({ matchupId: matchup.matchupId, label: matchup.label, maximumSeriesRounds: progression.maximumSeriesRounds, rounds, summary: {
         teamAId: progression.teamAId, teamAName: progression.teamAName,
         teamBId: progression.teamBId, teamBName: progression.teamBName,

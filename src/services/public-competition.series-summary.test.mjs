@@ -147,6 +147,8 @@ describe("canonical public series summary projection", () => {
     const result = await read(fixture({ carryOverEnabled: true, provisional: true, provisionalRound: 1 }));
     expect(result.games.some((game) => game.id === "series:org-a-phase:pair:1")).toBe(false);
     expect(result.provisionalGames).toEqual([]);
+    expect(result.seriesHistory[0]?.rounds[0]).toMatchObject({ roundNumber: 1, kind: "pending_carry_over", game: null });
+    expect(result.seriesHistory[0]?.rounds[1]).toMatchObject({ roundNumber: 2, kind: "projected", game: null });
   });
   it("filters planning rows whose canonical identity already has a real game", async () => {
     const value = fixture();
