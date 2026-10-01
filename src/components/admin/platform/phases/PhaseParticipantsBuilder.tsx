@@ -95,6 +95,24 @@ const participantSourceDescriptions: Record<ParticipantSourceType, string> = {
   manual: "Ορίζεις χειροκίνητα slots χωρίς αυτόματη ανάγνωση team list.",
 };
 
+export function buildStandingPositionPreview(
+  sourcePhaseId: string,
+  sourcePhaseName: string,
+  standingFrom: number,
+  standingTo: number,
+) {
+  if (!sourcePhaseId || standingFrom < 1 || standingTo < standingFrom) return [];
+  const sourceName = sourcePhaseName.trim() || "Προηγούμενη φάση";
+  return Array.from({ length: standingTo - standingFrom + 1 }, (_, index) => {
+    const position = standingFrom + index;
+    return {
+      key: `standing:${sourcePhaseId}:position:${position}`,
+      position,
+      label: `${position}η θέση ${sourceName}`,
+    };
+  });
+}
+
 const getObjectInput = (value: unknown) => {
   if (!value) return {};
   if (typeof value === "string") {
@@ -529,7 +547,11 @@ export function PhaseParticipantsBuilder({
   const persistedSourcePhaseId = String(config?.participantSourcePhaseId ?? "").trim();
   const persistedSourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === persistedSourcePhaseId), [phaseList, persistedSourcePhaseId]);
   const sourceRangeSlots = useMemo(() => {
-    if (isSeriesMode && sourcePhase && String(sourcePhase.format ?? sourcePhase.phase_kind ?? "").toLowerCase() === "standings") {
+    if (
+      (isSeriesMode || participantSourceType === "standing_positions")
+      && sourcePhase
+      && String(sourcePhase.format ?? sourcePhase.phase_kind ?? "").toLowerCase() === "standings"
+    ) {
       const settings = getObjectInput(sourcePhase.rule_settings_json);
       const participantConfiguration = getObjectInput(settings.participantConfiguration) as Record<string, unknown>;
       const from = asInt(participantConfiguration.standingFrom, 1);
@@ -538,7 +560,7 @@ export function PhaseParticipantsBuilder({
       return Array.from({ length: bounded.safeTo - bounded.safeFrom + 1 }, (_, index) => String(bounded.safeFrom + index));
     }
     return [];
-  }, [isSeriesMode, sourcePhase]);
+  }, [isSeriesMode, participantSourceType, sourcePhase]);
 
   const availableStandingSlots = useMemo(() => {
     const from = asInt(standingFrom, 1);
@@ -582,14 +604,24 @@ export function PhaseParticipantsBuilder({
     }
   }, [isRootSeries, isSeriesMode, participantSourceType]);
 
+  const standingPositionPreview = useMemo(() => {
+    if (participantSourceType !== "standing_positions") return [];
+    return buildStandingPositionPreview(
+      String(sourcePhase?.id ?? ""),
+      String(sourcePhase?.name ?? ""),
+      standingFrom,
+      standingTo,
+    );
+  }, [participantSourceType, sourcePhase, standingFrom, standingTo]);
+
   const estimatedParticipantCount = useMemo(() => {
+    if (participantSourceType === "standing_positions") return standingPositionPreview.length;
     if (!isSeriesMode) return competitionTeams.length;
     if (participantSourceType === "competition_participants") return competitionTeams.length;
     if (participantSourceType === "selected_teams") return selectedTeamIds.length;
-    if (participantSourceType === "standing_positions") return Math.max(0, standingTo - standingFrom + 1);
     if (participantSourceType === "manual") return manualSlotCount;
     return sourceMatchupIds.length;
-  }, [competitionTeams.length, isSeriesMode, manualSlotCount, participantSourceType, selectedTeamIds.length, standingFrom, standingTo, sourceMatchupIds.length]);
+  }, [competitionTeams.length, isSeriesMode, manualSlotCount, participantSourceType, selectedTeamIds.length, sourceMatchupIds.length, standingPositionPreview.length]);
 
   const isSeriesStepSourceRangeValid = useMemo(() => {
     if (!isSeriesMode) return true;
@@ -1048,8 +1080,10 @@ export function PhaseParticipantsBuilder({
         <>
           <p className="mt-2 text-sm text-zinc-600">Από πού θα προέλθουν οι ομάδες που θα συμμετάσχουν στη φάση.</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {participantSourceOptions.filter((option) => option.value === "competition_participants").map((option) => {
-              const isChecked = true;
+            {participantSourceOptions
+              .filter((option) => option.value === "competition_participants" || option.value === "standing_positions")
+              .map((option) => {
+              const isChecked = participantSourceType === option.value;
               return (
                 <label
                   key={option.value}
@@ -1073,6 +1107,26 @@ export function PhaseParticipantsBuilder({
               );
             })}
           </div>
+          {participantSourceType === "standing_positions" ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <Field label="Φάση προέλευσης">
+                <select name="participantSourcePhaseId" value={participantSourcePhaseId} onChange={(event) => setParticipantSourcePhaseId(event.target.value)} className={inputClass}>
+                  <option value="">Επιλογή φάσης</option>
+                  {phaseList.filter((entry) => String(entry.format ?? entry.phase_kind ?? "") === "standings").map((entry) => {
+                    const id = String(entry.id);
+                    const order = Number(entry.phase_order ?? entry.order_index ?? 0);
+                    return <option key={id} value={id}>{`${order}. ${entry.name}`}</option>;
+                  })}
+                </select>
+              </Field>
+              <Field label="Από θέση">
+                <input type="number" min={1} name="standingFrom" value={standingFrom} onChange={(event) => setStandingFrom(asInt(event.target.value, 1))} className={inputClass} />
+              </Field>
+              <Field label="Έως θέση">
+                <input type="number" min={standingFrom} name="standingTo" value={standingTo} onChange={(event) => setStandingTo(asInt(event.target.value, standingFrom))} className={inputClass} />
+              </Field>
+            </div>
+          ) : null}
         </>
       )}
     </section>
@@ -1087,8 +1141,10 @@ export function PhaseParticipantsBuilder({
           {!isSeriesMode && (
             <div className="space-y-2">
               <p className="text-xs font-black text-zinc-700">Ενεργή πηγή</p>
-              <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800">Όλες οι ομάδες της διοργάνωσης</div>
-              <p className="text-xs text-zinc-500">{participantSourceDescriptions.competition_participants}</p>
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800">
+                {participantSourceOptions.find((option) => option.value === participantSourceType)?.label}
+              </div>
+              <p className="text-xs text-zinc-500">{participantSourceDescriptions[participantSourceType]}</p>
             </div>
           )}
           {isSeriesMode ? (
@@ -1335,8 +1391,19 @@ export function PhaseParticipantsBuilder({
       <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-3">
         <p className="text-xs uppercase tracking-wide text-zinc-500">Σύνοψη</p>
         <div className="mt-2 grid gap-1 text-sm text-zinc-700 md:grid-cols-2">
-          <p><span className="font-black">Πηγή:</span> {isRootSeries ? "Ομάδες της διοργάνωσης" : isSeriesMode ? "Σειρά αγώνων" : "Όλες οι ομάδες της διοργάνωσης"}</p>
-          {isSeriesMode && !isRootSeries && <p><span className="font-black">Θέσεις:</span> {`${standingFrom}–${standingTo}`}</p>}
+          <p>
+            <span className="font-black">Πηγή:</span>{" "}
+            {isRootSeries
+              ? "Ομάδες της διοργάνωσης"
+              : participantSourceType === "standing_positions"
+                ? `Θέσεις από ${String(sourcePhase?.name ?? "προηγούμενη standings phase")}`
+                : isSeriesMode
+                  ? "Σειρά αγώνων"
+                  : "Όλες οι ομάδες της διοργάνωσης"}
+          </p>
+          {(isSeriesMode && !isRootSeries) || participantSourceType === "standing_positions" ? (
+            <p><span className="font-black">Θέσεις:</span> {`${standingFrom}–${standingTo}`}</p>
+          ) : null}
           {isSeriesMode && <p><span className="font-black">Τρόπος:</span> Manual</p>}
           {isSeriesMode && (
             <p><span className="font-black">Νίκες για πρόκριση:</span> {winsRequired}</p>
@@ -1359,6 +1426,18 @@ export function PhaseParticipantsBuilder({
           {isSeriesMode && <p><span className="font-black">Έξοδοι:</span> {estimatedOutputSlots}</p>}
         </div>
       </div>
+      {!isSeriesMode && participantSourceType === "standing_positions" ? (
+        <div className="mt-4 flex flex-wrap gap-2" data-testid="standing-position-preview">
+          {standingPositionPreview.map((slot) => (
+            <span key={slot.key} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm font-bold text-sky-900">
+              {slot.label}
+            </span>
+          ))}
+          {!standingPositionPreview.length ? (
+            <p className="text-sm text-zinc-500">Επιλέξτε έγκυρη φάση προέλευσης και εύρος θέσεων.</p>
+          ) : null}
+        </div>
+      ) : null}
       {isSeriesMode ? <div className="mt-4 space-y-3">
         {carryOverResolution.carryOverEnabled ? carryOverResolution.matchups.map((matchup) => (
           <div key={matchup.matchupId} className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">
@@ -1415,7 +1494,7 @@ export function PhaseParticipantsBuilder({
       type="hidden"
       name="participantConfiguration"
       value={JSON.stringify({
-        participantSourceType: isRootSeries ? "competition_participants" : isSeriesMode ? "standing_positions" : "competition_participants",
+        participantSourceType: isRootSeries ? "competition_participants" : participantSourceType,
         participantSourcePhaseId,
         standingFrom,
         standingTo,

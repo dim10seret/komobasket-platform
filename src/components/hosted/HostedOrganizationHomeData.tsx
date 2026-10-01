@@ -2,28 +2,37 @@ import Link from "next/link";
 import PublicGameResult from "@/components/competition/PublicGameResult";
 import { hostedCompetitionGamePath, hostedOrganizationPath } from "@/lib/hosted-organization-routes";
 import { formatPublicDate } from "@/lib/public-date";
-import type { PublicCompetitionContext, PublicGame } from "@/services/public-competition.service";
+import {
+  isPublicProvisionalGame,
+  type PublicCompetitionContext,
+  type PublicGame,
+  type PublicScheduleEntry,
+} from "@/services/public-competition.service";
 
 export type HostedNextCompetitiveBlock = {
   kind: "matchday" | "series";
   label: string;
-  games: PublicGame[];
+  games: PublicScheduleEntry[];
 };
 
-const isUnresolvedPublicGame = (game: PublicGame) => game.publicStatus === "scheduled" || game.publicStatus === "live";
-const byCanonicalGameOrder = (left: PublicGame, right: PublicGame) => (left.gameOrder ?? Number.MAX_SAFE_INTEGER) - (right.gameOrder ?? Number.MAX_SAFE_INTEGER) || left.id.localeCompare(right.id);
+const isRealPublicGame = (game: PublicScheduleEntry): game is PublicGame => !isPublicProvisionalGame(game);
+const isUnresolvedPublicGame = (game: PublicScheduleEntry) => isPublicProvisionalGame(game) || game.publicStatus === "scheduled" || game.publicStatus === "live";
+const byCanonicalGameOrder = (left: PublicScheduleEntry, right: PublicScheduleEntry) => (left.gameOrder ?? Number.MAX_SAFE_INTEGER) - (right.gameOrder ?? Number.MAX_SAFE_INTEGER) || left.id.localeCompare(right.id);
+const canonicalRoundLabel = (games: PublicScheduleEntry[], roundNumber: number) =>
+  games.find((game): game is PublicGame => game.roundNumber === roundNumber && isRealPublicGame(game) && Boolean(game.roundLabel?.trim()))?.roundLabel;
 
 export function selectHostedNextCompetitiveBlock(context: PublicCompetitionContext | null): HostedNextCompetitiveBlock | null {
   if (!context?.selectedPhase) return null;
   if (context.selectedPhase.format === "series") {
-    const unresolved = context.seriesHistory
+    const unresolvedReal = context.seriesHistory
       .flatMap((matchup) => matchup.rounds
         .flatMap((round) => round.kind === "game" && round.game && isUnresolvedPublicGame(round.game) ? [round.game] : []))
+    const unresolved = [...unresolvedReal, ...context.games.filter(isPublicProvisionalGame)]
       .sort((left, right) => left.roundNumber - right.roundNumber || byCanonicalGameOrder(left, right));
     const roundNumber = unresolved[0]?.roundNumber;
     if (roundNumber === undefined) return null;
     const games = unresolved.filter((game) => game.roundNumber === roundNumber);
-    const canonicalLabel = games.find((game) => game.roundLabel?.trim())?.roundLabel;
+    const canonicalLabel = canonicalRoundLabel(games, roundNumber);
     return { kind: "series", label: canonicalLabel ?? `ΓΥΡΟΣ ${roundNumber}`, games };
   }
 
@@ -31,7 +40,7 @@ export function selectHostedNextCompetitiveBlock(context: PublicCompetitionConte
   const roundNumber = unresolved[0]?.roundNumber;
   if (roundNumber === undefined) return null;
   const games = unresolved.filter((game) => game.roundNumber === roundNumber);
-  const canonicalLabel = context.games.find((game) => game.roundNumber === roundNumber && game.roundLabel?.trim())?.roundLabel;
+  const canonicalLabel = canonicalRoundLabel(context.games, roundNumber);
   return {
     kind: "matchday",
     label: canonicalLabel ?? (context.selectedPhase.format === "standings" ? `${roundNumber}η Αγωνιστική` : `Γύρος ${roundNumber}`),
@@ -101,12 +110,12 @@ export function selectHostedLatestResultsBlock(contexts: PublicCompetitionContex
     const completed = (context.selectedPhase.format === "series"
       ? context.seriesHistory.flatMap((matchup) => matchup.rounds
         .flatMap((round) => round.kind === "game" && round.game?.publicStatus === "completed" ? [round.game] : []))
-      : context.games.filter((game) => game.publicStatus === "completed"))
+      : context.games.filter((game): game is PublicGame => isRealPublicGame(game) && game.publicStatus === "completed"))
       .sort((left, right) => right.roundNumber - left.roundNumber || byCanonicalGameOrder(left, right));
     const roundNumber = completed[0]?.roundNumber;
     if (roundNumber === undefined) continue;
     const games = completed.filter((game) => game.roundNumber === roundNumber).sort(byCanonicalGameOrder);
-    const canonicalLabel = games.find((game) => game.roundLabel?.trim())?.roundLabel;
+    const canonicalLabel = canonicalRoundLabel(games, roundNumber);
     return {
       kind: context.selectedPhase.format === "series" ? "series" : "matchday",
       label: canonicalLabel ?? (context.selectedPhase.format === "standings" ? `${roundNumber}η Αγωνιστική` : `ΓΥΡΟΣ ${roundNumber}`),
@@ -131,8 +140,11 @@ const fullCompetitiveBlock = (context: PublicCompetitionContext, selected: Hoste
   const roundNumber = selected.games[0]?.roundNumber;
   if (roundNumber === undefined) return selected;
   const candidates = context.selectedPhase?.format === "series"
-    ? context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) =>
-      round.roundNumber === roundNumber && round.kind !== "not_needed" && round.game ? [round.game] : []))
+    ? [
+      ...context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) =>
+        round.roundNumber === roundNumber && round.kind !== "not_needed" && round.game ? [round.game] : [])),
+      ...context.games.filter((game) => isPublicProvisionalGame(game) && game.roundNumber === roundNumber),
+    ]
     : context.games.filter((game) => game.roundNumber === roundNumber);
   const games = [...new Map(candidates.map((game) => [game.id, game])).values()].sort(byCanonicalGameOrder);
   return { ...selected, games };
@@ -176,13 +188,16 @@ export function listPublicNavigableCompetitiveBlocks(contexts: PublicCompetition
       const phase = context.selectedPhase!;
       const kind: HostedNextCompetitiveBlock["kind"] = phase.format === "series" ? "series" : "matchday";
       const candidates = phase.format === "series"
-        ? context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) => round.kind !== "not_needed" && round.game ? [round.game] : []))
+        ? [
+          ...context.seriesHistory.flatMap((matchup) => matchup.rounds.flatMap((round) => round.kind !== "not_needed" && round.game ? [round.game] : [])),
+          ...context.games.filter(isPublicProvisionalGame),
+        ]
         : context.games;
       const roundNumbers = [...new Set(candidates.map((game) => game.roundNumber))].sort((left, right) => left - right);
       return roundNumbers.flatMap((roundNumber) => {
         const seed = candidates.find((game) => game.roundNumber === roundNumber);
         if (!seed) return [];
-        const canonicalLabel = candidates.find((game) => game.roundNumber === roundNumber && game.roundLabel?.trim())?.roundLabel;
+        const canonicalLabel = canonicalRoundLabel(candidates, roundNumber);
         const label = canonicalLabel ?? (phase.format === "standings" ? `${roundNumber}η Αγωνιστική` : `ΓΥΡΟΣ ${roundNumber}`);
         return [{
           key: navigableBlockKey(context, kind, roundNumber),
@@ -216,7 +231,18 @@ export function selectPublicProgramResultsNavigation(contexts: PublicCompetition
   };
 }
 
-function GameRow({ game, gameBasePath, liveGameHref }: { game: PublicGame; gameBasePath: string; liveGameHref: (gameId: string) => string }) {
+function GameRow({ game, gameBasePath, liveGameHref }: { game: PublicScheduleEntry; gameBasePath: string; liveGameHref: (gameId: string) => string }) {
+  if (isPublicProvisionalGame(game)) {
+    const metadata = [game.scheduledDate ? formatPublicDate(game.scheduledDate) : null, game.scheduledTime, game.venue].filter(Boolean).join(" · ");
+    return <article className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
+        <strong className="min-w-0 text-sm leading-5 sm:text-base">{game.homeParticipantLabel}</strong>
+        <span className="min-w-20 rounded-xl bg-orange-50 px-3 py-2 text-center text-xs font-black uppercase tracking-wide text-orange-800">Πρόγραμμα</span>
+        <strong className="min-w-0 text-right text-sm leading-5 sm:text-base">{game.awayParticipantLabel}</strong>
+      </div>
+      {metadata ? <p className="mt-3 text-center text-xs font-bold text-zinc-500">{metadata}</p> : null}
+    </article>;
+  }
   const metadata = [game.scheduledDate ? formatPublicDate(game.scheduledDate) : null, game.scheduledTime, game.venue?.name].filter(Boolean).join(" · ");
   return <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">

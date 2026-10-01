@@ -3,6 +3,28 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./ProgramGamesSection.tsx", import.meta.url), "utf8");
 
+describe("future-phase provisional scheduling", () => {
+  it("uses planning actions instead of materializing unresolved teams", () => {
+    expect(source).toContain('"planRoundRobinProgram"');
+    expect(source).toContain('"createSeriesPlanningSchedule"');
+    expect(source).toContain('"saveRoundRobinPlanningSlot"');
+    expect(source).toContain("buildRoundRobinPlanningGames");
+  });
+
+  it("keeps provisional rows separate from real game actions", () => {
+    expect(source).toContain('status: "provisional"');
+    expect(source).toContain("Προσωρινό");
+    expect(source).toContain("Δεν δημιουργείται πραγματικός αγώνας.");
+    expect(source).toContain("openRoundRobinPlanningDialog");
+  });
+
+  it("retains canonical Series progression and carry-over", () => {
+    expect(source).toContain("calculateSeriesProgression");
+    expect(source).toContain("resolveSeriesCarryOver");
+    expect(source).toContain("saveSeriesPlanningSlot");
+  });
+});
+
 describe("Program & Games Match Report UI", () => {
   it("renders unavailable reports as grey and disabled", () => { expect(source).toContain("if (!availability?.available)"); expect(source).toContain("disabled: true"); expect(source).toContain("bg-zinc-100 text-zinc-500"); });
   it("renders finalized reports without incidents as green and enabled", () => { expect(source).toContain("disabled: false"); expect(source).toContain("bg-emerald-600 text-white"); });

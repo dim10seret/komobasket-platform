@@ -25,6 +25,21 @@ const game = (id, roundNumber, publicStatus, extras = {}) => ({
   homeTeam: team(`${id}-home`),
   awayTeam: team(`${id}-away`),
 });
+const provisional = (id, roundNumber, extras = {}) => ({
+  kind: "provisional",
+  id,
+  planningKind: extras.planningKind ?? "round_robin",
+  competitionId: "competition-a",
+  phaseId: "phase-1",
+  scheduleId: "schedule-a",
+  roundNumber,
+  gameOrder: extras.gameOrder ?? 1,
+  scheduledDate: "2026-10-20",
+  scheduledTime: "20:00",
+  venue: "Arena",
+  homeParticipantLabel: extras.homeParticipantLabel ?? "1η θέση · Regular",
+  awayParticipantLabel: extras.awayParticipantLabel ?? "2η θέση · Regular",
+});
 const context = ({ competition = "competition-a", phaseOrder = 1, lifecycleStatus = "active", format = "standings", games = [], seriesHistory = [] } = {}) => ({
   seasons: [{ id: "season-a", slug: "2026-27", name: "2026-27" }],
   competitions: [], phases: [], games, standings: [], seriesHistory, bracket: null, teamView: null,
@@ -132,6 +147,27 @@ describe("public standalone Program and Results", () => {
     const manualA = selectPublicProgramResultsNavigation([competitionA]).previous?.key;
     const competitionB = context({ competition: "competition-b", games: [game("b-current", 4, "scheduled")] });
     expect(selectPublicProgramResultsNavigation([competitionB], manualA).selected?.block.games[0]?.id).toBe("b-current");
+  });
+
+  it("includes unresolved Round Robin planning in canonical public navigation", () => {
+    const selected = selectPublicProgramResultsBlock([context({ games: [
+      game("round-1", 1, "completed"),
+      provisional("rr:schedule-a:2:1", 2),
+    ] })]);
+    expect(selected?.block.games).toEqual([expect.objectContaining({
+      id: "rr:schedule-a:2:1",
+      kind: "provisional",
+      homeParticipantLabel: "1η θέση · Regular",
+    })]);
+  });
+
+  it("includes unresolved Series planning without making it a result or link", () => {
+    const selected = selectPublicProgramResultsBlock([context({ format: "series", games: [
+      provisional("series:phase-1:pair:1", 1, { planningKind: "series", homeParticipantLabel: "Νικητής A", awayParticipantLabel: "Νικητής B" }),
+    ] })]);
+    expect(selected?.block.games[0]).toEqual(expect.objectContaining({ kind: "provisional", planningKind: "series" }));
+    expect(source).toContain("isPublicProvisionalGame(game)");
+    expect(source).toContain("Πρόγραμμα");
   });
 
   it("renders one standalone section with its own Season and Competition selectors and no Phase selector", () => {

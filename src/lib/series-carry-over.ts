@@ -24,6 +24,8 @@ export type SeriesCarryOverGameLike = {
   scheduled_time?: string | null;
   round_label?: string | null;
   result_source?: string | null;
+  home_standings_points_override?: string | number | null;
+  away_standings_points_override?: string | number | null;
 };
 
 export type SeriesCarryOverPhaseLike = {
@@ -416,7 +418,9 @@ export const resolveFinalizedStandingsPositions = (
       homeScore: game.home_score ?? null,
       awayScore: game.away_score ?? null,
       status: String(game.status ?? null),
-      resultSource: null,
+      resultSource: game.result_source ?? null,
+      homeStandingsPointsOverride: game.home_standings_points_override ?? null,
+      awayStandingsPointsOverride: game.away_standings_points_override ?? null,
     })),
     rules: {
       pointsForWin: Math.max(0, toInt(sourceSettings.pointsForWin ?? sourceSettings.winPoints ?? 2, 2)),

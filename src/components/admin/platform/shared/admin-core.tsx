@@ -24,6 +24,7 @@ export type Snapshot = {
   phases: Row[];
   phaseSchedules: Row[];
   seriesPlanningSlots: Row[];
+  roundRobinPlanningSlots: Row[];
   games: Row[];
   competitionVenues: Row[];
   matchReports?: Record<string, PlatformMatchReportAvailability>;

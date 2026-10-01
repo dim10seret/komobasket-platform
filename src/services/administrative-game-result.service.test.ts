@@ -15,6 +15,7 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as { Data
 const schema = readFileSync(new URL("../../cloudflare/league-schema.sql", import.meta.url), "utf8");
 const platformFoundation = readFileSync(new URL("../../cloudflare/migrations/0001_platform_foundation.sql", import.meta.url), "utf8");
 const phaseSchedules = readFileSync(new URL("../../cloudflare/migrations/0007_c5_phase_schedules_foundation.sql", import.meta.url), "utf8");
+const roundRobinPlanning = readFileSync(new URL("../../cloudflare/migrations/0039_round_robin_planning_slots.sql", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../cloudflare/migrations/0036_administrative_game_results.sql", import.meta.url), "utf8");
 
 let local: LocalDatabase;
@@ -42,6 +43,7 @@ beforeEach(() => {
     local.exec(definition[0]);
   }
   local.exec(phaseSchedules);
+  local.exec(roundRobinPlanning);
   local.exec(`
     INSERT INTO league_app_users(id,email,normalized_email,status,is_super_admin) VALUES ('super-admin','admin@example.test','admin@example.test','active',1);
     INSERT INTO league_organizations(id,slug,name,publication_status) VALUES ('org-a','org-a','Organization A','published');
@@ -147,5 +149,9 @@ describe("administrative result repeat-edit source contract", () => {
       /WHERE\s+game_id\s*=\s*\?\s+AND\s+organization_id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?/,
     );
     expect(source).toContain("administrative_official_result");
+    expect(source).toContain("assertNoFinalizedSourceMaterializationConflict");
+    expect(source).toContain("league_round_robin_planning_slots");
+    expect(source).toContain("league_series_planning_slots");
+    expect(source).toContain("έχει ήδη δημιουργήσει downstream αγώνα");
   });
 });

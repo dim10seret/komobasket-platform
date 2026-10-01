@@ -21,9 +21,41 @@ const data = {
     { competition_id: "cup", season_id: "season", team_id: "team-b", status: "active" },
     { competition_id: "cup", season_id: "season", team_id: "foreign", status: "active" },
   ],
-  rosters: [], movements: [], phases: [], phaseSchedules: [], seriesPlanningSlots: [], games: [], competitionVenues: [],
+  rosters: [], movements: [], phases: [], phaseSchedules: [], seriesPlanningSlots: [], roundRobinPlanningSlots: [], games: [], competitionVenues: [],
   counts: { seasons: 0, competitions: 1, teams: 4, players: 0 },
 };
+
+test("future standings phases expose standing-position participants", () => {
+  assert.match(source, /option\.value === "standing_positions"/);
+  assert.match(source, /participantSourceType === "standing_positions"/);
+  assert.match(source, /name="standingFrom"/);
+  assert.match(source, /name="standingTo"/);
+  assert.match(source, /participantSourceType: isRootSeries \? "competition_participants" : participantSourceType/);
+});
+
+test("standing-position preview projects the inclusive symbolic range", async () => {
+  const { buildStandingPositionPreview } = await import("./PhaseParticipantsBuilder.tsx");
+  const slots = buildStandingPositionPreview("phase_regular", "Regular Season", 9, 15);
+
+  assert.equal(slots.length, 7);
+  assert.deepEqual(
+    slots.map((slot) => slot.key),
+    Array.from({ length: 7 }, (_, index) => `standing:phase_regular:position:${index + 9}`),
+  );
+  assert.deepEqual(
+    slots.map((slot) => slot.label),
+    Array.from({ length: 7 }, (_, index) => `${index + 9}η θέση Regular Season`),
+  );
+  assert.equal(slots.some((slot) => slot.label.includes("Όλες οι ομάδες της διοργάνωσης")), false);
+});
+
+test("standing-position mode drives availability and preview without stale all-team projection", () => {
+  assert.match(source, /participantSourceType === "standing_positions"\) return standingPositionPreview\.length/);
+  assert.match(source, /data-testid="standing-position-preview"/);
+  assert.match(source, /Θέσεις από/);
+  assert.match(source, /\[participantSourceType, sourcePhase, standingFrom, standingTo\]/);
+  assert.match(source, /participantSourceType === "competition_participants"\) return competitionTeams\.length/);
+});
 
 const rootPhase = {
   id: "root-phase", competition_id: "cup", format: "series", phase_order: 1, previous_phase_id: null,

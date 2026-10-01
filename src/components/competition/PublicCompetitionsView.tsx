@@ -14,10 +14,12 @@ import PublicGameResult from "@/components/competition/PublicGameResult";
 import PublicCompetitionLatestMovements from "@/components/competition/PublicCompetitionLatestMovements";
 import {
   getPublicCompetitionContextForOrganization,
+  isPublicProvisionalGame,
   listPublicCompetitionMovementsForOrganization,
   type PublicCompetitionContext,
   type PublicGame,
   type PublicPhase,
+  type PublicScheduleEntry,
   type PublicStandingRow,
   type PublicTeamGame,
   type PublicTeamView,
@@ -77,13 +79,21 @@ function Team({ game, side, teamHref, compact = false }: { game: PublicGame; sid
   return teamHref ? <Link href={teamHref(team.id)} className={`${className} rounded-md outline-offset-2 hover:text-orange-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-orange-600`}>{content}</Link> : <div className={className}>{content}</div>;
 }
 
-function CompactGameRow({ game, teamHref, gameBasePath }: { game: PublicGame; teamHref?: (teamId: string) => string; gameBasePath: string }) {
+function CompactGameRow({ game, teamHref, gameBasePath }: { game: PublicScheduleEntry; teamHref?: (teamId: string) => string; gameBasePath: string }) {
+  if (isPublicProvisionalGame(game)) {
+    const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime, game.venue].filter(Boolean);
+    return <article className="grid min-h-12 min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm"><p className="min-w-0 text-right text-sm font-bold leading-5 text-zinc-700">{game.homeParticipantLabel}</p><div className="text-center"><span className="rounded-lg bg-orange-50 px-2.5 py-1 text-xs font-black uppercase tracking-wide text-orange-800">Πρόγραμμα</span>{details.length ? <p className="mt-1 text-[11px] font-bold text-zinc-500">{details.join(" · ")}</p> : null}</div><p className="min-w-0 text-left text-sm font-bold leading-5 text-zinc-700">{game.awayParticipantLabel}</p></article>;
+  }
   const hasResult = game.homeScore !== null && game.awayScore !== null;
   return <article className="grid min-h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm"><Team game={game} side="home" compact teamHref={teamHref} /><PublicGameResult game={game} gameBasePath={gameBasePath} className={`rounded-lg px-2.5 py-1 text-sm tabular-nums ${hasResult ? "bg-zinc-950 font-black text-white" : "bg-orange-50 font-bold text-orange-800"}`} /><Team game={game} side="away" compact teamHref={teamHref} /></article>;
 }
 
-function GameCard({ game, compact = false, teamHref, gameBasePath }: { game: PublicGame; compact?: boolean; teamHref?: (teamId: string) => string; gameBasePath: string }) {
+function GameCard({ game, compact = false, teamHref, gameBasePath }: { game: PublicScheduleEntry; compact?: boolean; teamHref?: (teamId: string) => string; gameBasePath: string }) {
   if (compact) return <CompactGameRow game={game} teamHref={teamHref} gameBasePath={gameBasePath} />;
+  if (isPublicProvisionalGame(game)) {
+    const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime, game.venue].filter(Boolean);
+    return <article className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm"><div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2.5 md:gap-4"><p className="min-w-0 text-right text-sm font-bold leading-5 text-zinc-700 sm:text-base">{game.homeParticipantLabel}</p><div className="flex min-w-20 flex-col items-center gap-1.5"><span className="w-full rounded-xl bg-orange-50 px-2.5 py-1.5 text-center text-xs font-black uppercase tracking-wide text-orange-800">Πρόγραμμα</span>{details.length ? <p className="max-w-44 text-center text-[11px] font-bold text-zinc-500">{details.join(" · ")}</p> : null}</div><p className="min-w-0 text-left text-sm font-bold leading-5 text-zinc-700 sm:text-base">{game.awayParticipantLabel}</p></div></article>;
+  }
   const hasResult = game.homeScore !== null && game.awayScore !== null;
   const details = [game.scheduledDate && formatPublicDate(game.scheduledDate), game.scheduledTime].filter(Boolean);
   const hasMetadata = details.length > 0 || Boolean(game.venue) || Boolean(game.videoUrl);

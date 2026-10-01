@@ -32,7 +32,10 @@ import {
   deleteLeagueCompetitionVenue,
   finalizeLeaguePhase,
   materializePhaseProgram,
+  planRoundRobinSchedule,
+  createSeriesPlanningSchedule,
   saveSeriesPlanningSlot,
+  saveRoundRobinPlanningSlot,
   updateLeagueEntity,
 } from "@/services/league-admin.service";
 
@@ -360,6 +363,16 @@ const { resource } = await context.params;
       const result = await materializePhaseProgram(input, actor.email);
       return Response.json(result);
     }
+    if (resource === "phase-schedules" && String(input.action ?? "").trim() === "planRoundRobinProgram") {
+      await requirePhaseProgramAccess(actor, input);
+      const result = await planRoundRobinSchedule(input, actor.email);
+      return Response.json(result);
+    }
+    if (resource === "phase-schedules" && String(input.action ?? "").trim() === "createSeriesPlanningSchedule") {
+      await requirePhaseProgramAccess(actor, input);
+      const result = await createSeriesPlanningSchedule(input, actor.email);
+      return Response.json(result);
+    }
 
     let organizationId: string | undefined;
     if (["competitions", "teams", "players"].includes(resource)) {
@@ -465,6 +478,11 @@ const { resource } = await context.params;
         }, "manage");
       }
       const result = await saveSeriesPlanningSlot(input, actor.email);
+      return Response.json(result);
+    }
+    if (resource === "phase-schedules" && String(input.action ?? "").trim() === "saveRoundRobinPlanningSlot") {
+      await requirePhaseProgramAccess(actor, input);
+      const result = await saveRoundRobinPlanningSlot(input, actor.email);
       return Response.json(result);
     }
 

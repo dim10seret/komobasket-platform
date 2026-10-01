@@ -44,6 +44,57 @@ function nextAdministrativeResultUpdatedAt(existingUpdatedAt: unknown): string {
   return new Date(Number.isFinite(existing) ? Math.max(now, existing + 1) : now).toISOString();
 }
 
+async function assertNoFinalizedSourceMaterializationConflict(
+  db: D1DatabaseBinding,
+  sourcePhaseId: string,
+  competitionId: string,
+) {
+  const conflict = await db.prepare(`
+    SELECT game.id
+    FROM league_games game
+    JOIN league_phases downstream ON downstream.id=game.phase_id
+    LEFT JOIN league_phase_rules rules ON rules.phase_id=downstream.id
+    WHERE downstream.competition_id=?
+      AND EXISTS (
+        SELECT 1 FROM league_phases source
+        WHERE source.id=? AND source.competition_id=?
+          AND (source.lifecycle_status='finalized' OR source.finalized_at IS NOT NULL)
+      )
+      AND (
+        downstream.previous_phase_id=?
+        OR rules.carry_over_source_phase_id=?
+        OR json_extract(rules.settings_json, '$.participantConfiguration.participantSourcePhaseId')=?
+      )
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM league_round_robin_planning_slots slot
+          WHERE slot.schedule_id=game.schedule_id
+            AND slot.round_number=game.round_number
+            AND slot.game_order=game.game_order
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM league_series_planning_slots slot
+          WHERE slot.phase_id=game.phase_id
+            AND slot.matchup_id=game.series_matchup_id
+            AND slot.series_round_number=game.series_round_number
+        )
+      )
+    LIMIT 1
+  `).bind(
+    competitionId,
+    sourcePhaseId,
+    competitionId,
+    sourcePhaseId,
+    sourcePhaseId,
+    sourcePhaseId,
+  ).first<{ id: string }>();
+  if (conflict) {
+    throw new Error("Το διοικητικό αποτέλεσμα δεν μπορεί να αλλάξει επειδή έχει ήδη δημιουργήσει downstream αγώνα.");
+  }
+}
+
 export async function saveAdministrativeGameResultWithDb(
   db: D1DatabaseBinding,
   input: SaveAdministrativeGameResultInput,
@@ -65,6 +116,11 @@ export async function saveAdministrativeGameResultWithDb(
     WHERE g.id=? AND g.competition_id=?
   `).bind(gameId, competitionId).first<Row>();
   if (!current) throw new Error("Δεν βρέθηκε ο αγώνας στη συγκεκριμένη διοργάνωση.");
+  await assertNoFinalizedSourceMaterializationConflict(
+    db,
+    String(current.phase_id ?? ""),
+    competitionId,
+  );
   if (current.phase_id && !current.phase_format) throw new Error("Ο αγώνας δεν αντιστοιχεί σε έγκυρη φάση της διοργάνωσης.");
 
   const organizationId = String(current.organization_id ?? "").trim();

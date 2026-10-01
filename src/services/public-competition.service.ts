@@ -58,6 +58,28 @@ export type PublicGame = {
   awayTeam: PublicGameTeam;
 };
 
+export type PublicProvisionalGame = {
+  kind: "provisional";
+  id: string;
+  planningKind: "round_robin" | "series";
+  competitionId: string;
+  phaseId: string;
+  scheduleId: string;
+  roundNumber: number;
+  gameOrder: number;
+  scheduledDate: string | null;
+  scheduledTime: string | null;
+  venue: string | null;
+  homeParticipantLabel: string;
+  awayParticipantLabel: string;
+};
+
+export type PublicScheduleEntry = PublicGame | PublicProvisionalGame;
+
+export function isPublicProvisionalGame(entry: PublicScheduleEntry): entry is PublicProvisionalGame {
+  return "kind" in entry && entry.kind === "provisional";
+}
+
 export type PublicStandingRow = { rank: number; team: PublicGameTeam; gamesPlayed: number; wins: number; losses: number; standingsPoints: number; pointsFor: number; pointsAgainst: number; pointDifference: number };
 export type PublicSeriesRound = { roundNumber: number; kind: "transferred" | "game" | "not_needed"; sourcePhaseName: string | null; game: PublicGame | null };
 export type PublicSeriesSummary = Pick<SeriesProgressionResult,
@@ -145,7 +167,8 @@ export type PublicCompetitionContext = {
   competitions: PublicCompetition[];
   tournaments: PublicTournament[];
   phases: PublicPhase[];
-  games: PublicGame[];
+  games: PublicScheduleEntry[];
+  provisionalGames?: PublicProvisionalGame[];
   standings: PublicStandingRow[];
   seriesHistory: PublicSeriesMatchupHistory[];
   bracket: CompetitionBracketProjection | null;
@@ -503,6 +526,128 @@ function buildCompetitionBracketProjection(phaseRows: PublicPhaseRow[], phases: 
   return { meaningful: canonicalEdges.length > 0 && stages.some((stage) => stage.kind === "series"), stages, edges: canonicalEdges };
 }
 
+type PublicPlanningSlotRow = {
+  id: string;
+  schedule_id: string;
+  phase_id: string;
+  cycle_number?: number | null;
+  round_number?: number | null;
+  game_order?: number | null;
+  series_round_number?: number | null;
+  matchup_id?: string | null;
+  home_participant_key?: string | null;
+  away_participant_key?: string | null;
+  scheduled_date: string | null;
+  scheduled_time: string | null;
+  venue: string | null;
+};
+
+function standingPlanningLabel(value: string | null | undefined, phaseNames: Map<string, string>) {
+  const match = /^standing:(.+):position:(\d+)$/.exec(String(value ?? "").trim());
+  if (!match) return "Εκκρεμεί";
+  return `${Number(match[2])}η θέση · ${phaseNames.get(match[1]) ?? "φάση προέλευσης"}`;
+}
+
+function seriesPlanningLabel(
+  slot: BracketSlot | undefined,
+  sourcePhaseName: string,
+  teamById: Map<string, PublicTeamRow>,
+  sourceMatchups: BracketDefinition[] = [],
+) {
+  if (!slot) return "Εκκρεμεί";
+  if (slot.type === "fixed_team" && slot.teamId) return teamById.get(slot.teamId)?.name ?? "Ομάδα";
+  if (slot.type === "standing_position" && slot.position) return `${slot.position}η θέση · ${sourcePhaseName}`;
+  const sourceMatchupIndex = slot.matchupId
+    ? sourceMatchups.findIndex((matchup) => matchup.id === slot.matchupId)
+    : -1;
+  const sourceMatchupLabel = sourceMatchupIndex >= 0
+    ? sourceMatchups.length === 1
+      ? sourcePhaseName
+      : `${sourcePhaseName} ${sourceMatchupIndex + 1}`
+    : "διασταύρωσης";
+  if (slot.type === "matchup_winner") return `Νικητής ${sourceMatchupLabel}`;
+  if (slot.type === "matchup_loser") return `Ηττημένος ${sourceMatchupLabel}`;
+  if (slot.type === "bye") return "Ρεπό";
+  return "Εκκρεμεί";
+}
+
+async function loadPublicProvisionalGames(
+  db: D1DatabaseBinding,
+  competitionId: string,
+  phase: PublicPhaseRow,
+  phases: PublicPhaseRow[],
+  teams: PublicTeamRow[],
+): Promise<PublicProvisionalGame[]> {
+  const [roundRobinResult, seriesResult] = await Promise.all([
+    db.prepare(`SELECT slot.*, schedule.competition_id, schedule.phase_id
+      FROM league_round_robin_planning_slots slot
+      JOIN league_phase_schedules schedule ON schedule.id=slot.schedule_id
+      LEFT JOIN league_games game
+        ON game.schedule_id=slot.schedule_id
+       AND game.round_number=slot.round_number
+       AND game.game_order=slot.game_order
+      WHERE schedule.competition_id=? AND schedule.phase_id=? AND game.id IS NULL
+      ORDER BY slot.round_number, slot.game_order, slot.id`)
+      .bind(competitionId, phase.id).all<PublicPlanningSlotRow>(),
+    db.prepare(`SELECT slot.*
+      FROM league_series_planning_slots slot
+      LEFT JOIN league_games game
+        ON game.phase_id=slot.phase_id
+       AND game.series_matchup_id=slot.matchup_id
+       AND game.series_round_number=slot.series_round_number
+      WHERE slot.competition_id=? AND slot.phase_id=?
+        AND slot.real_game_id IS NULL AND game.id IS NULL
+      ORDER BY slot.series_round_number, slot.id`)
+      .bind(competitionId, phase.id).all<PublicPlanningSlotRow>(),
+  ]);
+  const phaseNames = new Map(phases.map((entry) => [entry.id, entry.name]));
+  const teamById = new Map(teams.map((team) => [team.id, team]));
+  const participantSettings = parseRecord(parseJsonRecord(phase.rule_settings_json).participantConfiguration);
+  const sourcePhaseId = String(participantSettings.participantSourcePhaseId ?? "").trim();
+  const sourcePhaseName = phaseNames.get(sourcePhaseId) ?? "φάση προέλευσης";
+  const sourceMatchups = bracketDefinitions(
+    phases.find((entry) => entry.id === sourcePhaseId)?.rule_settings_json ?? null,
+  );
+  const definitions = new Map(bracketDefinitions(phase.rule_settings_json).map((definition) => [definition.id, definition]));
+
+  const roundRobin = (roundRobinResult.results ?? []).map((slot): PublicProvisionalGame => ({
+    kind: "provisional",
+    id: `rr:${slot.schedule_id}:${Number(slot.round_number ?? 0)}:${Number(slot.game_order ?? 0)}`,
+    planningKind: "round_robin",
+    competitionId,
+    phaseId: phase.id,
+    scheduleId: slot.schedule_id,
+    roundNumber: Number(slot.round_number ?? 0),
+    gameOrder: Number(slot.game_order ?? 0),
+    scheduledDate: slot.scheduled_date,
+    scheduledTime: slot.scheduled_time,
+    venue: slot.venue?.trim() || null,
+    homeParticipantLabel: standingPlanningLabel(slot.home_participant_key, phaseNames),
+    awayParticipantLabel: standingPlanningLabel(slot.away_participant_key, phaseNames),
+  }));
+  const series = (seriesResult.results ?? []).map((slot): PublicProvisionalGame => {
+    const definition = definitions.get(String(slot.matchup_id ?? ""));
+    const roundNumber = Number(slot.series_round_number ?? 0);
+    return {
+      kind: "provisional",
+      id: `series:${phase.id}:${String(slot.matchup_id ?? "")}:${roundNumber}`,
+      planningKind: "series",
+      competitionId,
+      phaseId: phase.id,
+      scheduleId: slot.schedule_id,
+      roundNumber,
+      gameOrder: roundNumber,
+      scheduledDate: slot.scheduled_date,
+      scheduledTime: slot.scheduled_time,
+      venue: slot.venue?.trim() || null,
+      homeParticipantLabel: seriesPlanningLabel(definition?.slotA, sourcePhaseName, teamById, sourceMatchups),
+      awayParticipantLabel: seriesPlanningLabel(definition?.slotB, sourcePhaseName, teamById, sourceMatchups),
+    };
+  });
+  return [...roundRobin, ...series].filter((entry) => entry.roundNumber >= 1)
+    .sort((left, right) => left.roundNumber - right.roundNumber || left.gameOrder - right.gameOrder || left.id.localeCompare(right.id));
+}
+
 export async function getPublicCompetitionContextForOrganizationWithDb(
   db: D1DatabaseBinding,
   organizationId: string,
@@ -638,9 +783,21 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
   const tournamentPhases = phases.filter((phase) => selectedTournamentPhaseIds.has(phase.id));
   const tournamentGames = canonicalGames.filter((game) => selectedTournamentPhaseIds.has(game.phase_id));
   const bracket = buildCompetitionBracketProjection(tournamentPhaseRows, tournamentPhases, selectedCompetition.id, tournamentGames, teams);
-  const games = canonicalGames.filter((game) => game.phase_id === selectedPhase.id)
+  const realGames = canonicalGames.filter((game) => game.phase_id === selectedPhase.id)
     .map((row) => normalizePublicGame(row, selectedPhase.format))
     .filter((game): game is PublicGame => game !== null);
+  const provisionalGames = await loadPublicProvisionalGames(
+    db,
+    selectedCompetition.id,
+    selectedPhaseRow,
+    phaseRows,
+    teams,
+  );
+  const games: PublicScheduleEntry[] = [...realGames, ...provisionalGames].sort((left, right) =>
+    left.roundNumber - right.roundNumber
+      || (left.gameOrder ?? Number.MAX_SAFE_INTEGER) - (right.gameOrder ?? Number.MAX_SAFE_INTEGER)
+      || left.id.localeCompare(right.id),
+  );
 
   const selectedTeam = input.teamId ? teams.find((team) => team.id === input.teamId) ?? null : null;
   let teamView: PublicTeamView | null = null;
@@ -732,7 +889,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
       } });
     }
   }
-  return { seasons, competitions, tournaments, phases, games, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedTournament, selectedPhase: { ...selectedPhase, directAdvancements } };
+  return { seasons, competitions, tournaments, phases, games, provisionalGames, standings, seriesHistory, bracket, teamView, selectedSeason, selectedCompetition, selectedTournament, selectedPhase: { ...selectedPhase, directAdvancements } };
 }
 
 export async function getPublicCompetitionContextForOrganization(

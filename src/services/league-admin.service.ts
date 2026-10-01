@@ -16,7 +16,9 @@ import {
   type SeriesProgressionTransferredGame,
 } from "@/lib/series-progression";
 import {
+  resolveFinalizedStandingsPositions,
   resolveSeriesCarryOver,
+  resolveSeriesParticipantSourcePhaseId,
   type SeriesCarryOverMatchupResolution,
   type SeriesCarryOverPhaseLike,
   type SeriesCarryOverTeamLike,
@@ -86,6 +88,8 @@ type CanonicalSeriesGameRow = {
   scheduled_date: string | null;
   scheduled_time: string | null;
   venue: string | null;
+  home_standings_points_override?: number | null;
+  away_standings_points_override?: number | null;
 };
 
 type CanonicalSeriesCompletionSnapshot = {
@@ -1283,12 +1287,18 @@ async function loadSeriesCompletionSnapshot(
     ORDER BY COALESCE(p.phase_order, p.order_index), p.id
   `, [competitionId]);
   const games = await rows<CanonicalSeriesGameRow>(db, `
-    SELECT id, competition_id, phase_id, schedule_id, series_matchup_id, series_round_number,
-      cycle_number, round_number, game_order, home_team_id, away_team_id,
-      home_score, away_score, status, result_source, scheduled_date, scheduled_time, venue
-    FROM league_games
-    WHERE competition_id=?
-    ORDER BY phase_id, COALESCE(series_round_number, 0), COALESCE(round_number, 0), id
+    SELECT g.id, g.competition_id, g.phase_id, g.schedule_id, g.series_matchup_id, g.series_round_number,
+      g.cycle_number, g.round_number, g.game_order, g.home_team_id, g.away_team_id,
+      COALESCE(administrative.official_home_score, g.home_score) AS home_score,
+      COALESCE(administrative.official_away_score, g.away_score) AS away_score,
+      CASE WHEN administrative.id IS NOT NULL THEN 'completed' ELSE g.status END AS status,
+      g.result_source, g.scheduled_date, g.scheduled_time, g.venue,
+      administrative.home_standings_points_override,
+      administrative.away_standings_points_override
+    FROM league_games g
+    LEFT JOIN league_game_administrative_results administrative ON administrative.game_id=g.id
+    WHERE g.competition_id=?
+    ORDER BY g.phase_id, COALESCE(g.series_round_number, 0), COALESCE(g.round_number, 0), g.id
   `, [competitionId]);
   const teams = await rows<{ id: string; name: string }>(db, `
     SELECT t.id, COALESCE(st.display_name, t.name) AS name
@@ -1349,6 +1359,7 @@ export async function dryRunSeriesInitialMaterializationPlan(
   phaseId: string,
   competitionId: string,
   provisionalSchedule?: ProvisionalPhaseSchedule,
+  finalizationPreview?: { sourcePhaseId: string },
 ) : Promise<SeriesMaterializationDryRunResult> {
   const current = await db.prepare(`
     SELECT p.*, pr.phase_kind, pr.bracket_size, pr.best_of, pr.wins_required, pr.carry_over_enabled,
@@ -1393,7 +1404,11 @@ export async function dryRunSeriesInitialMaterializationPlan(
   // rule fields and canonical Game identity; a target-specific projection is
   // not an authoritative source snapshot.
   const canonicalSnapshot = await loadSeriesCompletionSnapshot(db, competitionId);
-  const allPhases = canonicalSnapshot.phases;
+  const allPhases = finalizationPreview
+    ? canonicalSnapshot.phases.map((phase) => String(phase.id ?? "") === finalizationPreview.sourcePhaseId
+      ? { ...phase, lifecycle_status: "finalized" }
+      : phase)
+    : canonicalSnapshot.phases;
   const allTeams = canonicalSnapshot.teams;
   const allGames = canonicalSnapshot.games;
   const planningSlots = await rows<SeriesPlanningSlotRow>(
@@ -1901,19 +1916,19 @@ function appendExactSeriesGameMaterializationStatements(
   statements: ReturnType<D1DatabaseBinding["prepare"]>[],
   plannedGame: SeriesMaterializationPlannedGame,
   guard: { sql: string; bindings: unknown[] } = { sql: "1=1", bindings: [] },
+  options: { strictConflict?: boolean } = {},
 ): ExactSeriesGameMaterializationOperation {
   const proposedGameId = createEntityId("game");
   const insertStatementIndex = statements.length;
-  const planningStatementIndex = statements.length;
   statements.push(db.prepare(`
     INSERT INTO league_games
       (id, competition_id, phase_id, schedule_id, series_matchup_id, series_round_number,
        home_team_id, away_team_id, scheduled_date, scheduled_time, venue, home_score, away_score, status, result_source)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'scheduled', NULL
     WHERE ${guard.sql}
-    ON CONFLICT(phase_id, series_matchup_id, series_round_number)
+    ${options.strictConflict ? "" : `ON CONFLICT(phase_id, series_matchup_id, series_round_number)
       WHERE series_matchup_id IS NOT NULL AND series_round_number IS NOT NULL
-    DO NOTHING
+    DO NOTHING`}
   `).bind(
     proposedGameId,
     plannedGame.competition_id,
@@ -1928,6 +1943,7 @@ function appendExactSeriesGameMaterializationStatements(
     plannedGame.venue,
     ...guard.bindings,
   ));
+  const planningStatementIndex = statements.length;
   statements.push(db.prepare(`
     UPDATE league_series_planning_slots
     SET real_game_id=(
@@ -2254,6 +2270,361 @@ export async function saveOfficialGameResultAndProgressSeriesWithDb(
   };
 }
 
+function standingParticipantKey(sourcePhaseId: string, position: number) {
+  return `standing:${sourcePhaseId}:position:${position}`;
+}
+
+export type RoundRobinFinalizationPlanningSlot = {
+  id: string;
+  competitionId: string;
+  phaseId: string;
+  scheduleId: string;
+  cycleNumber: number;
+  roundNumber: number;
+  gameOrder: number;
+  homeParticipantKey: string;
+  awayParticipantKey: string;
+  scheduledDate: string | null;
+  scheduledTime: string | null;
+  venue: string;
+};
+
+export type RoundRobinMaterializedGameIdentity = {
+  id: string;
+  competitionId: string;
+  phaseId: string;
+  scheduleId: string;
+  cycleNumber: number;
+  roundNumber: number;
+  gameOrder: number;
+  homeTeamId: string;
+  awayTeamId: string;
+};
+
+export function parseStandingParticipantKey(value: string) {
+  const match = /^standing:(.+):position:(\d+)$/.exec(String(value ?? "").trim());
+  const position = Number(match?.[2] ?? 0);
+  return match && Number.isInteger(position) && position >= 1
+    ? { sourcePhaseId: match[1], position }
+    : null;
+}
+
+export function planRoundRobinFinalizationMaterialization(input: {
+  sourcePhaseId: string;
+  standings: Array<{ position: number; teamId: string }>;
+  slots: RoundRobinFinalizationPlanningSlot[];
+  existingGames: RoundRobinMaterializedGameIdentity[];
+}) {
+  const teamByPosition = new Map(input.standings.map((entry) => [entry.position, entry.teamId]));
+  const creates: Array<RoundRobinFinalizationPlanningSlot & { homeTeamId: string; awayTeamId: string }> = [];
+  const alreadyMaterializedGameIds: string[] = [];
+  for (const slot of input.slots) {
+    const homeKey = parseStandingParticipantKey(slot.homeParticipantKey);
+    const awayKey = parseStandingParticipantKey(slot.awayParticipantKey);
+    if (!homeKey || !awayKey || homeKey.sourcePhaseId !== input.sourcePhaseId || awayKey.sourcePhaseId !== input.sourcePhaseId) {
+      throw new Error("Η προσωρινή θέση Round Robin δεν αντιστοιχεί στην οριστικοποιούμενη φάση προέλευσης.");
+    }
+    const homeTeamId = teamByPosition.get(homeKey.position) ?? "";
+    const awayTeamId = teamByPosition.get(awayKey.position) ?? "";
+    if (!homeTeamId || !awayTeamId || homeTeamId === awayTeamId) {
+      throw new Error("Δεν επιλύθηκαν δύο έγκυρες διαφορετικές ομάδες για την προσωρινή θέση Round Robin.");
+    }
+    const existing = input.existingGames.find((game) =>
+      game.scheduleId === slot.scheduleId
+      && game.roundNumber === slot.roundNumber
+      && game.gameOrder === slot.gameOrder,
+    );
+    if (!existing) {
+      creates.push({ ...slot, homeTeamId, awayTeamId });
+      continue;
+    }
+    const matches = existing.competitionId === slot.competitionId
+      && existing.phaseId === slot.phaseId
+      && existing.cycleNumber === slot.cycleNumber
+      && existing.homeTeamId === homeTeamId
+      && existing.awayTeamId === awayTeamId;
+    if (!matches) {
+      throw new Error("Σύγκρουση υλοποίησης: ο υπάρχων αγώνας της προγραμματισμένης θέσης έχει διαφορετικούς συμμετέχοντες.");
+    }
+    alreadyMaterializedGameIds.push(existing.id);
+  }
+  return { creates, alreadyMaterializedGameIds };
+}
+
+export function parseStandingPlanningConfiguration(phase: DbRow) {
+  const settings = parseJsonRecord(phase.rule_settings_json ?? phase.settings_json ?? "{}");
+  const configuration = parseJsonRecord(settings.participantConfiguration);
+  if (String(configuration.participantSourceType ?? "") !== "standing_positions") {
+    throw new Error("Η μελλοντική φάση πρέπει να χρησιμοποιεί θέσεις βαθμολογίας ως πηγή συμμετεχόντων.");
+  }
+  const sourcePhaseId = String(configuration.participantSourcePhaseId ?? "").trim();
+  const fromPosition = Number(configuration.standingFrom);
+  const toPosition = Number(configuration.standingTo);
+  if (
+    !sourcePhaseId
+    || !Number.isInteger(fromPosition)
+    || !Number.isInteger(toPosition)
+    || fromPosition < 1
+    || toPosition < fromPosition
+    || toPosition - fromPosition + 1 < 2
+  ) {
+    throw new Error("Η περιοχή θέσεων βαθμολογίας δεν είναι έγκυρη για προσωρινό πρόγραμμα.");
+  }
+  return { sourcePhaseId, fromPosition, toPosition };
+}
+
+export async function planRoundRobinScheduleWithDb(
+  db: D1DatabaseBinding,
+  input: Record<string, unknown>,
+  actor: string,
+) {
+  const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+  const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+  if (!competitionId || !phaseId) throw new Error("Λείπει η διοργάνωση ή η φάση.");
+
+  const phase = await db.prepare(`
+    SELECT p.*, pr.phase_kind, pr.settings_json AS rule_settings_json
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.id=? AND p.competition_id=?
+  `).bind(phaseId, competitionId).first<DbRow>();
+  if (!phase) throw new Error("Δεν βρέθηκε η φάση στη συγκεκριμένη διοργάνωση.");
+  if (normalizeCanonicalFormat(String(phase.format ?? ""), String(phase.phase_kind ?? "")) !== "standings") {
+    throw new Error("Το προσωρινό Round Robin πρόγραμμα επιτρέπεται μόνο σε φάση βαθμολογίας.");
+  }
+  if (String(phase.lifecycle_status ?? "active") === "finalized" || phase.finalized_at) {
+    throw new Error("Η οριστικοποιημένη φάση δεν επιτρέπει προσωρινό προγραμματισμό.");
+  }
+
+  const configuration = parseStandingPlanningConfiguration(phase);
+  const sourcePhase = await db.prepare(`
+    SELECT id, competition_id, COALESCE(phase_order, order_index) AS phase_order
+    FROM league_phases
+    WHERE id=?
+  `).bind(configuration.sourcePhaseId).first<DbRow>();
+  if (!sourcePhase || String(sourcePhase.competition_id ?? "") !== competitionId) {
+    throw new Error("Η φάση προέλευσης δεν ανήκει στην ίδια διοργάνωση.");
+  }
+  const sourceOrder = Number(sourcePhase.phase_order ?? 0);
+  const targetOrder = Number(phase.phase_order ?? phase.order_index ?? 0);
+  if (!sourceOrder || !targetOrder || sourceOrder >= targetOrder) {
+    throw new Error("Η φάση προέλευσης πρέπει να προηγείται της μελλοντικής φάσης.");
+  }
+
+  const realGames = await db.prepare("SELECT COUNT(*) AS count FROM league_games WHERE competition_id=? AND phase_id=?")
+    .bind(competitionId, phaseId).first<DbRow>();
+  if (Number(realGames?.count ?? 0) > 0) {
+    throw new Error("Η φάση έχει ήδη πραγματικούς αγώνες και δεν δέχεται προσωρινό πρόγραμμα.");
+  }
+
+  const schedules = await rows<DbRow>(db, `
+    SELECT id, lifecycle_status FROM league_phase_schedules
+    WHERE competition_id=? AND phase_id=? ORDER BY id
+  `, [competitionId, phaseId]);
+  if (schedules.length > 1) throw new Error("Βρέθηκαν πολλαπλά προγράμματα για τη φάση.");
+  if (schedules[0] && String(schedules[0].lifecycle_status ?? "draft") !== "draft") {
+    throw new Error("Το δημοσιευμένο πρόγραμμα δεν επιτρέπει προσωρινές αλλαγές.");
+  }
+
+  const scheduleId = String(schedules[0]?.id ?? createEntityId("phaseSchedule"));
+  const existingSlots = await rows<DbRow>(db, `
+    SELECT * FROM league_round_robin_planning_slots
+    WHERE schedule_id=? ORDER BY round_number, game_order
+  `, [scheduleId]);
+  if (existingSlots.length) {
+    return {
+      scheduleId,
+      phaseId,
+      competitionId,
+      scheduleCreated: false,
+      pairingsCreated: 0,
+      pairings: existingSlots.length,
+      reused: true,
+    };
+  }
+
+  const settings = parseJsonRecord(phase.rule_settings_json ?? "{}");
+  const gamesPerPairing = parseStandingsRuleInt(settings.gamesPerPairing, 1, "Αγώνες ανά ζευγάρι", 1);
+  const teams = Array.from(
+    { length: configuration.toPosition - configuration.fromPosition + 1 },
+    (_, index) => {
+      const position = configuration.fromPosition + index;
+      const id = standingParticipantKey(configuration.sourcePhaseId, position);
+      return { id, name: id };
+    },
+  );
+  const generated = generateRoundRobinDryRun({ competitionId, phaseId, scheduleId, gamesPerPairing, teams });
+  if (!generated.ok) throw new Error(generated.errors.join(" "));
+
+  const statements: ReturnType<D1DatabaseBinding["prepare"]>[] = [];
+  if (!schedules.length) {
+    statements.push(
+      db.prepare("INSERT INTO league_phase_schedules (id,competition_id,phase_id,lifecycle_status) VALUES (?,?,?,'draft')")
+        .bind(scheduleId, competitionId, phaseId),
+    );
+  }
+  statements.push(...generated.games.map((game) => db.prepare(`
+    INSERT INTO league_round_robin_planning_slots
+      (id,schedule_id,cycle_number,round_number,game_order,home_participant_key,away_participant_key,
+       scheduled_date,scheduled_time,venue,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,NULL,NULL,'',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+  `).bind(
+    createEntityId("roundRobinPlanningSlot"),
+    scheduleId,
+    game.cycle_number,
+    game.round_number,
+    game.game_order,
+    game.home_team_id,
+    game.away_team_id,
+  )));
+  statements.push(db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(
+      createEntityId("audit"),
+      actor,
+      "planRoundRobinProgram",
+      "league_phase_schedules",
+      scheduleId,
+      JSON.stringify({
+        competitionId,
+        phaseId,
+        sourcePhaseId: configuration.sourcePhaseId,
+        fromPosition: configuration.fromPosition,
+        toPosition: configuration.toPosition,
+        pairings: generated.games.length,
+      }),
+    ));
+  await db.batch(statements);
+  return {
+    scheduleId,
+    phaseId,
+    competitionId,
+    scheduleCreated: !schedules.length,
+    pairingsCreated: generated.games.length,
+    pairings: generated.games.length,
+    reused: false,
+  };
+}
+
+export async function planRoundRobinSchedule(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Ο προσωρινός προγραμματισμός είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
+  return planRoundRobinScheduleWithDb(db, input, actor);
+}
+
+export async function saveRoundRobinPlanningSlotWithDb(
+  db: D1DatabaseBinding,
+  input: Record<string, unknown>,
+  actor: string,
+) {
+  const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+  const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+  const planningSlotId = String(input.planningSlotId ?? input.planning_slot_id ?? "").trim();
+  if (!competitionId || !phaseId || !planningSlotId) {
+    throw new Error("Λείπει η διοργάνωση, η φάση ή η προσωρινή θέση αγώνα.");
+  }
+  const slot = await db.prepare(`
+    SELECT slots.*, schedules.competition_id, schedules.phase_id, schedules.lifecycle_status,
+      phases.lifecycle_status AS phase_lifecycle_status, phases.finalized_at
+    FROM league_round_robin_planning_slots slots
+    JOIN league_phase_schedules schedules ON schedules.id=slots.schedule_id
+    JOIN league_phases phases ON phases.id=schedules.phase_id
+    WHERE slots.id=? AND schedules.competition_id=? AND schedules.phase_id=?
+  `).bind(planningSlotId, competitionId, phaseId).first<DbRow>();
+  if (!slot) throw new Error("Δεν βρέθηκε η προσωρινή θέση αγώνα.");
+  if (String(slot.lifecycle_status ?? "draft") !== "draft") {
+    throw new Error("Το δημοσιευμένο πρόγραμμα δεν επιτρέπει προσωρινές αλλαγές.");
+  }
+  if (String(slot.phase_lifecycle_status ?? "active") === "finalized" || slot.finalized_at) {
+    throw new Error("Η οριστικοποιημένη φάση δεν επιτρέπει προσωρινές αλλαγές.");
+  }
+
+  const scheduledDate = validateIsoDate(input.scheduledDate ?? input.scheduled_date ?? null, "Ημερομηνία");
+  const scheduledTime = validateHmTime(input.scheduledTime ?? input.scheduled_time ?? null, "Ώρα");
+  if (!scheduledDate && scheduledTime) throw new Error("Η ώρα δεν μπορεί να οριστεί χωρίς ημερομηνία.");
+  const venueId = String(input.venueId ?? input.venue_id ?? "").trim();
+  let venue = "";
+  if (venueId) {
+    const venueRow = await db.prepare("SELECT id,name FROM league_competition_venues WHERE id=? AND competition_id=?")
+      .bind(venueId, competitionId).first<DbRow>();
+    if (!venueRow) throw new Error("Το επιλεγμένο γήπεδο δεν ανήκει στη συγκεκριμένη διοργάνωση.");
+    venue = String(venueRow.name ?? "").trim();
+  }
+
+  await db.prepare(`
+    UPDATE league_round_robin_planning_slots
+    SET scheduled_date=?, scheduled_time=?, venue=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND schedule_id=?
+  `).bind(scheduledDate, scheduledTime, venue, planningSlotId, slot.schedule_id).run();
+  await db.prepare(`INSERT INTO league_audit_log
+    (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(
+      createEntityId("audit"),
+      actor,
+      "update",
+      "round-robin-planning-slots",
+      planningSlotId,
+      JSON.stringify({ competitionId, phaseId, scheduledDate, scheduledTime, venue }),
+    ).run();
+  return { saved: true, planningSlotId };
+}
+
+export async function saveRoundRobinPlanningSlot(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Ο προσωρινός προγραμματισμός είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
+  return saveRoundRobinPlanningSlotWithDb(db, input, actor);
+}
+
+export async function createSeriesPlanningScheduleWithDb(
+  db: D1DatabaseBinding,
+  input: Record<string, unknown>,
+  actor: string,
+) {
+  const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+  const phaseId = String(input.phaseId ?? input.phase_id ?? "").trim();
+  if (!competitionId || !phaseId) throw new Error("Λείπει η διοργάνωση ή η φάση.");
+  const phase = await db.prepare(`
+    SELECT p.*, pr.phase_kind
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.id=? AND p.competition_id=?
+  `).bind(phaseId, competitionId).first<DbRow>();
+  if (!phase) throw new Error("Δεν βρέθηκε η φάση στη συγκεκριμένη διοργάνωση.");
+  if (normalizeCanonicalFormat(String(phase.format ?? ""), String(phase.phase_kind ?? "")) !== "series") {
+    throw new Error("Η ενέργεια επιτρέπεται μόνο σε φάση σειράς αγώνων.");
+  }
+  if (String(phase.lifecycle_status ?? "active") === "finalized" || phase.finalized_at) {
+    throw new Error("Η οριστικοποιημένη φάση δεν επιτρέπει προσωρινό προγραμματισμό.");
+  }
+  const schedules = await rows<DbRow>(db, `
+    SELECT id FROM league_phase_schedules WHERE competition_id=? AND phase_id=? ORDER BY id
+  `, [competitionId, phaseId]);
+  if (schedules.length > 1) throw new Error("Βρέθηκαν πολλαπλά προγράμματα για τη φάση.");
+  if (schedules[0]) return { scheduleId: String(schedules[0].id ?? ""), created: false };
+  const scheduleId = createEntityId("phaseSchedule");
+  await db.batch([
+    db.prepare("INSERT INTO league_phase_schedules (id,competition_id,phase_id,lifecycle_status) VALUES (?,?,?,'draft')")
+      .bind(scheduleId, competitionId, phaseId),
+    db.prepare(`INSERT INTO league_audit_log
+      (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+      VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(
+        createEntityId("audit"),
+        actor,
+        "createSeriesPlanningSchedule",
+        "league_phase_schedules",
+        scheduleId,
+        JSON.stringify({ competitionId, phaseId }),
+      ),
+  ]);
+  return { scheduleId, created: true };
+}
+
+export async function createSeriesPlanningSchedule(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Ο προσωρινός προγραμματισμός είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
+  return createSeriesPlanningScheduleWithDb(db, input, actor);
+}
+
 export async function saveSeriesPlanningSlot(input: Record<string, unknown>, actor: string) {
   const db = await database();
   if (!db) throw new Error("Ο προσωρινός προγραμματισμός είναι διαθέσιμος στη βάση D1 μετά την εγκατάσταση.");
@@ -2299,8 +2670,21 @@ export async function saveSeriesPlanningSlot(input: Record<string, unknown>, act
   const settings = parseJsonRecord(phase.rule_settings_json ?? phase.settings_json ?? "{}");
   const bracket = parseJsonRecord(settings.bracketConfiguration);
   const matchups = Array.isArray(bracket.matchups) ? bracket.matchups : [];
-  if (!matchups.some((matchup) => String(parseJsonRecord(matchup).id ?? "").trim() === matchupId)) {
+  const matchupDefinition = matchups.find((matchup) => String(parseJsonRecord(matchup).id ?? "").trim() === matchupId);
+  if (!matchupDefinition) {
     throw new Error("Το matchup δεν υπάρχει στη διαμόρφωση της φάσης.");
+  }
+  const matchupRecord = parseJsonRecord(matchupDefinition);
+  const matchupSlotA = parseJsonRecord(matchupRecord.slotA);
+  const matchupSlotB = parseJsonRecord(matchupRecord.slotB);
+  if (
+    Boolean(matchupRecord.isBye)
+    || String(matchupSlotA.type ?? "") === "bye"
+    || String(matchupSlotB.type ?? "") === "bye"
+    || !String(matchupSlotA.type ?? "")
+    || !String(matchupSlotB.type ?? "")
+  ) {
+    throw new Error("Το matchup δεν αντιστοιχεί σε αγωνιστικό ζευγάρι.");
   }
 
   const existingSlot = await db.prepare(`
@@ -2321,7 +2705,12 @@ export async function saveSeriesPlanningSlot(input: Record<string, unknown>, act
   const dryRun = await dryRunSeriesInitialMaterializationPlan(db, phaseId, competitionId);
   const matchupPlan = dryRun.plans.find((plan) => plan.matchupId === matchupId && plan.progression)?.progression ?? null;
   const progressionRow = matchupPlan?.rounds.find((round) => round.seriesRoundNumber === seriesRoundNumber) ?? null;
-  if (!progressionRow || progressionRow.rowState !== "if_needed") {
+  const winsRequired = parseStandingsRuleInt(phase.wins_required, 1, "Νίκες για πρόκριση", 1);
+  const maximumSeriesRounds = winsRequired * 2 - 1;
+  if (
+    (progressionRow && progressionRow.rowState !== "if_needed")
+    || (!progressionRow && seriesRoundNumber > maximumSeriesRounds)
+  ) {
     throw new Error("Ο συγκεκριμένος γύρος δεν είναι διαθέσιμος για προσωρινό προγραμματισμό.");
   }
 
@@ -2426,6 +2815,189 @@ export async function saveSeriesPlanningSlot(input: Record<string, unknown>, act
   };
 }
 
+type FinalizationDrivenMaterializationPlan = {
+  roundRobinCreates: ReturnType<typeof planRoundRobinFinalizationMaterialization>["creates"];
+  seriesCreates: SeriesMaterializationPlannedGame[];
+  alreadyMaterializedGameIds: string[];
+};
+
+async function collectFinalizationDrivenMaterializationPlan(
+  db: D1DatabaseBinding,
+  sourcePhaseId: string,
+  competitionId: string,
+): Promise<FinalizationDrivenMaterializationPlan> {
+  const snapshot = await loadSeriesCompletionSnapshot(db, competitionId);
+  const previewPhases = snapshot.phases.map((phase) =>
+    phase.id === sourcePhaseId
+      ? { ...phase, lifecycle_status: "finalized" }
+      : phase,
+  );
+  const sourcePhase = previewPhases.find((phase) => phase.id === sourcePhaseId);
+  if (!sourcePhase) {
+    throw new Error("Δεν βρέθηκε η φάση προέλευσης.");
+  }
+
+  const downstreamResult = await db
+    .prepare(
+      `SELECT p.*, r.settings_json, r.wins_required, r.carry_over_enabled,
+              r.carry_over_source_phase_id
+       FROM league_phases p
+       LEFT JOIN league_phase_rules r ON r.phase_id = p.id
+       WHERE p.competition_id = ? AND p.id <> ? AND p.lifecycle_status = 'active'`,
+    )
+    .bind(competitionId, sourcePhaseId)
+    .all<DbRow>();
+  const downstreamPhases = downstreamResult.results ?? [];
+
+  let standingTeamIds: string[] | null = null;
+  if (normalizeCanonicalFormat(sourcePhase.format) === "standings") {
+    const standings = resolveFinalizedStandingsPositions(
+      previewPhases,
+      snapshot.games.filter((game) => game.phase_id === sourcePhaseId),
+      snapshot.teams,
+      sourcePhaseId,
+    );
+    if (standings.state !== "resolved") {
+      throw new Error(standings.message);
+    }
+    standingTeamIds = standings.positions.map((position) => position.teamId);
+  }
+
+  const roundRobinCreates: FinalizationDrivenMaterializationPlan["roundRobinCreates"] = [];
+  const seriesCreates: SeriesMaterializationPlannedGame[] = [];
+  const alreadyMaterializedGameIds: string[] = [];
+
+  for (const downstreamPhase of downstreamPhases) {
+    const downstreamPhaseId = String(downstreamPhase.id ?? "");
+    const downstreamFormat = normalizeCanonicalFormat(String(downstreamPhase.format ?? ""));
+
+    if (downstreamFormat === "standings" && standingTeamIds) {
+      const participantSettings = parsePhaseParticipantSettings(downstreamPhase.settings_json);
+      if (participantSettings.participantSourceType === "standing_positions") {
+        const configuration = parseStandingPlanningConfiguration(downstreamPhase);
+        if (configuration.sourcePhaseId !== sourcePhaseId) continue;
+        const slotsResult = await db
+          .prepare(
+            `SELECT slot.id AS id, schedule.competition_id AS competitionId,
+                    schedule.phase_id AS phaseId, slot.schedule_id AS scheduleId,
+                    slot.cycle_number AS cycleNumber, slot.round_number AS roundNumber,
+                    slot.game_order AS gameOrder,
+                    slot.home_participant_key AS homeParticipantKey,
+                    slot.away_participant_key AS awayParticipantKey,
+                    slot.scheduled_date AS scheduledDate, slot.scheduled_time AS scheduledTime,
+                    slot.venue AS venue
+             FROM league_round_robin_planning_slots slot
+             JOIN league_phase_schedules schedule ON schedule.id = slot.schedule_id
+             WHERE schedule.phase_id = ?
+             ORDER BY slot.round_number ASC, slot.game_order ASC`,
+          )
+          .bind(downstreamPhaseId)
+          .all<RoundRobinFinalizationPlanningSlot>();
+        const existingResult = await db
+          .prepare(
+            `SELECT id AS id, competition_id AS competitionId, phase_id AS phaseId,
+                    schedule_id AS scheduleId, cycle_number AS cycleNumber,
+                    round_number AS roundNumber, game_order AS gameOrder,
+                    home_team_id AS homeTeamId, away_team_id AS awayTeamId
+             FROM league_games
+             WHERE phase_id = ?`,
+          )
+          .bind(downstreamPhaseId)
+          .all<RoundRobinMaterializedGameIdentity>();
+        const rrPlan = planRoundRobinFinalizationMaterialization({
+          sourcePhaseId,
+          standings: standingTeamIds.map((teamId, index) => ({ position: index + 1, teamId })),
+          slots: slotsResult.results ?? [],
+          existingGames: existingResult.results ?? [],
+        });
+        roundRobinCreates.push(...rrPlan.creates);
+        alreadyMaterializedGameIds.push(...rrPlan.alreadyMaterializedGameIds);
+      }
+    }
+
+    if (
+      downstreamFormat === "series" &&
+      resolveSeriesParticipantSourcePhaseId(normalizeSeriesPhaseLike(downstreamPhase)) === sourcePhaseId
+    ) {
+      const downstreamSchedule = await db.prepare(`
+        SELECT id FROM league_phase_schedules
+        WHERE competition_id=? AND phase_id=?
+        ORDER BY id LIMIT 1
+      `).bind(competitionId, downstreamPhaseId).first<{ id: string }>();
+      if (!downstreamSchedule) continue;
+      const seriesPlan = await dryRunSeriesInitialMaterializationPlan(
+        db,
+        downstreamPhaseId,
+        competitionId,
+        undefined,
+        { sourcePhaseId },
+      );
+      for (const planned of seriesPlan.plans) {
+        if (planned.action === "create_game" && planned.plannedGame) {
+          seriesCreates.push(planned.plannedGame);
+        }
+      }
+    }
+  }
+
+  return { roundRobinCreates, seriesCreates, alreadyMaterializedGameIds };
+}
+
+function appendFinalizationDrivenMaterializationStatements(
+  db: D1DatabaseBinding,
+  statements: ReturnType<D1DatabaseBinding["prepare"]>[],
+  plan: FinalizationDrivenMaterializationPlan,
+  sourcePhaseId: string,
+  competitionId: string,
+) {
+  const sourceStillFinalizable = {
+    sql: `EXISTS (
+    SELECT 1 FROM league_phases source
+    WHERE source.id = ? AND source.competition_id = ?
+      AND source.lifecycle_status = 'active' AND source.finalized_at IS NULL
+    )`,
+    bindings: [sourcePhaseId, competitionId],
+  };
+
+  for (const game of plan.roundRobinCreates) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO league_games (
+           id, competition_id, phase_id, schedule_id, cycle_number, round_number, game_order,
+           home_team_id, away_team_id, scheduled_date, scheduled_time, venue,
+           home_score, away_score, status, result_source
+         )
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'scheduled', NULL
+         WHERE ${sourceStillFinalizable.sql}`,
+      ).bind(
+        createEntityId("game"),
+        game.competitionId,
+        game.phaseId,
+        game.scheduleId,
+        game.cycleNumber,
+        game.roundNumber,
+        game.gameOrder,
+        game.homeTeamId,
+        game.awayTeamId,
+        game.scheduledDate,
+        game.scheduledTime,
+        game.venue,
+        ...sourceStillFinalizable.bindings,
+      ),
+    );
+  }
+
+  for (const game of plan.seriesCreates) {
+    appendExactSeriesGameMaterializationStatements(
+      db,
+      statements,
+      game,
+      sourceStillFinalizable,
+      { strictConflict: true },
+    );
+  }
+}
+
 export async function finalizePhaseById(
   db: D1DatabaseBinding,
   phaseId: string,
@@ -2452,7 +3024,11 @@ export async function finalizePhaseById(
       const explanation = completion.blockers.map((entry: SeriesPhaseCompletionBlocker) => entry.message).join(" ");
       throw new Error(`Η Series Phase δεν είναι competitively complete.${explanation ? ` ${explanation}` : ""}`);
     }
-    const batchResults = await db.batch([
+    const materialization = await collectFinalizationDrivenMaterializationPlan(db, phaseId, competitionId);
+    const statements: ReturnType<D1DatabaseBinding["prepare"]>[] = [];
+    appendFinalizationDrivenMaterializationStatements(db, statements, materialization, phaseId, competitionId);
+    const finalizationStatementIndex = statements.length;
+    statements.push(
       db.prepare(`UPDATE league_phases
         SET lifecycle_status='finalized', finalized_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND competition_id=? AND lifecycle_status='active' AND finalized_at IS NULL`)
@@ -2471,10 +3047,13 @@ export async function finalizePhaseById(
             before: { lifecycle_status: currentLifecycle },
             after: { lifecycle_status: "finalized" },
             seriesOutcomes: completion.outcomes,
+            materializedGames: materialization.roundRobinCreates.length + materialization.seriesCreates.length,
+            alreadyMaterializedGames: materialization.alreadyMaterializedGameIds.length,
           }),
         ),
-    ]);
-    const changed = Number((batchResults[0] as { meta?: { changes?: number } })?.meta?.changes ?? 0);
+    );
+    const batchResults = await db.batch(statements);
+    const changed = Number((batchResults[finalizationStatementIndex] as { meta?: { changes?: number } })?.meta?.changes ?? 0);
     if (changed !== 1) throw new Error("Η φάση έχει ήδη οριστικοποιηθεί ή άλλαξε ταυτόχρονα.");
     return { id: phaseId, competitivelyComplete: true, outcomes: completion.outcomes };
   }
@@ -2545,13 +3124,18 @@ export async function finalizePhaseById(
     },
     tieBreakers: parseStandingsTieBreakers(rules.tieBreakers) as any,
   });
-  await db.batch([
+  const materialization = await collectFinalizationDrivenMaterializationPlan(db, phaseId, competitionId);
+  const statements: ReturnType<D1DatabaseBinding["prepare"]>[] = [];
+  appendFinalizationDrivenMaterializationStatements(db, statements, materialization, phaseId, competitionId);
+  const finalizationStatementIndex = statements.length;
+  statements.push(
     db.prepare(`UPDATE league_phases
       SET lifecycle_status='finalized', finalized_at=COALESCE(finalized_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
-      WHERE id=? AND competition_id=?`).bind(phaseId, competitionId),
+      WHERE id=? AND competition_id=? AND lifecycle_status='active' AND finalized_at IS NULL`).bind(phaseId, competitionId),
     db.prepare(`INSERT INTO league_audit_log
       (id,actor_email,action,entity_type,entity_id,details_json,created_at)
-      VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`)
+      SELECT ?,?,?,?,?,?,CURRENT_TIMESTAMP
+      WHERE changes()=1`)
       .bind(
         createEntityId("audit"),
         actor,
@@ -2567,9 +3151,14 @@ export async function finalizePhaseById(
             primaryPoints: row.primaryPoints,
             tieResolved: row.tieResolved,
           })),
+          materializedGames: materialization.roundRobinCreates.length + materialization.seriesCreates.length,
+          alreadyMaterializedGames: materialization.alreadyMaterializedGameIds.length,
         }),
       ),
-  ]);
+  );
+  const batchResults = await db.batch(statements);
+  const changed = Number((batchResults[finalizationStatementIndex] as { meta?: { changes?: number } })?.meta?.changes ?? 0);
+  if (changed !== 1) throw new Error("Η φάση έχει ήδη οριστικοποιηθεί ή άλλαξε ταυτόχρονα.");
 
   return { id: phaseId };
 }
@@ -3015,7 +3604,7 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
         normalized_name: normalizePlayerName(player.name), active: 1,
       })),
       participations: [], rosters: [], movements: [], phases: [], phaseSchedules: [],
-      seriesPlanningSlots: [], games: [], competitionVenues: [], matchReports: {},
+      seriesPlanningSlots: [], roundRobinPlanningSlots: [], games: [], competitionVenues: [], matchReports: {},
       counts: {
         seasons: HISTORICAL_SEASONS.length,
         competitions: HISTORICAL_SEASONS.length,
@@ -3029,12 +3618,12 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
   const sectionFields: Record<string, readonly string[]> = {
     overview: ["movements"],
     seasons: ["seasons", "competitions"],
-    competitions: ["seasons", "competitions", "teams", "participations", "phases", "phaseSchedules", "seriesPlanningSlots", "games", "competitionVenues"],
+    competitions: ["seasons", "competitions", "teams", "participations", "phases", "phaseSchedules", "seriesPlanningSlots", "roundRobinPlanningSlots", "games", "competitionVenues"],
     teams: ["seasons", "competitions", "teams", "participations"],
     players: ["seasons", "competitions", "teams", "participations", "players"],
     movements: ["seasons", "competitions", "teams", "participations", "players", "rosters", "movements"],
   };
-  const detailFields = new Set(["phases", "phaseSchedules", "seriesPlanningSlots", "games", "competitionVenues"]);
+  const detailFields = new Set(["phases", "phaseSchedules", "seriesPlanningSlots", "roundRobinPlanningSlots", "games", "competitionVenues"]);
   async function sectionRows<T extends DbRow = DbRow>(key: string, query: string, values: unknown[] = []): Promise<T[]> {
     if (!db) return [];
     if (selection) {
@@ -3049,7 +3638,7 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
     return rows<T>(db, query, values);
   }
 
-  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, seriesPlanningSlots, games, competitionVenues, matchReports] = await Promise.all([
+  const [seasons, competitions, teams, participations, players, rosters, movements, rawPhases, phaseSchedules, seriesPlanningSlots, roundRobinPlanningSlots, games, competitionVenues, matchReports] = await Promise.all([
     sectionRows("seasons", "SELECT * FROM league_seasons ORDER BY name DESC"),
     sectionRows("competitions", `SELECT c.*, s.name AS season_name,
       COALESCE(cp.lifecycle_status,
@@ -3134,6 +3723,16 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
       JOIN league_competitions c ON c.id=slots.competition_id
       WHERE c.organization_id=?
       ORDER BY slots.schedule_id, slots.matchup_id, slots.series_round_number`, [organizationId]),
+    sectionRows("roundRobinPlanningSlots", `SELECT slots.id, schedules.competition_id, schedules.phase_id,
+      slots.schedule_id, slots.cycle_number, slots.round_number, slots.game_order,
+      slots.home_participant_key, slots.away_participant_key,
+      slots.scheduled_date, slots.scheduled_time, slots.venue,
+      slots.created_at, slots.updated_at
+      FROM league_round_robin_planning_slots slots
+      JOIN league_phase_schedules schedules ON schedules.id=slots.schedule_id
+      JOIN league_competitions c ON c.id=schedules.competition_id
+      WHERE c.organization_id=?
+      ORDER BY slots.schedule_id, slots.round_number, slots.game_order`, [organizationId]),
     sectionRows<AdministrativeGameDbRow>("games", `SELECT g.*, ht.name AS home_team_name, at.name AS away_team_name,
       p.name AS phase_name, p.format AS phase_format, p.lifecycle_status AS phase_lifecycle_status,
       administrative.id AS administrative_result_id,
@@ -3174,7 +3773,7 @@ export async function getLeagueAdminSnapshot(organizationId: string, selection?:
   const effectiveGames = games.map(projectAdministrativeGameResult);
   return {
     mode: "database" as const, seasons, competitions, teams, participations, players, rosters,
-    movements, phases, phaseSchedules, seriesPlanningSlots, games: effectiveGames, competitionVenues, matchReports,
+    movements, phases, phaseSchedules, seriesPlanningSlots, roundRobinPlanningSlots, games: effectiveGames, competitionVenues, matchReports,
     counts: overviewCounts ?? {
       seasons: seasons.length, competitions: competitions.length,
       teams: teams.length, players: players.length,
@@ -5279,10 +5878,13 @@ export async function deletePhaseProgram(input: Record<string, unknown>, actor: 
   }
 
   const planningCount = await db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM league_series_planning_slots
-    WHERE competition_id=? AND phase_id=? AND schedule_id=?
-  `).bind(competitionId, phaseId, scheduleId).first<DbRow>();
+    SELECT
+      (SELECT COUNT(*) FROM league_series_planning_slots
+       WHERE competition_id=? AND phase_id=? AND schedule_id=?)
+      +
+      (SELECT COUNT(*) FROM league_round_robin_planning_slots
+       WHERE schedule_id=?) AS count
+  `).bind(competitionId, phaseId, scheduleId, scheduleId).first<DbRow>();
   const gamesDeleted = ownedGames.length;
   const planningSlotsDeleted = Number(planningCount?.count ?? 0);
 
@@ -5307,6 +5909,10 @@ export async function deletePhaseProgram(input: Record<string, unknown>, actor: 
       WHERE competition_id=? AND phase_id=? AND schedule_id=?
         AND ${phaseProgramGuardSql}`)
       .bind(competitionId, phaseId, scheduleId, phaseId, scheduleId),
+    db.prepare(`DELETE FROM league_round_robin_planning_slots
+      WHERE schedule_id=?
+        AND ${phaseProgramGuardSql}`)
+      .bind(scheduleId, phaseId, scheduleId),
     db.prepare(`DELETE FROM league_games
       WHERE phase_id=? AND schedule_id=?
         AND ${phaseProgramGuardSql}`)
@@ -5322,6 +5928,10 @@ export async function deletePhaseProgram(input: Record<string, unknown>, actor: 
         AND NOT EXISTS (
           SELECT 1 FROM league_series_planning_slots ps
           WHERE ps.phase_id=? AND ps.schedule_id=?
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM league_round_robin_planning_slots rrps
+          WHERE rrps.schedule_id=?
         )`)
       .bind(
         scheduleId,
@@ -5332,6 +5942,7 @@ export async function deletePhaseProgram(input: Record<string, unknown>, actor: 
         phaseId,
         scheduleId,
         phaseId,
+        scheduleId,
         scheduleId,
       ),
   ]);
