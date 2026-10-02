@@ -1378,6 +1378,7 @@ export function CompetitionWorkspaceManager({
             <ProgramGamesSection
               data={data}
               competitionId={workspaceCompetitionId}
+              phaseGroups={selectedCompetitionPhaseGroups}
               submit={submit}
               updateEntity={updateEntity}
               deleteEntity={deleteEntity}

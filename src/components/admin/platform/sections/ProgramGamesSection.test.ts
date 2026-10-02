@@ -1,7 +1,102 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { groupProgramSchedulesByPhaseTournament } from "./program-games-grouping";
 
 const source = readFileSync(new URL("./ProgramGamesSection.tsx", import.meta.url), "utf8");
+const competitionSource = readFileSync(new URL("./CompetitionSection.tsx", import.meta.url), "utf8");
+
+type GroupPhase = { id: string; name: string; phase_order: number };
+type GroupSchedule = { id: string; phase_id: string };
+
+const group = (
+  rootPhaseId: string,
+  tournamentName: string,
+  phases: GroupPhase[],
+) => ({ rootPhaseId, tournamentName, phases, finalized: false });
+
+describe("Program & Games canonical phase-series grouping", () => {
+  it("uses the exact canonical groups already supplied to the Phases tab", () => {
+    expect(competitionSource).toContain("phaseGroups={selectedCompetitionPhaseGroups}");
+    expect(source).toContain("groupProgramSchedulesByPhaseTournament(phaseGroups, schedules)");
+    expect(source).toContain("Θεσμός / Σειρά Φάσεων");
+  });
+
+  it("keeps two groups separate and preserves canonical phase order", () => {
+    const phaseGroups = [
+      group("league-root", "KomoBasket League", [
+        { id: "league-root", name: "Αδιάφορος τίτλος Α", phase_order: 1 },
+        { id: "league-final", name: "Αδιάφορος τίτλος Β", phase_order: 5 },
+      ]),
+      group("cup-root", "Komo Cup", [
+        { id: "cup-root", name: "Αδιάφορος τίτλος Γ", phase_order: 6 },
+        { id: "cup-final", name: "Αδιάφορος τίτλος Δ", phase_order: 9 },
+      ]),
+    ];
+    const schedules: GroupSchedule[] = [
+      { id: "cup-final-schedule", phase_id: "cup-final" },
+      { id: "league-final-schedule", phase_id: "league-final" },
+      { id: "cup-root-schedule", phase_id: "cup-root" },
+      { id: "league-root-schedule", phase_id: "league-root" },
+    ];
+
+    const result = groupProgramSchedulesByPhaseTournament(phaseGroups, schedules);
+
+    expect(result.map((entry) => entry.tournamentName)).toEqual(["KomoBasket League", "Komo Cup"]);
+    expect(result[0].schedules.map((entry) => entry.id)).toEqual(["league-root-schedule", "league-final-schedule"]);
+    expect(result[1].schedules.map((entry) => entry.id)).toEqual(["cup-root-schedule", "cup-final-schedule"]);
+  });
+
+  it("groups from canonical references rather than phase names", () => {
+    const phaseGroups = [
+      group("root-a", "Series A", [{ id: "phase-a", name: "ΚΥΠΕΛΛΟ", phase_order: 1 }]),
+      group("root-b", "Series B", [{ id: "phase-b", name: "LEAGUE FINAL", phase_order: 2 }]),
+    ];
+    const result = groupProgramSchedulesByPhaseTournament(phaseGroups, [
+      { id: "schedule-b", phase_id: "phase-b" },
+      { id: "schedule-a", phase_id: "phase-a" },
+    ]);
+
+    expect(result[0].schedules.map((entry) => entry.id)).toEqual(["schedule-a"]);
+    expect(result[1].schedules.map((entry) => entry.id)).toEqual(["schedule-b"]);
+  });
+
+  it("renders one canonical group and omits groups without programs", () => {
+    const result = groupProgramSchedulesByPhaseTournament([
+      group("single-root", "Single Series", [{ id: "single-phase", name: "Phase", phase_order: 1 }]),
+      group("empty-root", "Empty Series", [{ id: "empty-phase", name: "Empty", phase_order: 2 }]),
+    ], [{ id: "single-schedule", phase_id: "single-phase" }]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].rootPhaseId).toBe("single-root");
+  });
+
+  it("keeps Final and Small Final siblings in their configured canonical order", () => {
+    const result = groupProgramSchedulesByPhaseTournament([
+      group("semifinals", "Final Series", [
+        { id: "semifinals", name: "Semifinals", phase_order: 7 },
+        { id: "final", name: "Final", phase_order: 8 },
+        { id: "small-final", name: "Small Final", phase_order: 9 },
+      ]),
+    ], [
+      { id: "small-final-schedule", phase_id: "small-final" },
+      { id: "final-schedule", phase_id: "final" },
+      { id: "semifinals-schedule", phase_id: "semifinals" },
+    ]);
+
+    expect(result[0].schedules.map((entry) => entry.id)).toEqual([
+      "semifinals-schedule",
+      "final-schedule",
+      "small-final-schedule",
+    ]);
+  });
+
+  it("preserves existing phase-card actions inside each group", () => {
+    expect(source).toContain("group.schedules.map((schedule) =>");
+    expect(source).toContain('{isExpanded ? "Σύμπτυξη" : "Άνοιγμα"}');
+    expect(source).toContain("Διαγραφή Προγράμματος");
+    expect(source).toContain("openGenerateModal(String(schedule.id))");
+  });
+});
 
 describe("future-phase provisional scheduling", () => {
   it("uses planning actions instead of materializing unresolved teams", () => {

@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  groupProgramSchedulesByPhaseTournament,
+  type ProgramPhaseTournamentGroup,
+} from "./program-games-grouping";
+
 import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -558,6 +563,7 @@ const hasFullRoundRobinProgram = (data: Snapshot, phase: Row, competitionTeams: 
 export function ProgramGamesSection({
   data,
   competitionId,
+  phaseGroups,
   submit,
   updateEntity,
   deleteEntity,
@@ -567,6 +573,7 @@ export function ProgramGamesSection({
 }: {
   data: Snapshot;
   competitionId: string;
+  phaseGroups: ProgramPhaseTournamentGroup<Row>[];
   submit: (resource: string, event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   updateEntity: (resource: string, id: string, event: FormEvent<HTMLFormElement>, successMessage: string) => Promise<boolean>;
   deleteEntity: DeleteEntity;
@@ -575,16 +582,7 @@ export function ProgramGamesSection({
   onRefreshCompetitionData?: () => Promise<void> | void;
 }) {
   const { request: fetch, url: platformUrl } = usePlatformContext();
-  const competitionPhases = useMemo(() => {
-    return data.phases
-      .filter((phase) => String(phase.competition_id ?? "") === competitionId)
-      .sort((left, right) => {
-        const leftOrder = Number(left.phase_order ?? left.order_index ?? 0);
-        const rightOrder = Number(right.phase_order ?? right.order_index ?? 0);
-        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-        return String(left.id).localeCompare(String(right.id));
-      });
-  }, [data.phases, competitionId]);
+  const competitionPhases = useMemo(() => phaseGroups.flatMap((group) => group.phases), [phaseGroups]);
 
   const schedules = useMemo(() => {
     return (data.phaseSchedules as PhaseScheduleRow[])
@@ -598,6 +596,10 @@ export function ProgramGamesSection({
         return String(left.id).localeCompare(String(right.id));
       });
   }, [competitionId, competitionPhases, data.phaseSchedules]);
+  const scheduleGroups = useMemo(
+    () => groupProgramSchedulesByPhaseTournament(phaseGroups, schedules),
+    [phaseGroups, schedules],
+  );
 
   const competitionTeams = useMemo(() => {
     return getCompetitionTeamsForStandings(data, competitionId).map((team) => ({
@@ -1143,8 +1145,20 @@ export function ProgramGamesSection({
             Δεν έχει δημιουργηθεί πρόγραμμα για κάποια φάση.
           </div>
         ) : (
-          <div className="grid gap-4">
-            {schedules.map((schedule) => {
+          <div className="space-y-6">
+            {scheduleGroups.map((group) => (
+              <section key={`program-group-${group.rootPhaseId}`} className="min-w-0 space-y-4" data-testid="program-phase-group">
+                <div className="rounded-2xl border border-sky-300 bg-sky-50 px-4 py-3">
+                  <p className="text-xs font-black uppercase tracking-[0.12em] text-sky-700">Θεσμός / Σειρά Φάσεων</p>
+                  <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-lg font-black text-zinc-950">{group.tournamentName}</h3>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-black ${group.finalized ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                      {group.finalized ? "Ολοκληρωμένο" : "Σε εξέλιξη"}
+                    </span>
+                  </div>
+                </div>
+                <div className="grid gap-4">
+                  {group.schedules.map((schedule) => {
               const scheduleKey = String(schedule.id);
               const phase = competitionPhases.find((entry) => String(entry.id) === String(schedule.phase_id ?? "")) ?? null;
               const phaseRules = parseStandingsRules(phase?.rule_settings_json);
@@ -1305,7 +1319,9 @@ export function ProgramGamesSection({
                 ? `${completedSeriesGames}/${Math.max(materializedSeriesGames.length, 0)} υλικοποιημένοι ολοκληρωμένοι`
                 : `${completedGames}/${totalGames}`;
               const phaseHeaderSummary = totalGames ? `${phaseLifecycleLabel} · ${phaseProgressLabel}` : phaseLifecycleLabel;
-              const headerLabel = `${String(schedule.phase_name ?? phase?.name ?? "—")}`;
+              const phaseOrderValue = Number(phase?.phase_order ?? phase?.order_index ?? schedule.phase_order ?? 0);
+              const phaseOrder = Number.isFinite(phaseOrderValue) && phaseOrderValue > 0 ? phaseOrderValue : null;
+              const headerLabel = `${phaseOrder ? `${phaseOrder}. ` : ""}${String(schedule.phase_name ?? phase?.name ?? "—")}`;
               return (
                 <article key={String(schedule.id)} className="w-full min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
                   <PlatformButton
@@ -2229,7 +2245,10 @@ export function ProgramGamesSection({
                   </div>
                 </article>
               );
-            })}
+                  })}
+                </div>
+              </section>
+            ))}
           </div>
         )}
       </div>
