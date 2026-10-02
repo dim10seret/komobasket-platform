@@ -12,6 +12,7 @@ import { teams } from "@/data/teams";
 import { getPublicHistoricalTeamLogosWithDb } from "./public-historical-team-logos.service";
 import { CanonicalTeamLogoProvider } from "@/components/teams/CanonicalTeamLogoContext";
 import TeamsGrid from "@/components/teams/TeamsGrid";
+import TeamCard from "@/components/teams/TeamCard";
 import TeamHero from "@/components/team/TeamHero";
 
 const source = relative => readFileSync(new URL(relative, import.meta.url), "utf8");
@@ -61,6 +62,23 @@ describe("canonical Team logo rendering across public seasons", () => {
     const html = renderToStaticMarkup(React.createElement(TeamHero, { team: "Team", season: "2026-27", playerCount: 0, logo: "" }));
     expect(html).not.toContain("<img");
     expect(html).toContain("Team");
+  });
+  it("bypasses optimization only for uploaded Team logo routes", () => {
+    const uploadedLogo = "/api/team/logos/team-logos/team_jugopiastika/a7243bbe-85b3-4c3a-a96b-6ef0a6ad7249.jpg";
+    const staticLogo = "/logos/teams/2025-26/side-effects.jpg";
+    const uploadedCard = renderToStaticMarkup(React.createElement(TeamCard, { slug: "jugopiastika", team: "JUGOPIASTIKA", season: "2026-27", players: 12, logo: uploadedLogo }));
+    const uploadedHero = renderToStaticMarkup(React.createElement(TeamHero, { team: "JUGOPIASTIKA", season: "2026-27", playerCount: 12, logo: uploadedLogo }));
+    const staticCard = renderToStaticMarkup(React.createElement(TeamCard, { slug: "side-effects", team: "SIDE EFFECTS", season: "2025-26", players: 12, logo: staticLogo }));
+    const staticHero = renderToStaticMarkup(React.createElement(TeamHero, { team: "SIDE EFFECTS", season: "2025-26", playerCount: 12, logo: staticLogo }));
+
+    for (const html of [uploadedCard, uploadedHero]) {
+      expect(html).toContain(`src="${uploadedLogo}"`);
+      expect(html).not.toContain("/_next/image");
+    }
+    for (const html of [staticCard, staticHero]) {
+      expect(html).toContain("/_next/image");
+      expect(html).toContain(encodeURIComponent(staticLogo));
+    }
   });
   it("has no seasonal precedence in shared public/hosted, roster or Platform game projections", () => {
     for (const file of ["./public-competition.service.ts", "./public-team-roster.service.ts", "./komocontrol-admin.service.ts"]) {
