@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { scopePublicProgramResultsContexts, selectPublicProgramResultsBlock, selectPublicProgramResultsNavigation } from "../hosted/HostedOrganizationHomeData.tsx";
+import { listPublicPhaseSelectorOptions, resolvePublicCompetitionPhaseSelection, scopePublicProgramResultsContexts, selectPublicProgramResultsBlock, selectPublicProgramResultsNavigation } from "../hosted/HostedOrganizationHomeData.tsx";
 
 const source = fs.readFileSync(path.resolve(import.meta.dirname, "PublicCompetitionsView.tsx"), "utf8");
 const latestMovementsSource = fs.readFileSync(path.resolve(import.meta.dirname, "PublicCompetitionLatestMovements.tsx"), "utf8");
@@ -67,6 +67,43 @@ const projectedSeries = ({ actual = false, meaningful = true } = {}) => ({
 });
 
 describe("public standalone Program and Results", () => {
+  it("keeps one selector option per canonical Phase in persisted/domain order without name inference", () => {
+    const options = listPublicPhaseSelectorOptions([
+      { id: "regular", slug: "regular", name: "ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ" },
+      { id: "play-out", slug: "play-out", name: "PLAY OUT" },
+      { id: "custom", slug: "custom", name: "ΩΜΕΓΑ / CUSTOM PHASE" },
+      { id: "finals", slug: "finals", name: "ΤΕΛΙΚΟΣ - ΜΙΚΡΟΣ ΤΕΛΙΚΟΣ" },
+    ]);
+    expect(options.map((option) => option.id)).toEqual(["regular", "play-out", "custom", "finals"]);
+    expect(options.map((option) => option.label)).toEqual(["ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ", "PLAY OUT", "ΩΜΕΓΑ / CUSTOM PHASE", "ΤΕΛΙΚΟΣ - ΜΙΚΡΟΣ ΤΕΛΙΚΟΣ"]);
+    expect(options.filter((option) => option.label === "ΤΕΛΙΚΟΣ - ΜΙΚΡΟΣ ΤΕΛΙΚΟΣ")).toHaveLength(1);
+  });
+
+  it("defaults viewing to the canonical current Phase while preserving an explicit historical Phase", () => {
+    const historical = context({ phaseOrder: 1, lifecycleStatus: "finalized", games: [game("regular-final", 1, "completed")] });
+    historical.selectedPhase = { ...historical.selectedPhase, id: "regular", slug: "regular", name: "ΚΑΝΟΝΙΚΗ ΠΕΡΙΟΔΟΣ" };
+    const current = context({ phaseOrder: 2, games: [game("play-out-next", 1, "scheduled")] });
+    current.selectedPhase = { ...current.selectedPhase, id: "play-out", slug: "play-out", name: "PLAY OUT" };
+
+    const automatic = resolvePublicCompetitionPhaseSelection(historical, [historical, current]);
+    expect(automatic.viewedContext?.selectedPhase?.id).toBe("play-out");
+    expect(automatic.currentContext?.selectedPhase?.id).toBe("play-out");
+
+    const explicit = resolvePublicCompetitionPhaseSelection(historical, [historical, current], "regular");
+    expect(explicit.viewedContext?.selectedPhase?.id).toBe("regular");
+    expect(explicit.currentContext?.selectedPhase?.id).toBe("play-out");
+  });
+
+  it("drops a stale Phase override after Institution changes and resolves the new canonical current Phase", () => {
+    const fallback = context({ phaseOrder: 4, lifecycleStatus: "finalized", games: [game("new-history", 1, "completed")] });
+    fallback.selectedPhase = { ...fallback.selectedPhase, id: "new-history", slug: "new-history", name: "ΝΕΟΣ ΘΕΣΜΟΣ ΙΣΤΟΡΙΚΟ" };
+    const current = context({ phaseOrder: 5, games: [game("new-current", 1, "scheduled")] });
+    current.selectedPhase = { ...current.selectedPhase, id: "new-current", slug: "new-current", name: "ΝΕΟΣ ΘΕΣΜΟΣ ΤΡΕΧΟΥΣΑ" };
+    const resolved = resolvePublicCompetitionPhaseSelection(fallback, [fallback, current], "stale-old-institution-phase");
+    expect(resolved.viewedContext?.selectedPhase?.id).toBe("new-current");
+    expect(resolved.currentContext?.selectedPhase?.id).toBe("new-current");
+  });
+
   it("selects the first incomplete Matchday and includes every game in that block", () => {
     const selected = selectPublicProgramResultsBlock([context({ games: [
       game("round-1", 1, "completed"),
@@ -227,13 +264,18 @@ describe("public standalone Program and Results", () => {
     expect(source).toContain("Το πρόγραμμα της φάσης δεν έχει ακόμη διαμορφωθεί.");
   });
 
-  it("renders one standalone section with its own Season and Competition selectors and no Phase selector", () => {
+  it("renders the canonical Phase selector and current indicator without the former Phase pill row", () => {
     expect((source.match(/<PublicCompetitionProgramResults/g) ?? []).length).toBe(1);
     expect(source).toContain('id="program-results"');
     expect(source).toContain('<PublicCompactSelector label="Σεζόν"');
     expect(source).toContain('<PublicCompactSelector label="Διοργάνωση"');
     expect(source).toContain('<PublicCompactSelector label="Θεσμός"');
-    expect(source).toContain("context.selectedTournament?.phaseIds");
+    expect((source.match(/<PublicCompactSelector label="Φάση"/g) ?? []).length).toBe(1);
+    expect(source).toContain("listPublicPhaseSelectorOptions(tournamentPhases)");
+    expect(source).toContain("resolvePublicCompetitionPhaseSelection(fallbackContext, phaseContexts, query.phase)");
+    expect(source).toContain("Τρέχουσα φάση:");
+    expect(source).not.toContain('<p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-500">Φάση</p><div className="mt-2 flex flex-wrap gap-2">');
+    expect(source).toContain("fallbackContext.selectedTournament!.phaseIds.includes(item.id)");
     expect(source).toContain('params.set("tournament", context.selectedTournament.slug)');
     expect(source).not.toContain("const visibleRounds");
     expect(source).toContain("programBlock?: string");

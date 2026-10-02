@@ -125,6 +125,25 @@ export function selectHostedHomePhaseContext(contexts: PublicCompetitionContext[
     }) ?? null;
 }
 
+export function listPublicPhaseSelectorOptions(phases: PublicCompetitionContext["phases"]) {
+  return phases.map((phase) => ({ id: phase.id, slug: phase.slug, label: phase.name }));
+}
+
+export function resolvePublicCompetitionPhaseSelection(
+  fallbackContext: PublicCompetitionContext | null,
+  phaseContexts: PublicCompetitionContext[],
+  explicitPhaseSlug?: string | null,
+) {
+  const currentContext = selectHostedHomePhaseContext(phaseContexts);
+  const explicitContext = explicitPhaseSlug
+    ? phaseContexts.find((context) => context.selectedPhase?.slug === explicitPhaseSlug) ?? null
+    : null;
+  return {
+    currentContext,
+    viewedContext: explicitContext ?? currentContext ?? fallbackContext,
+  };
+}
+
 export type HostedTournamentHomeGroup = {
   rootPhaseId: string;
   tournamentName: string;
