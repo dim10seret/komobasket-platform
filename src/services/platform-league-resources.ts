@@ -20,6 +20,7 @@ import {
 } from "@/lib/platform-authorization";
 import {
   createLeagueEntity,
+  createFinalSeriesPhases,
   cleanupLeagueCompetition,
   deleteLeagueCompetition,
   deletePhaseProgram,
@@ -379,6 +380,10 @@ const { resource } = await context.params;
       organizationId = (await requireCreateOrganization(actor, input)).organizationId;
     } else if (resource === "phases") {
       await requirePhaseConfigurationAccess(actor, input);
+      if (String(input.action ?? "").trim() === "createFinalSeriesPhases") {
+        const result = await createFinalSeriesPhases(input, actor.email);
+        return Response.json(result, { status: 201 });
+      }
     } else if (resource === "competition-venues") {
       const user = await resolveActor(actor);
       await requireCompetitionAccess(user, String(input.competitionId ?? ""), "manage");

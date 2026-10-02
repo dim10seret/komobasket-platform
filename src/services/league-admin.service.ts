@@ -55,6 +55,12 @@ import {
   resolvePhaseTournamentGraph,
   type PhaseLineageRow,
 } from "@/lib/phase-root-source";
+import {
+  buildFinalSeriesTargetConfiguration,
+  getCompetitiveSeriesSourceMatchupIds,
+  isCanonicalFinalSeriesSibling,
+  type FinalSeriesTargetKind,
+} from "@/lib/final-series-phase";
 import { listPlatformMatchReportAvailabilityWithDb } from "@/services/platform-match-report.service";
 import { saveAdministrativeGameResultWithDb } from "@/services/administrative-game-result.service";
 
@@ -5037,6 +5043,140 @@ export async function removeStaffFromRoster(input: { membershipId: string }) {
   await assertRosterTargetWritable(db, existing.season_id, existing.competition_id);
   await db.prepare("DELETE FROM league_staff_memberships WHERE id=?").bind(membershipId).run();
   return { staffMembershipId: membershipId };
+}
+
+export async function createFinalSeriesPhasesWithDb(
+  db: D1DatabaseBinding,
+  input: Record<string, unknown>,
+  actor: string,
+) {
+  const competitionId = String(input.competitionId ?? input.competition_id ?? "").trim();
+  const sourcePhaseId = String(input.previousPhaseId ?? input.previous_phase_id ?? "").trim();
+  const finalName = String(input.name ?? "").trim();
+  const includeSmallFinal = booleanValue(input.createSmallFinal);
+  if (!competitionId || !sourcePhaseId || !finalName) {
+    throw new Error("Η διοργάνωση, η φάση προέλευσης και η ονομασία του Τελικού είναι υποχρεωτικές.");
+  }
+  if (normalizeCanonicalFormat(String(input.format ?? "series")) !== "series") {
+    throw new Error("Ο Τελικός πρέπει να έχει μορφή Σειράς αγώνων.");
+  }
+
+  const sourcePhase = await db.prepare(`SELECT p.*, pr.phase_kind, pr.settings_json AS rule_settings_json
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.id=? AND p.competition_id=?`)
+    .bind(sourcePhaseId, competitionId).first<DbRow>();
+  if (!sourcePhase) throw new Error("Η φάση προέλευσης δεν βρέθηκε στην επιλεγμένη διοργάνωση.");
+  const sourceMatchupIds = getCompetitiveSeriesSourceMatchupIds(sourcePhase);
+  if (!sourceMatchupIds) {
+    throw new Error("Η δημιουργία Τελικού απαιτεί Series φάση με ακριβώς δύο έγκυρες διασταυρώσεις τεσσάρων ομάδων, χωρίς BYE.");
+  }
+
+  const existingSiblings = await rows<DbRow>(db, `SELECT p.*, pr.phase_kind, pr.settings_json AS rule_settings_json
+    FROM league_phases p
+    LEFT JOIN league_phase_rules pr ON pr.phase_id=p.id
+    WHERE p.competition_id=? AND p.previous_phase_id=?`, [competitionId, sourcePhaseId]);
+  if (existingSiblings.some((phase) => isCanonicalFinalSeriesSibling(phase, sourcePhaseId, sourceMatchupIds, "final"))) {
+    throw new Error("Υπάρχει ήδη Τελικός που χρησιμοποιεί τους νικητές αυτών των δύο διασταυρώσεων.");
+  }
+  if (includeSmallFinal && existingSiblings.some((phase) => isCanonicalFinalSeriesSibling(phase, sourcePhaseId, sourceMatchupIds, "small_final"))) {
+    throw new Error("Υπάρχει ήδη Μικρός Τελικός που χρησιμοποιεί τους ηττημένους αυτών των δύο διασταυρώσεων.");
+  }
+
+  const smallFinalName = "ΜΙΚΡΟΣ ΤΕΛΙΚΟΣ";
+  const requestedNames = includeSmallFinal ? [finalName, smallFinalName] : [finalName];
+  const requestedSlugs = requestedNames.map(slugify);
+  if (new Set(requestedSlugs).size !== requestedSlugs.length) {
+    throw new Error("Ο Τελικός και ο Μικρός Τελικός πρέπει να έχουν διαφορετική ονομασία.");
+  }
+  const duplicateSlug = await db.prepare(`SELECT id FROM league_phases
+    WHERE competition_id=? AND slug IN (${requestedSlugs.map(() => "?").join(",")}) LIMIT 1`)
+    .bind(competitionId, ...requestedSlugs).first<{ id: string }>();
+  if (duplicateSlug) throw new Error("Υπάρχει ήδη φάση με μία από τις ονομασίες Τελικού στη διοργάνωση.");
+
+  const maximumOrder = await db.prepare(
+    "SELECT COALESCE(MAX(COALESCE(phase_order, order_index, 0)), 0) AS max_order FROM league_phases WHERE competition_id=?",
+  ).bind(competitionId).first<{ max_order: number | null }>();
+  const firstOrder = Number(maximumOrder?.max_order ?? 0) + 1;
+  const targets: Array<{ kind: FinalSeriesTargetKind; name: string; id: string; matchupId: string; order: number }> = [{
+    kind: "final",
+    name: finalName,
+    id: createEntityId("phase"),
+    matchupId: createEntityId("matchup"),
+    order: firstOrder,
+  }];
+  if (includeSmallFinal) {
+    targets.push({
+      kind: "small_final",
+      name: smallFinalName,
+      id: createEntityId("phase"),
+      matchupId: createEntityId("matchup"),
+      order: firstOrder + 1,
+    });
+  }
+
+  const now = new Date().toISOString();
+  const statements = targets.flatMap((target) => {
+    const configuration = buildFinalSeriesTargetConfiguration(
+      sourcePhaseId,
+      sourceMatchupIds,
+      target.matchupId,
+      target.kind,
+    );
+    const settingsJson = JSON.stringify(configuration);
+    return [
+      db.prepare(`INSERT INTO league_phases
+        (id,competition_id,name,slug,phase_type,format,order_index,phase_order,previous_phase_id,tournament_name)
+        VALUES (?,?,?,?,?,?,?,?,?,NULL)`)
+        .bind(
+          target.id,
+          competitionId,
+          target.name,
+          slugify(target.name),
+          PHASE_FORMAT_TO_LEGACY_KIND.series,
+          "series",
+          target.order,
+          target.order,
+          sourcePhaseId,
+        ),
+      db.prepare(`INSERT INTO league_phase_rules
+        (phase_id,phase_kind,bracket_size,best_of,wins_required,carry_over_enabled,carry_over_source_phase_id,settings_json,updated_at)
+        VALUES (?,?,2,NULL,NULL,0,NULL,?,CURRENT_TIMESTAMP)`)
+        .bind(target.id, PHASE_FORMAT_TO_LEGACY_KIND.series, settingsJson),
+      db.prepare(`INSERT INTO league_audit_log
+        (id,actor_email,action,entity_type,entity_id,details_json,created_at)
+        VALUES (?,?,?,?,?,?,?)`)
+        .bind(
+          createEntityId("audit"),
+          actor,
+          "create",
+          "phases",
+          target.id,
+          JSON.stringify({
+            action: "createFinalSeriesPhases",
+            targetKind: target.kind,
+            competitionId,
+            sourcePhaseId,
+            sourceMatchupIds,
+          }),
+          now,
+        ),
+    ];
+  });
+
+  await db.batch(statements);
+  return {
+    id: targets[0].id,
+    finalPhaseId: targets[0].id,
+    smallFinalPhaseId: targets.find((target) => target.kind === "small_final")?.id ?? null,
+    createdPhaseIds: targets.map((target) => target.id),
+  };
+}
+
+export async function createFinalSeriesPhases(input: Record<string, unknown>, actor: string) {
+  const db = await database();
+  if (!db) throw new Error("Η δημιουργία Τελικού είναι διαθέσιμη στη βάση D1 μετά την εγκατάσταση.");
+  return createFinalSeriesPhasesWithDb(db, input, actor);
 }
 
 export async function createLeagueEntity(resource: string, input: Record<string, unknown>, actor: string, organizationId?: string, scopeOrganizationId?: string) {

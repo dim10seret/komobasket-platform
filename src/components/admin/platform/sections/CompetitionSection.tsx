@@ -38,6 +38,7 @@ import { deriveSeriesPhaseCompletion } from "@/lib/series-phase-completion";
 import { ProgramGamesSection } from "./ProgramGamesSection";
 import { selectCompetitionLatestMovements } from "@/lib/competition-latest-movements";
 import { buildPhaseTournamentGroups } from "@/lib/phase-root-source";
+import { getCompetitiveSeriesSourceMatchupIds } from "@/lib/final-series-phase";
 
 export function CompetitionFields({
   competition,
@@ -214,6 +215,12 @@ export function CompetitionWorkspaceManager({
   const [newPhaseFormat, setNewPhaseFormat] = useState<"standings" | "series">("standings");
   const [newPhasePreviousId, setNewPhasePreviousId] = useState<string | null>(null);
   const [newPhaseTournamentName, setNewPhaseTournamentName] = useState("");
+  const [createSmallFinal, setCreateSmallFinal] = useState(false);
+  const finalSourceMatchupIds = useMemo(() => {
+    const sourcePhase = selectedCompetitionPhases.find((phase) => String(phase.id) === String(newPhasePreviousId ?? ""));
+    return getCompetitiveSeriesSourceMatchupIds(sourcePhase as Record<string, unknown> | undefined);
+  }, [newPhasePreviousId, selectedCompetitionPhases]);
+  const canCreateFinalSeries = newPhaseFormat === "series" && finalSourceMatchupIds !== null;
   const [finalizePhaseDialog, setFinalizePhaseDialog] = useState<{ phaseId: string; phaseName: string; competitionId: string; phaseFormat: string } | null>(null);
   const [finalizePhaseConfirmation, setFinalizePhaseConfirmation] = useState("");
   const [teamRoster,setTeamRoster]=useState<TeamRosterManagementView | null>(null);
@@ -229,6 +236,10 @@ export function CompetitionWorkspaceManager({
   const [editingAthletePhotoFileName,setEditingAthletePhotoFileName]=useState("");
   const [editingAthleteUploadBusy,setEditingAthleteUploadBusy]=useState(false);
   const [editingAthleteUploadMessage,setEditingAthleteUploadMessage]=useState("");
+
+  useEffect(() => {
+    if (!canCreateFinalSeries && createSmallFinal) setCreateSmallFinal(false);
+  }, [canCreateFinalSeries, createSmallFinal]);
   const [editingAthleteShirtNumber,setEditingAthleteShirtNumber]=useState("");
   const [seriesContinuationSeed,setSeriesContinuationSeed]=useState<{ sourcePhaseId: string; sourceName: string; from?: number; to?: number } | null>(null);
   const [rosterActionBusy,setRosterActionBusy]=useState(false);
@@ -810,12 +821,15 @@ export function CompetitionWorkspaceManager({
                           setNewPhaseName("");
                           setNewPhaseFormat("standings");
                           setNewPhasePreviousId(null);
-                           setNewPhaseTournamentName("");
+                          setNewPhaseTournamentName("");
+                          setCreateSmallFinal(false);
                           setActivateLatestPhaseAfterAdd(true);
                         }}
                         className="grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2"
                       >
                         <input type="hidden" name="competitionId" value={String(workspaceCompetitionId)} />
+                        {canCreateFinalSeries ? <input type="hidden" name="action" value="createFinalSeriesPhases" /> : null}
+                        {canCreateFinalSeries ? <input type="hidden" name="createSmallFinal" value={String(createSmallFinal)} /> : null}
                         <Field label="Ονομασία">
                           <input
                             required
@@ -873,6 +887,22 @@ export function CompetitionWorkspaceManager({
                           name="orderIndex"
                           value={String((Number(selectedCompetitionPhases[selectedCompetitionPhases.length - 1]?.phase_order ?? selectedCompetitionPhases[selectedCompetitionPhases.length - 1]?.order_index ?? 0) + 1))}
                         />
+                        {canCreateFinalSeries ? (
+                          <label className="rounded-xl border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                            <span className="flex items-center gap-2 text-sm font-black text-zinc-900">
+                              <input
+                                type="checkbox"
+                                checked={createSmallFinal}
+                                onChange={(event) => setCreateSmallFinal(event.target.checked)}
+                                className="h-4 w-4 accent-orange-600"
+                              />
+                              Δημιουργία Μικρού Τελικού
+                            </span>
+                            <span className="mt-1 block text-xs text-zinc-600">
+                              Οι ηττημένοι των δύο διασταυρώσεων θα συμμετάσχουν στον Μικρό Τελικό.
+                            </span>
+                          </label>
+                        ) : null}
                         <div className="flex flex-wrap gap-3 sm:col-span-2">
                           <PlatformButton mutation
                             type="button"
@@ -884,6 +914,7 @@ export function CompetitionWorkspaceManager({
                               setNewPhaseFormat("standings");
                               setNewPhasePreviousId(null);
                               setNewPhaseTournamentName("");
+                              setCreateSmallFinal(false);
                             }}
                             className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-700"
                           >

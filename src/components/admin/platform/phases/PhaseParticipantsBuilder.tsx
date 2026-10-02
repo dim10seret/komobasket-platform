@@ -12,7 +12,7 @@ import { resolveParticipantSlotReference } from "@/lib/participant-slot-resoluti
 import { classifySeriesBracketEntry, resolveSeriesCarryOver, resolveSeriesParticipantSourcePhaseId } from "@/lib/series-carry-over";
 import { getRootPhaseCompetitionTeams } from "@/lib/phase-root-source";
 
-type ParticipantSourceType =
+export type ParticipantSourceType =
   | "competition_participants"
   | "standing_positions"
   | "matchup_winners"
@@ -238,6 +238,24 @@ const getSlotPreviewValue = (slot: SlotBuilderSource) => {
   return "—";
 };
 
+export const deriveSeriesMatchupSourceConfiguration = (
+  matchups: BracketBuilderMatchup[],
+  fallback: ParticipantSourceType,
+) => {
+  const references = matchups.flatMap((matchup) => [matchup.slotA, matchup.slotB])
+    .filter((slot) => slot.type === "matchup_winner" || slot.type === "matchup_loser");
+  const sourceMatchupIds = [...new Set(references.map((slot) => slot.matchupId).filter(Boolean))];
+  const participantSourceType: ParticipantSourceType = references.length > 0
+    && references.every((slot) => slot.type === "matchup_loser")
+    ? "matchup_losers"
+    : references.length > 0 && references.every((slot) => slot.type === "matchup_winner")
+      ? "matchup_winners"
+      : references.length > 0
+        ? "manual"
+        : fallback;
+  return { participantSourceType, sourceMatchupIds };
+};
+
 const getSeriesOutputOptions = (sourcePhase: Row | undefined, data: Snapshot) => {
   if (!sourcePhase) return [] as BracketOutputSource[];
   const competitionPhases = data.phases;
@@ -267,8 +285,9 @@ const getSeriesOutputOptions = (sourcePhase: Row | undefined, data: Snapshot) =>
       slotB: entry.slotB,
     }));
 
-    const winnerOptions = matchups
+    const validMatchups = matchups
       .filter((matchup) => matchup.id && classifySeriesBracketEntry(matchup).kind !== "invalid")
+    const winnerOptions = validMatchups
       .map((matchup) => {
         const resolved = resolveParticipantSlotReference(data.phases, data.games, data.teams, String(sourcePhase.id ?? ""), {
           type: "matchup_winner",
@@ -276,12 +295,26 @@ const getSeriesOutputOptions = (sourcePhase: Row | undefined, data: Snapshot) =>
         });
         return {
           value: `winner:${matchup.id}`,
-          label: resolved.displayLabel ?? `Winner ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
+          label: resolved.displayLabel ?? `Νικητής ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
           sourceType: "matchup_winner" as SlotSourceType,
         };
       });
 
-    return winnerOptions;
+    const loserOptions = validMatchups
+      .filter((matchup) => classifySeriesBracketEntry(matchup).kind === "playable_matchup")
+      .map((matchup) => {
+        const resolved = resolveParticipantSlotReference(data.phases, data.games, data.teams, String(sourcePhase.id ?? ""), {
+          type: "matchup_loser",
+          matchupId: matchup.id,
+        });
+        return {
+          value: `loser:${matchup.id}`,
+          label: resolved.displayLabel ?? `Ηττημένος ${describeSeriesMatchupLabel(matchup, competitionMatchupIndex)}`,
+          sourceType: "matchup_loser" as SlotSourceType,
+        };
+      });
+
+    return [...winnerOptions, ...loserOptions];
   }
 
   return [];
@@ -524,7 +557,12 @@ export function PhaseParticipantsBuilder({
   );
 
   const [participantSourceType, setParticipantSourceType] = useState<ParticipantSourceType>(() =>
-    isRootSeries ? "competition_participants" : isSeriesMode ? "standing_positions" : normalizeParticipantSourceType(String(config?.participantSourceType ?? ""), "competition_participants"),
+    isRootSeries
+      ? "competition_participants"
+      : normalizeParticipantSourceType(
+        String(config?.participantSourceType ?? ""),
+        isSeriesMode ? "standing_positions" : "competition_participants",
+      ),
   );
   const [participantSourcePhaseId, setParticipantSourcePhaseId] = useState(
     String(lockedSeriesSourcePhaseId?.trim() || (phase ? phase.previous_phase_id ?? "" : config?.participantSourcePhaseId ?? "")),
@@ -544,6 +582,10 @@ export function PhaseParticipantsBuilder({
   const sourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === participantSourcePhaseId), [phaseList, participantSourcePhaseId]);
   const sourceIsSeries = String(sourcePhase?.format ?? sourcePhase?.phase_kind ?? "") === "series";
   const sourceOutputPool = useMemo(() => getSeriesOutputOptions(sourcePhase, data), [data, sourcePhase]);
+  const derivedSeriesSource = useMemo(
+    () => deriveSeriesMatchupSourceConfiguration(matchups, participantSourceType),
+    [matchups, participantSourceType],
+  );
   const persistedSourcePhaseId = String(config?.participantSourcePhaseId ?? "").trim();
   const persistedSourcePhase = useMemo(() => phaseList.find((entry) => String(entry.id ?? "") === persistedSourcePhaseId), [phaseList, persistedSourcePhaseId]);
   const sourceRangeSlots = useMemo(() => {
@@ -582,7 +624,7 @@ export function PhaseParticipantsBuilder({
       String(cfg?.participantSourceType || "competition_participants"),
       "competition_participants",
     );
-    setParticipantSourceType(isRootSeries ? "competition_participants" : isSeriesMode ? "standing_positions" : normalizedSourceType);
+    setParticipantSourceType(isRootSeries ? "competition_participants" : normalizedSourceType);
     setParticipantSourcePhaseId(String(lockedSeriesSourcePhaseId?.trim() || (phase ? phase.previous_phase_id ?? "" : cfg?.participantSourcePhaseId ?? "")));
     setStandingFrom(asInt(lockedSeriesRangeFrom ?? cfg?.standingFrom, 1));
     setStandingTo(asInt(lockedSeriesRangeTo ?? cfg?.standingTo, asInt(cfg?.standingFrom, 1)));
@@ -598,11 +640,23 @@ export function PhaseParticipantsBuilder({
 
   useEffect(() => {
     if (!isSeriesMode) return;
-    const requiredSourceType = isRootSeries ? "competition_participants" : "standing_positions";
-    if (participantSourceType !== requiredSourceType) {
-      setParticipantSourceType(requiredSourceType);
+    if (isRootSeries && participantSourceType !== "competition_participants") {
+      setParticipantSourceType("competition_participants");
     }
   }, [isRootSeries, isSeriesMode, participantSourceType]);
+
+  useEffect(() => {
+    if (!isSeriesMode || !sourceIsSeries) return;
+    if (participantSourceType !== derivedSeriesSource.participantSourceType) {
+      setParticipantSourceType(derivedSeriesSource.participantSourceType);
+    }
+    setSourceMatchupIds((current) => (
+      current.length === derivedSeriesSource.sourceMatchupIds.length
+      && current.every((value, index) => value === derivedSeriesSource.sourceMatchupIds[index])
+        ? current
+        : derivedSeriesSource.sourceMatchupIds
+    ));
+  }, [derivedSeriesSource, isSeriesMode, participantSourceType, sourceIsSeries]);
 
   const standingPositionPreview = useMemo(() => {
     if (participantSourceType !== "standing_positions") return [];
@@ -901,7 +955,9 @@ export function PhaseParticipantsBuilder({
               ? "__bye__"
               : slot.type === "matchup_winner"
                 ? `winner:${slot.matchupId}`
-                : slot.position)
+                : slot.type === "matchup_loser"
+                  ? `loser:${slot.matchupId}`
+                  : slot.position)
           : (slot.type === "bye" ? "__bye__" : slot.position)}
         onChange={(event) => {
           const selected = event.target.value;
@@ -930,6 +986,13 @@ export function PhaseParticipantsBuilder({
             if (selected.startsWith("winner:")) {
               changeSlotType(matchupId, key, "matchup_winner");
               changeSlotValue(matchupId, key, "matchupId", selected.replace(/^winner:/, ""));
+              changeSlotValue(matchupId, key, "position", "");
+              changeSlotValue(matchupId, key, "teamId", "");
+              return;
+            }
+            if (selected.startsWith("loser:")) {
+              changeSlotType(matchupId, key, "matchup_loser");
+              changeSlotValue(matchupId, key, "matchupId", selected.replace(/^loser:/, ""));
               changeSlotValue(matchupId, key, "position", "");
               changeSlotValue(matchupId, key, "teamId", "");
               return;
@@ -969,8 +1032,10 @@ export function PhaseParticipantsBuilder({
           : sourceIsSeries
           ? sourceOutputPool.map((entry) => {
             const normalized = String(entry.value);
-            const isSelectedInCurrentSlot = normalized === currentToken;
-            const isDisabled = !isSelectedInCurrentSlot && isSeriesSlotValueUsedElsewhere(normalized, slot.id);
+            const referencedMatchupId = normalized.replace(/^(winner|loser):/, "");
+            const token = `${entry.sourceType}:${referencedMatchupId}`;
+            const isSelectedInCurrentSlot = token === currentToken;
+            const isDisabled = !isSelectedInCurrentSlot && isSeriesSlotValueUsedElsewhere(token, slot.id);
             return (
               <option key={`${slotRefId}-${normalized}`} value={normalized} disabled={isDisabled}>
                 {entry.label}
@@ -1185,7 +1250,7 @@ export function PhaseParticipantsBuilder({
             </div>
           )}
 
-          {isSeriesMode && (participantSourceType === "matchup_winners" || participantSourceType === "matchup_losers") && (
+          {isSeriesMode && !sourceIsSeries && (participantSourceType === "matchup_winners" || participantSourceType === "matchup_losers") && (
             <div className="space-y-3">
               <Field label="Φάση προέλευσης">
                 <select
@@ -1494,12 +1559,12 @@ export function PhaseParticipantsBuilder({
       type="hidden"
       name="participantConfiguration"
       value={JSON.stringify({
-        participantSourceType: isRootSeries ? "competition_participants" : participantSourceType,
+        participantSourceType: isRootSeries ? "competition_participants" : derivedSeriesSource.participantSourceType,
         participantSourcePhaseId,
         standingFrom,
         standingTo,
         selectedTeamIds,
-        sourceMatchupIds,
+        sourceMatchupIds: sourceIsSeries ? derivedSeriesSource.sourceMatchupIds : sourceMatchupIds,
         manualSlotCount,
         bracketMethod,
       })}

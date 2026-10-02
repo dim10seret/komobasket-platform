@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import { PhaseParticipantsBuilder } from "./PhaseParticipantsBuilder";
+import { describe, expect, it, test } from "vitest";
+import { deriveSeriesMatchupSourceConfiguration, PhaseParticipantsBuilder } from "./PhaseParticipantsBuilder";
+
+const source = readFileSync(new URL("./PhaseParticipantsBuilder.tsx", import.meta.url), "utf8");
 
 const data = {
   mode: "database",
@@ -30,7 +33,10 @@ test("future standings phases expose standing-position participants", () => {
   assert.match(source, /participantSourceType === "standing_positions"/);
   assert.match(source, /name="standingFrom"/);
   assert.match(source, /name="standingTo"/);
-  assert.match(source, /participantSourceType: isRootSeries \? "competition_participants" : participantSourceType/);
+  assert.equal(
+    deriveSeriesMatchupSourceConfiguration([], "standing_positions").participantSourceType,
+    "standing_positions",
+  );
 });
 
 test("standing-position preview projects the inclusive symbolic range", async () => {
@@ -104,5 +110,73 @@ describe("root series phase UI", () => {
     expect(html).toContain("Από θέση");
     expect(html).toContain("standing_positions");
     expect(html).not.toContain("Πηγή: ενεργές συμμετοχές της διοργάνωσης.");
+  });
+});
+
+describe("series loser participant outputs", () => {
+  const semifinalPhase = {
+    id: "semifinals", competition_id: "cup", name: "Ημιτελικά", format: "series", phase_order: 1,
+    rule_settings_json: JSON.stringify({
+      bracketConfiguration: { matchups: [
+        {
+          id: "sf-1",
+          slotA: { id: "sf-1-a", type: "manual", teamId: "team-a" },
+          slotB: { id: "sf-1-b", type: "manual", teamId: "team-b" },
+        },
+        {
+          id: "sf-2",
+          slotA: { id: "sf-2-a", type: "manual", teamId: "team-c" },
+          slotB: { id: "sf-2-b", type: "manual", teamId: "team-d" },
+        },
+      ] },
+    }),
+  };
+  const smallFinalPhase = {
+    id: "small-final", competition_id: "cup", name: "ΜΙΚΡΟΣ ΤΕΛΙΚΟΣ", format: "series", phase_order: 2,
+    previous_phase_id: "semifinals", wins_required: 2,
+    rule_settings_json: JSON.stringify({
+      participantConfiguration: {
+        participantSourceType: "matchup_losers",
+        participantSourcePhaseId: "semifinals",
+        sourceMatchupIds: ["sf-1", "sf-2"],
+      },
+      bracketConfiguration: { matchups: [{
+        id: "small-final-matchup",
+        slotA: { id: "small-a", type: "matchup_loser", matchupId: "sf-1" },
+        slotB: { id: "small-b", type: "matchup_loser", matchupId: "sf-2" },
+      }] },
+    }),
+  };
+
+  it("derives and serializes canonical matchup_losers configuration", () => {
+    const result = deriveSeriesMatchupSourceConfiguration([
+      {
+        id: "small-final-matchup",
+        slotA: { id: "small-a", type: "matchup_loser", position: "", teamId: "", matchupId: "sf-1" },
+        slotB: { id: "small-b", type: "matchup_loser", position: "", teamId: "", matchupId: "sf-2" },
+      },
+    ], "standing_positions");
+    expect(result).toEqual({ participantSourceType: "matchup_losers", sourceMatchupIds: ["sf-1", "sf-2"] });
+  });
+
+  it("reopens loser selections and exposes both canonical loser outputs", () => {
+    const html = renderToStaticMarkup(createElement(PhaseParticipantsBuilder, {
+      data: { ...data, phases: [semifinalPhase, smallFinalPhase] },
+      phase: smallFinalPhase,
+      competitionId: "cup",
+      selectedFormat: "series",
+      activeStep: 2,
+    }));
+    expect(html).toContain('value="loser:sf-1"');
+    expect(html).toContain('value="loser:sf-2"');
+    expect(html).toContain("Ηττημένος");
+    expect(html).toContain("matchup_losers");
+  });
+
+  it("shows the optional Small Final control only through the structural action", () => {
+    const competitionSource = readFileSync(new URL("../sections/CompetitionSection.tsx", import.meta.url), "utf8");
+    expect(competitionSource).toContain("Δημιουργία Μικρού Τελικού");
+    expect(competitionSource).toContain("getCompetitiveSeriesSourceMatchupIds");
+    expect(competitionSource).toContain('value="createFinalSeriesPhases"');
   });
 });
