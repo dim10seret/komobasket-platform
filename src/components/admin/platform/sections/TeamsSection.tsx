@@ -12,6 +12,8 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
   const [selectedCompetitionId,setSelectedCompetitionId]=useState("");
   const [selectedRegistryTeamId,setSelectedRegistryTeamId]=useState("");
   const [editingParticipationId,setEditingParticipationId]=useState<string|null>(null);
+  const [editParticipationLogoUrl,setEditParticipationLogoUrl]=useState("");
+  const [editParticipationLogoFileName,setEditParticipationLogoFileName]=useState("");
   const [participationFilterSeasonId,setParticipationFilterSeasonId]=useState("");
   const [participationFilterCompetitionId,setParticipationFilterCompetitionId]=useState("");
   const availableCompetitions=data.competitions.filter((competition)=>String(competition.season_id)===selectedSeasonId);
@@ -212,7 +214,6 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
   const editLogoInputRef = useRef<HTMLInputElement | null>(null);
   const editLogoFileInputRef = useRef<HTMLInputElement | null>(null);
   const [editLogoUploadMessage, setEditLogoUploadMessage] = useState("");
-  const editParticipationLogoInputRef = useRef<HTMLInputElement | null>(null);
   const editParticipationLogoFileInputRef = useRef<HTMLInputElement | null>(null);
   const [editParticipationLogoUploadMessage, setEditParticipationLogoUploadMessage] = useState("");
   const [editingRegistryTeam, setEditingRegistryTeam] = useState(false);
@@ -292,18 +293,19 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
     }
   }
 
-  async function uploadParticipationLogoFile(file: File, teamId:string) {
+  async function uploadParticipationLogoFile(file: File) {
     setEditParticipationLogoUploadMessage("");
     setUploadingLogo(true);
     try {
       const fd = new FormData();
       fd.append("logo", file);
-      fd.append("teamId", teamId);
+      fd.append("teamId", "");
       fd.append("organizationId", data.organizationContext.organizationId);
       const resp = await fetch("/api/admin/team-logo-route", { method: "POST", body: fd });
       const payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || "Upload failed");
-      if (editParticipationLogoInputRef.current) editParticipationLogoInputRef.current.value = payload.logoUrl ?? "";
+      setEditParticipationLogoUrl(payload.logoUrl ?? "");
+      setEditParticipationLogoFileName(file.name);
       setEditParticipationLogoUploadMessage("Το λογότυπο ανέβηκε.");
     } catch (err) {
       setEditParticipationLogoUploadMessage("");
@@ -600,9 +602,11 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
               <PlatformButton mutation
                 type="button"
                 onClick={() => {
-                  setEditingParticipationId(isEditing ? null : id);
+                  const nextEditingId = isEditing ? null : id;
+                  setEditingParticipationId(nextEditingId);
+                  setEditParticipationLogoUrl(nextEditingId ? canonicalTeamLogoUrl : "");
+                  setEditParticipationLogoFileName("");
                   setEditParticipationLogoUploadMessage("");
-                  if (editParticipationLogoInputRef.current) editParticipationLogoInputRef.current.value = canonicalTeamLogoUrl;
                   if (editParticipationLogoFileInputRef.current) editParticipationLogoFileInputRef.current.value = "";
                 }}
                 className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-black text-zinc-800 transition hover:border-orange-500 md:w-auto"
@@ -610,11 +614,15 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                 {isEditing ? "Ακύρωση" : "Edit"}
               </PlatformButton>
             </div>
-            {isEditing && <PlatformForm onSubmit={async(event)=>{if(await updateEntity("participations",id,event,"Οι αλλαγές στη συμμετοχή της ομάδας αποθηκεύτηκαν."))setEditingParticipationId(null);}} className="grid gap-3 border-t border-zinc-200 bg-white p-4 sm:grid-cols-2">
+            {isEditing && <PlatformForm onSubmit={async(event)=>{if(await updateEntity("participations",id,event,"Οι αλλαγές στη συμμετοχή της ομάδας αποθηκεύτηκαν.")){setEditingParticipationId(null);setEditParticipationLogoUrl("");setEditParticipationLogoFileName("");}}} className="grid gap-3 border-t border-zinc-200 bg-white p-4 sm:grid-cols-2">
               <Field label="Ονομασία στη σεζόν"><input required name="displayName" defaultValue={String(participation.display_name ?? participation.team_name ?? "")} className={inputClass}/></Field>
               <Field label="Επιλογή Λογότυπου ομάδας">
                 <div className="flex flex-col gap-2">
-                  <input ref={editParticipationLogoInputRef} type="hidden" name="logoUrl" defaultValue={canonicalTeamLogoUrl} />
+                  <input type="hidden" name="logoUrl" value={editParticipationLogoUrl || canonicalTeamLogoUrl} readOnly />
+                  {(editParticipationLogoUrl || canonicalTeamLogoUrl) ? <div className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                    <img src={editParticipationLogoUrl || canonicalTeamLogoUrl} alt="Προεπισκόπηση λογοτύπου ομάδας" className="h-14 w-14 shrink-0 rounded-lg bg-white object-contain" />
+                    <p className="min-w-0 break-words text-xs font-bold text-zinc-600">{editParticipationLogoFileName || "Τρέχον λογότυπο ομάδας"}</p>
+                  </div> : null}
                   <PlatformFileInput
                     ref={editParticipationLogoFileInputRef}
                     type="file"
@@ -622,7 +630,7 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                     className="sr-only"
                     onChange={(event) => {
                       const file = event.currentTarget.files?.[0];
-                      if (file) void uploadParticipationLogoFile(file, String(participation.team_id ?? ""));
+                      if (file) void uploadParticipationLogoFile(file);
                     }}
                   />
                   <PlatformButton
@@ -648,6 +656,8 @@ export function Teams({data,submit,updateEntity,deleteEntity,createEntity,busy,t
                     if (!window.confirm(confirmMessage)) return;
                     if (await deleteEntity("participations", id, `Η ομάδα ${teamName} αφαιρέθηκε από τη διοργάνωση.`)) {
                       setEditingParticipationId(null);
+                      setEditParticipationLogoUrl("");
+                      setEditParticipationLogoFileName("");
                     }
                   }}
                   className="rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-black text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"

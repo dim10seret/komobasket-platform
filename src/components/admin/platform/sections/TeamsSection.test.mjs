@@ -14,7 +14,7 @@ describe("Platform team-logo presentation", () => {
 
   test("preserves add-team selector logos and the existing participation edit flow", () => {
     expect(source).toContain('{teamLogoUrl ? <img src={teamLogoUrl} alt="" className="h-7 w-7 shrink-0 rounded-md object-contain" /> : null}');
-    expect(source).toContain('defaultValue={canonicalTeamLogoUrl}');
-    expect(source).toContain("uploadParticipationLogoFile(file, String(participation.team_id ?? \"\"))");
+    expect(source).toContain('value={editParticipationLogoUrl || canonicalTeamLogoUrl}');
+    expect(source).toContain("uploadParticipationLogoFile(file)");
   });
 });
