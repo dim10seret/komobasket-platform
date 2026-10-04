@@ -567,16 +567,29 @@ describe("Full Stats Live Control presentation contract", () => {
     it("renders compact FIBA disciplinary indicators without changing identity", () => {
         expect(foulIndicator({ total: 5, category1TechnicalCount: 1, category2TechnicalCount: 0, disruptiveCount: 1, flagrantCount: 1, directDisqualification: false, status: "EXCLUDED", statusReason: "FIVE_FOULS" })).toBe("5F · T1×1 · D×1 · FL×1 · ΕΚΤΟΣ");
     });
-    it("keeps the 1366x768 and 1920x1080 primary scorer surfaces in a bounded desktop grid", () => {
+    it("keeps five-player rails and their controls separate across supported desktop heights", () => {
+        const source = fs.readFileSync(path.resolve("src/components/LiveControl.tsx"), "utf8");
         const css = fs.readFileSync(path.resolve("src/styles/global.css"), "utf8");
+        expect(source).toContain("{renderRail(leftTeam)}");
+        expect(source).toContain("{renderRail(rightTeam)}");
+        expect(source).toContain('<div className={`live-rail-five${candidates.length > gameplay.rules.startingPlayers ? " is-selection" : ""}`}>');
+        expect(source).toContain('<div className="live-rail-controls">');
         expect(css).toMatch(/\.live-control-shell\s*\{[^}]*height:\s*100vh;[^}]*overflow:\s*hidden;/s);
-        expect(css).toMatch(/\.live-control-shell\s*\{[^}]*grid-template-columns:\s*minmax\(360px, 30vw\) minmax\(720px, 1fr\);/s);
-        expect(css).toMatch(/\.live-control-pane\s*\{[^}]*grid-template-rows:\s*clamp\(142px, 17vh, 164px\) 42px minmax\(0, 1fr\) 35px;/s);
-        expect(css).toMatch(/\.live-control-body\s*\{[^}]*grid-template-columns:\s*minmax\(160px, 21%\) minmax\(0, 58%\) minmax\(160px, 21%\);/s);
-        expect(css).toMatch(/@media \(max-height: 800px\)[\s\S]*\.live-primary-grid/);
-        expect(css).toMatch(/@media \(min-width: 1700px\)[\s\S]*\.live-control-shell/);
-        expect(css).toMatch(/\.live-event-workspace\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
-        expect(css).toMatch(/\.live-event-workspace\.is-full-active-event\s*\{[^}]*overflow-y:\s*hidden;/s);
+        expect(css).toMatch(/\.live-team-rail\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s);
+        expect(css).toMatch(/\.live-rail-five\s*\{[^}]*grid-template-rows:\s*repeat\(5,\s*minmax\([^,}]+,\s*1fr\)\);/s);
+        expect(css).not.toContain("grid-template-rows: repeat(5, 58px);");
+        const compactModeStart = css.indexOf("@media (max-height: 680px)");
+        expect(compactModeStart).toBeGreaterThanOrEqual(0);
+        const nextMediaStart = css.indexOf("@media ", compactModeStart + 1);
+        const compactMode = css.slice(compactModeStart, nextMediaStart < 0 ? undefined : nextMediaStart);
+        expect(compactMode).toContain(".live-control-pane");
+        expect(compactMode).toContain(".live-control-body");
+        expect(compactMode).toContain(".live-event-workspace");
+        expect(compactMode).toContain(".live-team-rail");
+        expect(compactMode).toContain(".live-rail-controls");
+        expect(compactMode).toMatch(/\.live-rail-five\s*\{[^}]*grid-template-rows:\s*repeat\(5,\s*minmax\([^,}]+,\s*1fr\)\);/s);
+        expect(compactMode).not.toMatch(/display:\s*none|visibility:\s*hidden/);
+        expect(css).not.toMatch(/\.demo-shell[^{}]*\{[^}]*live-rail|\.demo-shell\s+\.live-rail/s);
         expect(css).toMatch(/\.live-event-workspace\.is-full-active-event \.live-choice-grid\.is-stacked\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
         expect(css).toMatch(/\.live-log-list > button\s*\{[^}]*display:\s*flex;/s);
         expect(css).not.toContain(".live-log-head");

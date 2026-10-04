@@ -362,7 +362,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
 .live-rail-team { min-height: 48px; display: grid; place-items: center; padding: 4px; }
 .live-rail-team small { color: var(--live-muted); font-size: .6rem; letter-spacing: .12em; }
 .live-rail-team strong { color: color-mix(in srgb, var(--live-team), white 30%); font-size: 1rem; }
-.live-rail-five { min-height: 0; display: grid; grid-template-rows: repeat(5, 58px); gap: 6px; }
+.live-rail-five { min-height: 0; display: grid; grid-template-rows: repeat(5, minmax(34px, 1fr)); gap: 6px; }
 .live-rail-five.is-selection { grid-template-rows: none; grid-auto-rows: 48px; overflow-y: auto; }
 .live-rail-five button { display: grid; grid-template-columns: minmax(48px, .9fr) minmax(25px, .45fr) minmax(74px, 1.35fr); align-items: center; gap: 7px; min-height: 0; padding: 5px 9px; }
 .live-rail-five button:disabled { cursor: not-allowed; opacity: .22; }
@@ -624,10 +624,11 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
 }
 
 @media (max-height: 800px) {
-  .live-control-pane { grid-template-rows: 132px 38px minmax(0, 1fr) 30px; gap: 5px; }
-  .live-control-body { grid-template-rows: minmax(255px, 1.12fr) minmax(190px, .72fr) auto; gap: 5px; }
-  .live-control-body.has-active-step { grid-template-rows: minmax(255px, 1fr) 50px max-content auto; }
-  .live-primary-grid { grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 5px; }
+  .live-control-pane { grid-template-rows: 120px 36px minmax(0, 1fr) 28px; gap: 4px; }
+  .live-control-body { grid-template-rows: minmax(280px, 1.12fr) minmax(160px, .65fr) auto; gap: 4px; }
+  .live-control-body.has-active-step { grid-template-rows: minmax(260px, 1fr) 44px max-content auto; }
+  .live-primary-grid { grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .live-primary-actions { gap: 4px; }
   .live-primary-grid span { font-size: 1.6rem; }
   .live-score-team-status { gap: 2px; }
   .live-score-timeouts { gap: 5px; }
@@ -638,16 +639,30 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
   .live-score-foul-indicators { gap: 3px; }
   .live-score-foul-indicators i { width: 20px; height: 20px; font-size: .64rem; }
   .live-score-fouls > b { font-size: .64rem; }
-  .live-event-workspace { padding: 7px 9px; }
+  .live-event-workspace { padding: 6px 8px; }
   .live-flow-trail { gap: 5px; margin-bottom: 7px; }
   .live-flow-trail button, .live-flow-trail span.is-preserved-trail-card, .live-flow-trail span.is-locked-shooting-result { min-width: 82px; min-height: 44px; padding: 6px 9px; }
   .live-flow-trail small { font-size: .66rem; }
   .live-flow-trail strong { font-size: .88rem; }
-  .live-team-rail { padding: 5px; gap: 4px; }
-  .live-rail-controls { grid-template-rows: repeat(2, 32px); gap: 4px; }
-  .live-rail-five { grid-template-rows: repeat(5, 48px); gap: 4px; }
-  .live-rail-five button { padding: 4px 7px; }
+  .live-team-rail { padding: 4px; gap: 3px; }
+  .live-rail-controls { grid-template-rows: repeat(2, 28px); gap: 3px; }
+  .live-rail-five { grid-template-rows: repeat(5, minmax(34px, 1fr)); gap: 3px; }
+  .live-rail-five button { padding: 3px 6px; }
   .live-rail-fouls i { width: 8px; height: 8px; flex-basis: 8px; }
+}
+
+@media (max-height: 680px) {
+  .live-control-pane { grid-template-rows: 104px 32px minmax(0, 1fr) 26px; gap: 3px; }
+  .live-control-body { grid-template-rows: minmax(250px, 1fr) minmax(170px, .65fr) auto; gap: 4px; }
+  .live-control-body.has-active-step { grid-template-rows: minmax(238px, 1fr) 40px max-content auto; }
+  .live-score-team { padding: 6px 10px; }
+  .live-clock-stack { grid-template-rows: 26px 1fr 23px; gap: 2px; }
+  .live-clock .live-clock-time { font-size: 2.35rem; }
+  .live-team-rail { padding: 3px; gap: 2px; }
+  .live-rail-controls { grid-template-rows: repeat(2, 24px); gap: 2px; }
+  .live-rail-five { grid-template-rows: repeat(5, minmax(34px, 1fr)); gap: 2px; }
+  .live-rail-five button { padding: 2px 5px; }
+  .live-event-workspace { padding: 5px 7px; }
 }
 
 @media (max-width: 900px) {
