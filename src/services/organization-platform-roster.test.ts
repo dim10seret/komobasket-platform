@@ -68,6 +68,24 @@ async function call(path:string,method="GET",body:unknown={},organizationId="org
   },...(method==="GET"?{}:{body:JSON.stringify(body)})});
   return handleOrganizationPlatform(request,url.pathname.replace("/api/user/platform/","").split("/"));
 }
+function seedOwnedPlayer(id:string) {
+  local.prepare("INSERT INTO league_players(id,organization_id,slug,display_name,normalized_name) VALUES (?,'org-a',?,?,?)").run(id,id,id,id);
+}
+function seedRoster(id:string,playerId:string,teamId:string,shirtNumber:string|null,status="active",seasonId="season-a",competitionId="comp-a") {
+  local.prepare("INSERT INTO league_roster_memberships(id,season_id,competition_id,player_id,team_id,shirt_number,status) VALUES (?,?,?,?,?,?,?)")
+    .run(id,seasonId,competitionId,playerId,teamId,shirtNumber,status);
+}
+function makeBaseRosterInactive(shirtNumber:string|null) {
+  local.prepare("UPDATE league_roster_memberships SET status='departed',shirt_number=? WHERE id='roster-a'").run(shirtNumber);
+}
+async function reactivateBaseRoster() {
+  const { addAthleteToCompetitionRosterWithMovement } = await import("./league-admin.service");
+  return addAthleteToCompetitionRosterWithMovement({playerId:"player-a",seasonId:"season-a",competitionId:"comp-a",teamId:"team-a"});
+}
+async function transferToHistoricalRoster(shirtNumber:string|null=null) {
+  const { transferAthleteBetweenTeams } = await import("./league-admin.service");
+  return transferAthleteBetweenTeams({playerId:"player-a",seasonId:"season-a",competitionId:"comp-a",fromTeamId:"team-a",toTeamId:"team-a2",shirtNumber});
+}
 
 describe("Organization Platform roster isolation", () => {
   it("edits only the canonical logo through participation management", async () => {
@@ -139,5 +157,115 @@ describe("Organization Platform roster isolation", () => {
   it.each(["01", "000", "001", "100", "1.0", "-1", "abc", "   "])("rejects invalid textual shirt number %s", async (shirtNumber) => {
     const response = await call("league", "PATCH", { action: "updateAthleteShirt", rosterId: "roster-a", shirtNumber });
     expect(response.status).toBe(400);
+  });
+});
+
+describe("Roster reactivation effective jersey", () => {
+  it("rejects retained #7 when another active player holds #7 in the same roster", async () => {
+    makeBaseRosterInactive("7");
+    seedOwnedPlayer("player-c");
+    seedRoster("roster-c","player-c","team-a","7");
+    await expect(reactivateBaseRoster()).rejects.toThrow("χρησιμοποιείται ήδη");
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-a'").get())
+      .toEqual({status:"departed",shirt_number:"7"});
+  });
+
+  it("reactivates and retains #7 when there is no active conflict", async () => {
+    makeBaseRosterInactive("7");
+    await reactivateBaseRoster();
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-a'").get())
+      .toEqual({status:"active",shirt_number:"7"});
+  });
+
+  it("reactivates a membership with no effective jersey", async () => {
+    makeBaseRosterInactive(null);
+    seedOwnedPlayer("player-c");
+    seedRoster("roster-c","player-c","team-a","7");
+    await reactivateBaseRoster();
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-a'").get())
+      .toEqual({status:"active",shirt_number:null});
+  });
+
+  it("rejects transfer reactivation when null input retains a conflicting #7", async () => {
+    seedRoster("roster-destination","player-a","team-a2","7","departed");
+    seedOwnedPlayer("player-c");
+    seedRoster("roster-c","player-c","team-a2","7");
+    await expect(transferToHistoricalRoster()).rejects.toThrow("χρησιμοποιείται ήδη");
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-destination'").get())
+      .toEqual({status:"departed",shirt_number:"7"});
+    expect(local.prepare("SELECT status FROM league_roster_memberships WHERE id='roster-a'").get()).toEqual({status:"active"});
+  });
+
+  it("allows transfer reactivation with null input when retained #7 is available", async () => {
+    seedRoster("roster-destination","player-a","team-a2","7","departed");
+    await transferToHistoricalRoster();
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-destination'").get())
+      .toEqual({status:"active",shirt_number:"7"});
+    expect(local.prepare("SELECT status FROM league_roster_memberships WHERE id='roster-a'").get()).toEqual({status:"transferred"});
+  });
+
+  it.each([
+    ["0","0",false],
+    ["00","00",false],
+    ["0","00",true],
+    ["00","0",true],
+  ] as const)("preserves textual identity for retained %s against active %s", async (historical,active,allowed) => {
+    seedRoster("roster-destination","player-a","team-a2",historical,"departed");
+    seedOwnedPlayer("player-c");
+    seedRoster("roster-c","player-c","team-a2",active);
+    if (allowed) {
+      await transferToHistoricalRoster();
+      expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-destination'").get())
+        .toEqual({status:"active",shirt_number:historical});
+    } else {
+      await expect(transferToHistoricalRoster()).rejects.toThrow("χρησιμοποιείται ήδη");
+      expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-destination'").get())
+        .toEqual({status:"departed",shirt_number:historical});
+    }
+  });
+
+  it("checks the supplied transfer jersey rather than a retained historical jersey", async () => {
+    seedRoster("roster-destination","player-a","team-a2","7","departed");
+    seedOwnedPlayer("player-c");
+    seedRoster("roster-c","player-c","team-a2","7");
+    await transferToHistoricalRoster("00");
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-destination'").get())
+      .toEqual({status:"active",shirt_number:"00"});
+  });
+
+  it("allows the same jersey on a different team", async () => {
+    makeBaseRosterInactive("7");
+    seedOwnedPlayer("player-c");
+    seedRoster("roster-c","player-c","team-a2","7");
+    await reactivateBaseRoster();
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-a'").get())
+      .toEqual({status:"active",shirt_number:"7"});
+  });
+
+  it.each(["competition","season"])("allows the same jersey in a different %s", async (scope) => {
+    makeBaseRosterInactive("7");
+    seedOwnedPlayer("player-c");
+    if (scope === "competition") {
+      local.exec("INSERT INTO league_competitions(id,organization_id,season_id,name,slug,status) VALUES ('comp-other','org-a','season-a','Other Competition','other','active'); INSERT INTO league_competition_formats(competition_id,expected_team_count) VALUES ('comp-other',4); INSERT INTO league_competition_teams(id,competition_id,season_team_id) VALUES ('ct-other','comp-other','st-a');");
+      seedRoster("roster-c","player-c","team-a","7","active","season-a","comp-other");
+    } else {
+      local.exec("INSERT INTO league_seasons(id,name,slug,status) VALUES ('season-other','2027-28','2027-28','active'); INSERT INTO league_competitions(id,organization_id,season_id,name,slug,status) VALUES ('comp-other','org-a','season-other','Other Competition','other','active'); INSERT INTO league_competition_formats(competition_id,expected_team_count) VALUES ('comp-other',4); INSERT INTO league_season_teams(id,season_id,team_id,display_name) VALUES ('st-other','season-other','team-a','Team A'); INSERT INTO league_competition_teams(id,competition_id,season_team_id) VALUES ('ct-other','comp-other','st-other');");
+      seedRoster("roster-c","player-c","team-a","7","active","season-other","comp-other");
+    }
+    await reactivateBaseRoster();
+    expect(local.prepare("SELECT status,shirt_number FROM league_roster_memberships WHERE id='roster-a'").get())
+      .toEqual({status:"active",shirt_number:"7"});
+  });
+
+  it("keeps imported legacy duplicate memberships readable", async () => {
+    local.exec("INSERT INTO league_seasons(id,name,slug,status) VALUES ('season-old','2023-24','2023-24','completed'); INSERT INTO league_competitions(id,organization_id,season_id,name,slug,status) VALUES ('comp-old','org-a','season-old','Legacy Competition','legacy','completed'); INSERT INTO league_competition_formats(competition_id,expected_team_count) VALUES ('comp-old',4); INSERT INTO league_season_teams(id,season_id,team_id,display_name) VALUES ('st-old','season-old','team-a','Team A'); INSERT INTO league_competition_teams(id,competition_id,season_team_id) VALUES ('ct-old','comp-old','st-old');");
+    seedOwnedPlayer("player-c");
+    seedOwnedPlayer("player-d");
+    seedRoster("roster-c","player-c","team-a","7","active","season-old","comp-old");
+    seedRoster("roster-d","player-d","team-a","7","active","season-old","comp-old");
+    const response = await call("league?view=team-roster&seasonId=season-old&competitionId=comp-old&teamId=team-a");
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data.athletes.map((row:{player_id:string})=>row.player_id).sort()).toEqual(["player-c","player-d"]);
   });
 });

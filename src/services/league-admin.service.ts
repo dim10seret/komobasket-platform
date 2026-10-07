@@ -4709,6 +4709,10 @@ export async function addAthleteToCompetitionRosterWithMovement(input: {
 
   const date = String(input.effectiveOn || new Date().toISOString().slice(0, 10));
   const historicalMembership = await getInactiveRosterMembershipForTeam(db, seasonId, competitionId, playerId, teamId);
+  if (historicalMembership) {
+    const effectiveShirtNumber = normalizeOptionalJerseyNumber(historicalMembership.shirt_number);
+    await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, teamId, effectiveShirtNumber, historicalMembership.id);
+  }
   const rosterId = historicalMembership?.id ?? createEntityId("roster");
   const movementId = createEntityId("movement");
   const rosterStatement = historicalMembership
@@ -7062,7 +7066,8 @@ export async function transferAthleteBetweenTeams(input: {
   }
 
   const destinationHistorical = await getInactiveRosterMembershipForTeam(db, seasonId, competitionId, playerId, toTeamId);
-  await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, toTeamId, shirtNumber, destinationHistorical?.id ?? null);
+  const effectiveShirtNumber = shirtNumber ?? normalizeOptionalJerseyNumber(destinationHistorical?.shirt_number ?? null);
+  await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, toTeamId, effectiveShirtNumber, destinationHistorical?.id ?? null);
   const movementId = createEntityId("movement");
   const destinationRosterId = destinationHistorical?.id ?? createEntityId("roster");
 
