@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
 import {
   normalizedIncidentReport,
@@ -10,8 +11,10 @@ import {
   type PlatformMatchReportConsistencySource,
 } from "@/lib/platform-match-report";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
-import { parseMatchReportState, projectMatchReportPlayerLine, projectPlatformMatchReportStatistics } from "@/lib/platform-match-report-statistics";
+import { parseMatchReportState, projectMatchReportPlayerLine, projectMatchReportTeamLine, projectPlatformMatchReportStatistics } from "@/lib/platform-match-report-statistics";
+import type { PlatformMatchReportStatisticsLine } from "@/lib/platform-match-report";
 import type { PublicTeamStatisticsSourceGame } from "@/lib/public-team-statistics";
+import type { MatchEvent } from "../../komocontrol/shared/match-engine/types/event";
 import { projectPublicLiveGame, type PublicLiveEventRow, type PublicLiveSource } from "./public-live-game-core";
 
 type MatchReportDatabaseRow = {
@@ -30,16 +33,70 @@ type MatchReportDatabaseRow = {
 type MatchReportDetailRow = MatchReportDatabaseRow & {
   competition_name: string; season_name: string; phase_name: string | null; round_label: string | null;
   scheduled_date: string | null; scheduled_time: string | null; venue: string | null;
+  phase_id?: string | null; played_round?: number | null; sort_phase?: number | null;
+  sort_round?: number | null; sort_game?: number | null;
   home_team_id: string; home_team_name: string; home_logo_url: string | null;
   away_team_id: string; away_team_name: string; away_logo_url: string | null;
   head_updated_at: string | null; initial_state_json: string | null; initial_state_hash: string | null;
   package_snapshot_json?: string | null;
   configuration_json: string | null;
   final_state_json: string | null;
+  finalization_json?: string | null;
 };
 
 type EventRow = { event_id: string; sequence: number; event_schema_version: number; event_json: string; event_hash: string };
 type BatchEventRow = EventRow & { run_id: string };
+type ParticipatingStatisticalGame = PublicTeamStatisticsSourceGame & {
+  participatingPlayerIds: string[];
+  homeTeamStatistics: PlatformMatchReportStatisticsLine;
+  awayTeamStatistics: PlatformMatchReportStatisticsLine;
+  phaseId: string;
+  round: number | null;
+  roundLabel: string | null;
+  sortKey: readonly [string, string, number, number, number, string];
+};
+type StatisticalGame = PublicTeamStatisticsSourceGame & Partial<Pick<ParticipatingStatisticalGame,
+  "participatingPlayerIds" | "homeTeamStatistics" | "awayTeamStatistics" | "phaseId" | "round" | "roundLabel" | "sortKey">>;
+
+function verifiedMobileSubstitutions(row: MatchReportDetailRow, events: PublicLiveEventRow[]): string[] {
+  const hash = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
+  if (!row.initial_state_json || !row.initial_state_hash || !row.final_state_json || !row.final_state_hash
+    || !row.finalization_json || !row.finalization_hash || !row.head_history_hash
+    || row.head_last_accepted_sequence === null
+    || hash(row.initial_state_json) !== row.initial_state_hash
+    || hash(row.final_state_json) !== row.final_state_hash
+    || hash(row.finalization_json) !== row.finalization_hash
+    || events.length === 0) throw new Error("MOBILE_STATISTICAL_HISTORY_INVALID");
+
+  let previousSequence = 0;
+  let firstType: MatchEvent["type"] | null = null;
+  let lastType: MatchEvent["type"] | null = null;
+  const substitutions: string[] = [];
+  const eventJson: string[] = [];
+  for (const event of events) {
+    if (event.eventSchemaVersion !== 2 || event.sequence <= previousSequence || hash(event.eventJson) !== event.eventHash) {
+      throw new Error("MOBILE_STATISTICAL_HISTORY_INVALID");
+    }
+    const parsed = JSON.parse(event.eventJson) as MatchEvent;
+    if (parsed.schemaVersion !== 2 || parsed.id !== event.eventId || parsed.sequence !== event.sequence) {
+      throw new Error("MOBILE_STATISTICAL_HISTORY_INVALID");
+    }
+    if (firstType === null) firstType = parsed.type;
+    lastType = parsed.type;
+    previousSequence = event.sequence;
+    eventJson.push(event.eventJson);
+    if (parsed.type === "SUBSTITUTION") {
+      if (typeof parsed.playerInId !== "string" || !parsed.playerInId) throw new Error("MOBILE_STATISTICAL_HISTORY_INVALID");
+      substitutions.push(parsed.playerInId);
+    }
+  }
+  if (firstType !== "MATCH_START" || lastType !== "MATCH_END"
+    || previousSequence !== row.head_last_accepted_sequence
+    || hash(`[${eventJson.join(",")}]`) !== row.head_history_hash) {
+    throw new Error("MOBILE_STATISTICAL_HISTORY_INVALID");
+  }
+  return substitutions;
+}
 
 export type PlatformMatchReportReadResult =
   | { kind: "report"; report: PlatformMatchReport }
@@ -220,17 +277,44 @@ async function readAuthoritativeStatisticalGamesWithDb(
   competitionId: string,
   organizationId: string,
   teamId: string | null,
-): Promise<PublicTeamStatisticsSourceGame[]> {
+  phaseIds: readonly string[] | null = null,
+  gameId: string | null = null,
+): Promise<StatisticalGame[]> {
   const teamClause = teamId ? " AND (g.home_team_id=? OR g.away_team_id=?)" : "";
-  const bindings = teamId ? [competitionId, organizationId, teamId, teamId] : [competitionId, organizationId];
+  const phaseClause = phaseIds ? ` AND g.phase_id IN (${phaseIds.map(() => "?").join(",")})` : "";
+  const gameClause = gameId ? " AND g.id=?" : "";
+  const bindings = [...(teamId ? [competitionId, organizationId, teamId, teamId] : [competitionId, organizationId]),
+    ...(phaseIds ?? []), ...(gameId ? [gameId] : [])];
+  const eventSql = phaseIds ? `SELECT event.run_id, event.event_id, event.sequence, event.event_schema_version, event.event_json, event.event_hash
+      FROM league_komocontrol_match_events_v2 event
+      WHERE event.run_id IN (
+        SELECT claim.run_id FROM league_komocontrol_gameplay_game_claims claim
+        JOIN league_games g ON g.id=claim.game_id
+        JOIN league_competitions competition ON competition.id=g.competition_id
+        JOIN league_komocontrol_gameplay_heads head ON head.run_id=claim.run_id
+        WHERE g.competition_id=? AND competition.organization_id=?${teamClause}${phaseClause}${gameClause}
+          AND head.lifecycle='finalized' AND g.status='completed' AND g.result_source='match_report'
+          AND head.official_result_applied_at IS NOT NULL
+      ) ORDER BY event.run_id, event.sequence, event.event_id`
+    : `SELECT event.run_id, event.event_id, event.sequence, event.event_schema_version, event.event_json, event.event_hash
+      FROM league_komocontrol_match_events_v2 event
+      JOIN league_komocontrol_gameplay_game_claims claim ON claim.run_id=event.run_id
+      JOIN league_games g ON g.id=claim.game_id
+      JOIN league_competitions competition ON competition.id=g.competition_id
+      WHERE g.competition_id=? AND competition.organization_id=?${teamClause}${gameClause}
+      ORDER BY event.run_id, event.sequence, event.event_id`;
   const [candidateResult, eventResult] = await Promise.all([
     database.prepare(`SELECT ${consistencyColumns},
         competition.name AS competition_name, season.name AS season_name, phase.name AS phase_name,
         g.round_label, g.scheduled_date, g.scheduled_time, g.venue,
+        ${phaseIds ? `g.phase_id, COALESCE(g.series_round_number,g.round_number) AS played_round,
+          COALESCE(phase.phase_order,phase.order_index,2147483647) AS sort_phase,
+          COALESCE(g.series_round_number,g.round_number,2147483647) AS sort_round,
+          COALESCE(g.game_order,2147483647) AS sort_game,` : ""}
         home.id AS home_team_id, home.name AS home_team_name, home.logo_url AS home_logo_url,
         away.id AS away_team_id, away.name AS away_team_name, away.logo_url AS away_logo_url,
         head.updated_at AS head_updated_at, snapshot.initial_state_json, snapshot.initial_state_hash,
-        configuration.configuration_json, finalization.final_state_json
+        configuration.configuration_json, finalization.final_state_json${phaseIds ? ", finalization.finalization_json" : ""}
       FROM league_games g
       JOIN league_competitions competition ON competition.id=g.competition_id
       JOIN league_seasons season ON season.id=competition.season_id
@@ -242,16 +326,10 @@ async function readAuthoritativeStatisticalGamesWithDb(
       LEFT JOIN league_komocontrol_match_engine_snapshots_v1 snapshot ON snapshot.run_id=head.run_id
       LEFT JOIN league_komocontrol_current_game_configurations_v1 configuration ON configuration.run_id=head.run_id
       LEFT JOIN league_komocontrol_match_finalizations_v1 finalization ON finalization.run_id=head.run_id
-      WHERE g.competition_id=? AND competition.organization_id=?${teamClause}
+      WHERE g.competition_id=? AND competition.organization_id=?${teamClause}${phaseClause}${gameClause}
       ORDER BY COALESCE(g.scheduled_date, '9999-99-99'), COALESCE(g.scheduled_time, '99:99'), g.id`)
       .bind(...bindings).all<MatchReportDetailRow>(),
-    database.prepare(`SELECT event.run_id, event.event_id, event.sequence, event.event_schema_version, event.event_json, event.event_hash
-      FROM league_komocontrol_match_events_v2 event
-      JOIN league_komocontrol_gameplay_game_claims claim ON claim.run_id=event.run_id
-      JOIN league_games g ON g.id=claim.game_id
-      JOIN league_competitions competition ON competition.id=g.competition_id
-      WHERE g.competition_id=? AND competition.organization_id=?${teamClause}
-      ORDER BY event.run_id, event.sequence, event.event_id`)
+    database.prepare(eventSql)
       .bind(...bindings).all<BatchEventRow>(),
   ]);
   const eventsByRun = new Map<string, PublicLiveEventRow[]>();
@@ -260,13 +338,14 @@ async function readAuthoritativeStatisticalGamesWithDb(
     events.push({ eventId: event.event_id, sequence: Number(event.sequence), eventSchemaVersion: Number(event.event_schema_version), eventJson: event.event_json, eventHash: event.event_hash });
     eventsByRun.set(event.run_id, events);
   }
-  return (candidateResult.results ?? []).flatMap((row): PublicTeamStatisticsSourceGame[] => {
+  return (candidateResult.results ?? []).flatMap((row): StatisticalGame[] => {
     const availability = platformMatchReportAvailability(source(row));
     if (!availability.available || !row.claim_run_id || !row.head_history_hash || !row.head_updated_at
       || !row.initial_state_json || !row.initial_state_hash || !row.final_state_json
       || row.head_history_revision === null || row.head_last_accepted_sequence === null) return [];
     try {
-      const projection = projectPublicLiveGame({
+      const substitutions = phaseIds ? verifiedMobileSubstitutions(row, eventsByRun.get(row.claim_run_id) ?? []) : null;
+      const projection = phaseIds ? null : projectPublicLiveGame({
         gameId: row.game_id,
         lifecycle: "finalized",
         eventHistoryRevision: row.head_history_revision,
@@ -282,8 +361,15 @@ async function readAuthoritativeStatisticalGamesWithDb(
       const initialState = parseMatchReportState(row.initial_state_json);
       const finalState = parseMatchReportState(row.final_state_json);
       projectPlatformMatchReportStatistics(initialState, finalState);
-      if (projection.score.home !== row.game_home_score || projection.score.away !== row.game_away_score
-        || finalState.home.score !== projection.score.home || finalState.away.score !== projection.score.away) return [];
+      const score = projection?.score ?? { home: finalState.home.score, away: finalState.away.score };
+      if (score.home !== row.game_home_score || score.away !== row.game_away_score
+        || finalState.home.score !== score.home || finalState.away.score !== score.away
+        || (phaseIds && initialState.id !== row.claim_run_id)) return [];
+      const participatingPlayerIds = phaseIds ? new Set([
+        ...initialState.home.players.filter((player) => player.onCourt).map((player) => player.playerId),
+        ...initialState.away.players.filter((player) => player.onCourt).map((player) => player.playerId),
+      ]) : null;
+      for (const playerId of substitutions ?? []) participatingPlayerIds?.add(playerId);
       const sourcePlayers = (players: typeof finalState.home.players) => players.map((player) => ({
         canonicalPlayerId: player.playerId,
         displayName: player.displayName,
@@ -298,10 +384,19 @@ async function readAuthoritativeStatisticalGamesWithDb(
         homeTeamName: row.home_team_name,
         awayTeamId: row.away_team_id,
         awayTeamName: row.away_team_name,
-        homeScore: projection.score.home,
-        awayScore: projection.score.away,
+        homeScore: score.home,
+        awayScore: score.away,
         homePlayers: sourcePlayers(finalState.home.players),
         awayPlayers: sourcePlayers(finalState.away.players),
+        ...(participatingPlayerIds ? {
+          participatingPlayerIds: [...participatingPlayerIds],
+          homeTeamStatistics: projectMatchReportTeamLine(finalState.home),
+          awayTeamStatistics: projectMatchReportTeamLine(finalState.away),
+          phaseId: row.phase_id!, round: row.played_round ?? null, roundLabel: row.round_label?.trim() || null,
+          sortKey: [row.scheduled_date ?? "9999-12-31", row.scheduled_time ?? "99:99",
+            row.sort_phase ?? 2147483647, row.sort_round ?? 2147483647,
+            row.sort_game ?? 2147483647, row.game_id] as const,
+        } : {}),
       }];
     } catch {
       return [];
@@ -324,4 +419,25 @@ export function readAuthoritativeCompetitionStatisticalGamesWithDb(
   organizationId: string,
 ) {
   return readAuthoritativeStatisticalGamesWithDb(database, competitionId, organizationId, null);
+}
+
+export async function readAuthoritativePhaseStatisticalGamesWithDb(
+  database: D1DatabaseBinding,
+  competitionId: string,
+  organizationId: string,
+  phaseIds: readonly string[],
+  teamId: string | null = null,
+  gameId: string | null = null,
+): Promise<ParticipatingStatisticalGame[]> {
+  const games = await readAuthoritativeStatisticalGamesWithDb(database, competitionId, organizationId, teamId, phaseIds, gameId);
+  return games.map((game) => {
+    if (!game.participatingPlayerIds || !game.homeTeamStatistics || !game.awayTeamStatistics
+      || !game.phaseId || !game.sortKey) {
+      throw new Error("MISSING_STATISTICAL_PARTICIPATION");
+    }
+    return { ...game, participatingPlayerIds: game.participatingPlayerIds,
+      homeTeamStatistics: game.homeTeamStatistics, awayTeamStatistics: game.awayTeamStatistics,
+      phaseId: game.phaseId, round: game.round ?? null, roundLabel: game.roundLabel ?? null,
+      sortKey: game.sortKey };
+  });
 }
