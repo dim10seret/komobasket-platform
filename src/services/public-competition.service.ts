@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import { projectAdministrativeGameResult } from "@/lib/administrative-game-result";
 import { getConfiguredSeriesCarryOverMeetingNumbers, resolveSeriesCarryOver, type SeriesCarryOverGameLike, type SeriesCarryOverPhaseLike } from "@/lib/series-carry-over";
 import { calculateSeriesProgression, type SeriesProgressionMaterializedGame, type SeriesProgressionTransferredGame, type SeriesProgressionResult } from "@/lib/series-progression";
@@ -822,7 +823,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
     `).bind(selectedSeason.id, selectedCompetition.id, selectedTeam.id, organizationId).all<{
       id: string;
       display_name: string;
-      shirt_number: string | null;
+      shirt_number: unknown;
       photo_url: string | null;
     }>(), readAuthoritativeTeamStatisticalGamesWithDb(
       db,
@@ -854,7 +855,7 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
       const fallback = left.phaseOrder - right.phaseOrder || (left.game.roundNumber ?? Number.MAX_SAFE_INTEGER) - (right.game.roundNumber ?? Number.MAX_SAFE_INTEGER) || left.game.id.localeCompare(right.game.id);
       return left.status === 'completed' ? date(right).localeCompare(date(left)) || -fallback : date(left).localeCompare(date(right)) || fallback;
     });
-    const roster = (rosterResult.results ?? []).map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: player.shirt_number, photoUrl: player.photo_url?.trim() || null }));
+    const roster = (rosterResult.results ?? []).map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: normalizeOptionalJerseyNumber(player.shirt_number), photoUrl: player.photo_url?.trim() || null }));
     teamView = {
       team: { id: selectedTeam.id, name: selectedTeam.name, logoUrl: selectedTeam.logo_url?.trim() || null },
       gameMode: selectedCompetition.gameMode,

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import { CANONICAL_PUBLIC_SEASON_START } from "@/services/public-competition.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
@@ -28,7 +29,7 @@ type RosterRow = {
   first_name: string | null;
   last_name: string | null;
   display_name: string | null;
-  shirt_number: string | null;
+  shirt_number: unknown;
 };
 
 export async function getPublicTeamRosterWithDb(
@@ -67,7 +68,7 @@ export async function getPublicTeamRosterWithDb(
       return [{
         id: row.player_id,
         displayName: firstName && lastName ? `${firstName} ${lastName}` : row.display_name?.trim() || "",
-        shirtNumber: row.shirt_number,
+        shirtNumber: normalizeOptionalJerseyNumber(row.shirt_number),
       }];
     }),
   };

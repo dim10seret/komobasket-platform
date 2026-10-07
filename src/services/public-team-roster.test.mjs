@@ -9,6 +9,7 @@ const scope = { organizationId: "org-a", seasonId: "season-a", competitionId: "c
 let sqlite;
 let calls;
 let db;
+let rawJerseyOverrides;
 beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(`
@@ -29,9 +30,19 @@ beforeEach(() => {
     INSERT INTO league_roster_memberships VALUES ('r-a','season-a','competition-a','team-a','p-a',8,'active'),('r-b','season-a','competition-a','team-a','p-b',NULL,'active'),('r-old','season-old','competition-old','team-a','p-a',99,'active');
   `);
   calls = [];
-  db = { prepare(sql) { let values = []; const statement = { bind(...input) { values = input; return statement; }, async all() { calls.push({ sql, values }); return { results: sqlite.prepare(sql).all(...values) }; } }; return statement; } };
+  rawJerseyOverrides = new Map();
+  db = { prepare(sql) { let values = []; const statement = { bind(...input) { values = input; return statement; }, async all() { calls.push({ sql, values }); return { results: sqlite.prepare(sql).all(...values).map((row) => rawJerseyOverrides.has(row.player_id) ? { ...row, shirt_number: rawJerseyOverrides.get(row.player_id) } : row) }; } }; return statement; } };
 });
 afterEach(() => sqlite.close());
+
+function useTextJerseyColumn() {
+  sqlite.exec(`
+    ALTER TABLE league_roster_memberships RENAME TO old_roster_memberships;
+    CREATE TABLE league_roster_memberships (id TEXT PRIMARY KEY, season_id TEXT, competition_id TEXT, team_id TEXT, player_id TEXT, shirt_number TEXT, status TEXT);
+    INSERT INTO league_roster_memberships SELECT * FROM old_roster_memberships;
+    DROP TABLE old_roster_memberships;
+  `);
+}
 
 describe("isolated public Team roster and participation identity", () => {
   it("uses the canonical logo even when the selected season logo differs", async () => {
@@ -59,7 +70,7 @@ describe("isolated public Team roster and participation identity", () => {
   it("returns an existing roster with no game/statistics/report tables at all", async () => {
     const roster = await getPublicTeamRosterWithDb(db, scope);
     expect(roster.players).toEqual([
-      { id: "p-a", displayName: "ΔΗΜΗΤΡΙΟΣ ΓΑΚΗΣ", shirtNumber: 8 },
+      { id: "p-a", displayName: "ΔΗΜΗΤΡΙΟΣ ΓΑΚΗΣ", shirtNumber: "8" },
       { id: "p-b", displayName: "LEGACY NAME", shirtNumber: null },
     ]);
     expect(calls).toHaveLength(1);
@@ -67,18 +78,44 @@ describe("isolated public Team roster and participation identity", () => {
   });
   it("uses only the requested competition and its membership shirt number", async () => {
     sqlite.exec("INSERT INTO league_roster_memberships VALUES ('r-other','season-a','competition-b','team-a','p-a',19,'active')");
-    expect((await getPublicTeamRosterWithDb(db, scope)).players[0].shirtNumber).toBe(8);
-    expect((await getPublicTeamRosterWithDb(db, { ...scope, competitionId: "competition-b" })).players).toEqual([{ id: "p-a", displayName: "ΔΗΜΗΤΡΙΟΣ ΓΑΚΗΣ", shirtNumber: 19 }]);
+    expect((await getPublicTeamRosterWithDb(db, scope)).players[0].shirtNumber).toBe("8");
+    expect((await getPublicTeamRosterWithDb(db, { ...scope, competitionId: "competition-b" })).players).toEqual([{ id: "p-a", displayName: "ΔΗΜΗΤΡΙΟΣ ΓΑΚΗΣ", shirtNumber: "19" }]);
   });
   it("keeps previous-season roster separate while sharing the current canonical logo", async () => {
     const previous = await getPublicTeamRosterWithDb(db, { ...scope, seasonId: "season-old", competitionId: "competition-old" });
     expect(previous.logoUrl).toBe("/canonical.png");
-    expect(previous.players.map(p => p.shirtNumber)).toEqual([99]);
-    expect((await getPublicTeamRosterWithDb(db, scope)).players.map(p => p.shirtNumber)).toEqual([8, null]);
+    expect(previous.players.map(p => p.shirtNumber)).toEqual(["99"]);
+    expect((await getPublicTeamRosterWithDb(db, scope)).players.map(p => p.shirtNumber)).toEqual(["8", null]);
   });
   it("keeps the existing roster ordering and preserves jersey zero", async () => {
     sqlite.exec("UPDATE league_roster_memberships SET shirt_number=0 WHERE id='r-b'");
-    expect((await getPublicTeamRosterWithDb(db, scope)).players.map(p => p.shirtNumber)).toEqual([0, 8]);
+    expect((await getPublicTeamRosterWithDb(db, scope)).players.map(p => p.shirtNumber)).toEqual(["0", "8"]);
+  });
+  it.each([[0, "0"], [7, "7"], [23, "23"], [null, null]])("serializes INTEGER-backed jersey %s as %s", async (raw, expected) => {
+    sqlite.prepare("UPDATE league_roster_memberships SET shirt_number=? WHERE id='r-a'").run(raw);
+    sqlite.exec("UPDATE league_roster_memberships SET status='inactive' WHERE id='r-b'");
+    const roster = JSON.parse(JSON.stringify(await getPublicTeamRosterWithDb(db, scope)));
+    expect(roster.players).toEqual([{ id: "p-a", displayName: "ΔΗΜΗΤΡΙΟΣ ΓΑΚΗΣ", shirtNumber: expected }]);
+  });
+  it.each([["0", "0"], ["00", "00"], ["23", "23"], [null, null]])("serializes TEXT-backed jersey %s as %s", async (raw, expected) => {
+    useTextJerseyColumn();
+    sqlite.prepare("UPDATE league_roster_memberships SET shirt_number=? WHERE id='r-a'").run(raw);
+    sqlite.exec("UPDATE league_roster_memberships SET status='inactive' WHERE id='r-b'");
+    const roster = JSON.parse(JSON.stringify(await getPublicTeamRosterWithDb(db, scope)));
+    expect(roster.players).toEqual([{ id: "p-a", displayName: "ΔΗΜΗΤΡΙΟΣ ΓΑΚΗΣ", shirtNumber: expected }]);
+  });
+  it("keeps TEXT-backed 0 and 00 distinct by player identity", async () => {
+    useTextJerseyColumn();
+    sqlite.exec("UPDATE league_roster_memberships SET shirt_number='0' WHERE id='r-a'; UPDATE league_roster_memberships SET shirt_number='00' WHERE id='r-b'");
+    const roster = JSON.parse(JSON.stringify(await getPublicTeamRosterWithDb(db, scope)));
+    expect(roster.players.map(({ id, shirtNumber }) => ({ id, shirtNumber }))).toEqual([
+      { id: "p-a", shirtNumber: "0" },
+      { id: "p-b", shirtNumber: "00" },
+    ]);
+  });
+  it.each([100, -1, 1.5, "01", "000", "001", "100", "-1", "1.0", {}, [], true])("rejects malformed raw jersey %s", async (raw) => {
+    rawJerseyOverrides.set("p-a", raw);
+    await expect(getPublicTeamRosterWithDb(db, scope)).rejects.toThrow();
   });
   it("excludes inactive memberships without hiding the team identity", async () => {
     sqlite.exec("UPDATE league_roster_memberships SET status='inactive'");

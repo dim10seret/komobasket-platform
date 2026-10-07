@@ -14,7 +14,7 @@ const organizations = {
   organization_runbasket: { prefix: "runbasket", name: "RunBasket Competition" },
 };
 
-function databaseFixture() {
+function databaseFixture(rosterRows = []) {
   const calls = [];
   const database = {
     prepare(query) {
@@ -103,6 +103,7 @@ function databaseFixture() {
               away_team_logo_url: null,
             }] };
           }
+          if (query.includes("FROM league_roster_memberships r")) return { results: rosterRows };
           return { results: [] };
         },
       };
@@ -111,6 +112,22 @@ function databaseFixture() {
     async batch() { return []; },
   };
   return { database, calls };
+}
+
+async function serializedPublicCompetitionRoster(rawJerseys) {
+  const rows = rawJerseys.map((shirtNumber, index) => ({
+    id: `player-${index}`,
+    display_name: `Player ${index}`,
+    shirt_number: shirtNumber,
+    photo_url: null,
+  }));
+  const { database } = databaseFixture(rows);
+  const context = await getPublicCompetitionContextForOrganizationWithDb(
+    database,
+    "organization_komobasket",
+    { teamId: "team_komobasket_home" },
+  );
+  return JSON.parse(JSON.stringify(context.teamView?.roster));
 }
 
 describe("public competition organization isolation", () => {
@@ -147,5 +164,26 @@ describe("public competition organization isolation", () => {
     expect(context.tournaments).toEqual([{ rootPhaseId: "phase_runbasket", slug: "regular-season", name: "Regular Season", phaseIds: ["phase_runbasket"], finalized: false }]);
     expect(context.selectedTournament?.rootPhaseId).toBe("phase_runbasket");
     expect(context.selectedPhase?.rootPhaseId).toBe("phase_runbasket");
+  });
+});
+
+describe("public competition team roster jersey serialization", () => {
+  beforeEach(() => reportMocks.availability.mockResolvedValue({}));
+
+  it.each([[0, "0"], [7, "7"], [23, "23"], [null, null], ["0", "0"], ["00", "00"], ["23", "23"]])("serializes raw jersey %s as %s", async (raw, expected) => {
+    expect(await serializedPublicCompetitionRoster([raw])).toEqual([
+      { id: "player-0", displayName: "Player 0", shirtNumber: expected, photoUrl: null },
+    ]);
+  });
+
+  it("preserves 0 and 00 as distinct players", async () => {
+    expect(await serializedPublicCompetitionRoster(["0", "00"])).toEqual([
+      { id: "player-0", displayName: "Player 0", shirtNumber: "0", photoUrl: null },
+      { id: "player-1", displayName: "Player 1", shirtNumber: "00", photoUrl: null },
+    ]);
+  });
+
+  it.each([100, -1, 1.5, "01", "000", "001", "100", "-1", "1.0", {}, [], true])("rejects malformed raw jersey %s", async (raw) => {
+    await expect(serializedPublicCompetitionRoster([raw])).rejects.toThrow();
   });
 });
