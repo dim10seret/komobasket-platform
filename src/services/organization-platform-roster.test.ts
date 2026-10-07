@@ -120,4 +120,24 @@ describe("Organization Platform roster isolation", () => {
     expect(response.status).toBe(200);
     expect(network).not.toHaveBeenCalled();
   });
+  it("preserves textual 0 and 00 through Platform edits and rejects exact duplicates", async () => {
+    const zero = await call("league", "PATCH", { action: "updateAthleteShirt", rosterId: "roster-a", shirtNumber: "0" });
+    expect(zero.status).toBe(200);
+    expect(local.prepare("SELECT shirt_number,typeof(shirt_number) AS storage_type FROM league_roster_memberships WHERE id='roster-a'").get()).toEqual({ shirt_number: "0", storage_type: "text" });
+    const doubleZero = await call("league", "PATCH", { action: "updateAthleteShirt", rosterId: "roster-a", shirtNumber: "00" });
+    expect(doubleZero.status).toBe(200);
+    expect(local.prepare("SELECT shirt_number FROM league_roster_memberships WHERE id='roster-a'").get()).toEqual({ shirt_number: "00" });
+
+    local.exec("INSERT INTO league_players(id,organization_id,slug,display_name,normalized_name) VALUES ('player-c','org-a','player-c','Zero Player','zero player'),('player-d','org-a','player-d','Double Zero Player','double zero player'),('player-e','org-a','player-e','Duplicate Player','duplicate player')");
+    const bulk = await call("league", "PATCH", { action: "bulkAddExistingAthletes", seasonId: "season-a", competitionId: "comp-a", teamId: "team-a", items: [{ playerId: "player-c", shirtNumber: "0" }] });
+    expect(bulk.status).toBe(200);
+    expect(local.prepare("SELECT shirt_number FROM league_roster_memberships WHERE player_id='player-c'").get()).toEqual({ shirt_number: "0" });
+    const duplicate = await call("league", "PATCH", { action: "addExistingAthlete", playerId: "player-e", seasonId: "season-a", competitionId: "comp-a", teamId: "team-a", shirtNumber: "00" });
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.text()).toContain("χρησιμοποιείται ήδη");
+  });
+  it.each(["01", "000", "001", "100", "1.0", "-1", "abc", "   "])("rejects invalid textual shirt number %s", async (shirtNumber) => {
+    const response = await call("league", "PATCH", { action: "updateAthleteShirt", rosterId: "roster-a", shirtNumber });
+    expect(response.status).toBe(400);
+  });
 });

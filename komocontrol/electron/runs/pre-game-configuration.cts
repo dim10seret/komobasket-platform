@@ -71,7 +71,7 @@ export interface PreGameConfigurationV1 {
 export interface SafePreGameConfigurationPlayer {
     playerId: string;
     displayName: string;
-    packageShirtNumber: number | null;
+    packageShirtNumber: string | null;
     gameShirtNumber: string | null;
     participating: boolean;
 }

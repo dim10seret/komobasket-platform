@@ -81,7 +81,7 @@ describe("KC-5B9B Gate 1B roster presentation", () => {
     const players = Array.from({ length: 25 }, (_, index) => ({
         playerId: `player-${index + 1}`,
         displayName: index === 23 ? "Μακρινός Παίκτης" : `Player ${index + 1}`,
-        packageShirtNumber: index === 22 ? 77 : null,
+        packageShirtNumber: index === 22 ? "77" : null,
     }));
     const draftPlayers = players.map((player, index) => ({ playerId: player.playerId, participating: index === 24, gameShirtNumber: index === 24 ? "88" : null }));
 
@@ -118,7 +118,7 @@ describe("KC-5B9B Gate 1B roster presentation", () => {
 });
 
 describe("KC-5B9B Gate 1C presentation helpers", () => {
-    const players = Array.from({ length: 13 }, (_, index) => ({ playerId: `compact-${index + 1}`, displayName: `Compact Player ${index + 1}`, packageShirtNumber: index + 1 }));
+    const players = Array.from({ length: 13 }, (_, index) => ({ playerId: `compact-${index + 1}`, displayName: `Compact Player ${index + 1}`, packageShirtNumber: String(index + 1) }));
     const draftPlayers = players.map((player, index) => ({ playerId: player.playerId, participating: index === 10, gameShirtNumber: String(index + 1) }));
     const emptyFilter = { query: "", participantsOnly: false };
 

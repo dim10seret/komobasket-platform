@@ -3,6 +3,7 @@ import "server-only";
 import { players as legacyPlayers } from "@/data/players";
 import { teams as legacyTeams } from "@/data/teams";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import {
   projectAdministrativeGameResult,
   type AdministrativeGameResultProjectionRow,
@@ -283,7 +284,7 @@ type RosterAthleteRow = {
   display_name: string;
   photo_url: string | null;
   birth_date: string | null;
-  shirt_number: number | null;
+  shirt_number: string | null;
 };
 
 type RosterStaffRow = {
@@ -4137,7 +4138,7 @@ export async function copyPreviousRoster(
 
   const previousSeasonId = lookup.seasonId;
   const previousCompetitionId = lookup.competitionId;
-  const previousAthletes = await rows<{ player_id: string; shirt_number: number | null }>(
+  const previousAthletes = await rows<{ player_id: string; shirt_number: string | null }>(
     db,
     `SELECT r.player_id, MAX(r.shirt_number) AS shirt_number
      FROM league_roster_memberships r
@@ -4151,7 +4152,17 @@ export async function copyPreviousRoster(
     FROM league_roster_memberships
     WHERE season_id=? AND competition_id=? AND status='active'`, [seasonId, competitionId]);
   const targetAthleteIds = new Set(targetAthletes.map((player) => String(player.player_id)));
-  const athletesToCopy = previousAthletes.filter((player) => !targetAthleteIds.has(String(player.player_id)));
+  const athletesToCopy = previousAthletes
+    .filter((player) => !targetAthleteIds.has(String(player.player_id)))
+    .map((player) => ({ ...player, shirt_number: normalizeOptionalJerseyNumber(player.shirt_number) }));
+  const copiedShirtNumbers = new Set<string>();
+  for (const player of athletesToCopy) {
+    if (player.shirt_number !== null) {
+      if (copiedShirtNumbers.has(player.shirt_number)) throw new Error(`Ο αριθμός φανέλας «${player.shirt_number}» χρησιμοποιείται ήδη από άλλον ενεργό αθλητή της ομάδας.`);
+      copiedShirtNumbers.add(player.shirt_number);
+    }
+    await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, teamId, player.shirt_number);
+  }
 
   const statements = athletesToCopy.map((player) => db.prepare(`INSERT INTO league_roster_memberships
       (id,season_id,competition_id,player_id,team_id,shirt_number,joined_on,left_on,status)
@@ -4455,19 +4466,37 @@ export async function updateAthleteCanonical(input: {
   return { playerId };
 }
 
-export async function updateRosterShirtNumber(input: { rosterId: string; shirtNumber: number | null }) {
+async function assertActiveRosterShirtNumberAvailable(
+  db: D1DatabaseBinding,
+  seasonId: string,
+  competitionId: string,
+  teamId: string,
+  shirtNumber: string | null,
+  excludedRosterId: string | null = null,
+) {
+  if (shirtNumber === null) return;
+  const conflict = await db.prepare(`SELECT id FROM league_roster_memberships
+    WHERE season_id=? AND competition_id=? AND team_id=? AND status='active' AND shirt_number=?
+      AND (? IS NULL OR id<>?) LIMIT 1`)
+    .bind(seasonId, competitionId, teamId, shirtNumber, excludedRosterId, excludedRosterId).first<{ id: string }>();
+  if (conflict) throw new Error(`Ο αριθμός φανέλας «${shirtNumber}» χρησιμοποιείται ήδη από άλλον ενεργό αθλητή της ομάδας.`);
+}
+
+export async function updateRosterShirtNumber(input: { rosterId: string; shirtNumber: string | null }) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
   const rosterId = String(input.rosterId ?? "").trim();
   if (!rosterId) throw new Error("Δεν επιλέχθηκε εγγραφή ρόστερ.");
-  const existing = await db.prepare("SELECT id, season_id, competition_id FROM league_roster_memberships WHERE id=?")
-    .bind(rosterId).first<{ id: string; season_id: string; competition_id: string }>();
+  const existing = await db.prepare("SELECT id, season_id, competition_id, team_id FROM league_roster_memberships WHERE id=?")
+    .bind(rosterId).first<{ id: string; season_id: string; competition_id: string; team_id: string }>();
   if (!existing) throw new Error("Δεν βρέθηκε η εγγραφή.");
   await assertRosterTargetWritable(db, existing.season_id, existing.competition_id);
+  const shirtNumber = normalizeOptionalJerseyNumber(input.shirtNumber);
+  await assertActiveRosterShirtNumberAvailable(db, existing.season_id, existing.competition_id, existing.team_id, shirtNumber, rosterId);
 
   await db.prepare(`UPDATE league_roster_memberships
     SET shirt_number=?, updated_at=CURRENT_TIMESTAMP
-    WHERE id=?`).bind(input.shirtNumber, rosterId).run();
+    WHERE id=?`).bind(shirtNumber, rosterId).run();
   return { rosterId };
 }
 
@@ -4573,7 +4602,7 @@ export async function addExistingAthleteToRoster(input: {
   seasonId: string;
   competitionId: string;
   teamId: string;
-  shirtNumber?: number | null;
+  shirtNumber?: string | null;
 }) {
   const db = await database();
   if (!db) throw new Error("Η βάση D1 δεν είναι διαθέσιμη.");
@@ -4594,6 +4623,7 @@ export async function addExistingAthleteToRoster(input: {
   }
 
   await assertRosterTargetWritable(db, seasonId, competitionId);
+  const shirtNumber = normalizeOptionalJerseyNumber(input.shirtNumber);
 
   const competitionConflict = await athleteInCompetitionRosterRowExists(db, seasonId, competitionId, playerId);
   if (competitionConflict) {
@@ -4608,11 +4638,13 @@ export async function addExistingAthleteToRoster(input: {
     return { rosterId: exists.id, created: false, duplicate: true };
   }
 
+  await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, teamId, shirtNumber);
+
   const rosterId = createEntityId("roster");
   await db.prepare(`INSERT INTO league_roster_memberships
     (id, season_id, competition_id, player_id, team_id, shirt_number, joined_on, left_on, status, created_at, updated_at)
     VALUES (?,?,?,?,?,?,NULL,NULL,'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
-    .bind(rosterId, seasonId, competitionId, playerId, teamId, input.shirtNumber ?? null).run();
+    .bind(rosterId, seasonId, competitionId, playerId, teamId, shirtNumber).run();
 
   return { rosterId, created: true, duplicate: false };
 }
@@ -4702,7 +4734,7 @@ export async function bulkAddExistingAthletesToRoster(input: {
   teamId: string;
   items: Array<{
     playerId: string;
-    shirtNumber?: number | null;
+    shirtNumber?: string | null;
   }>;
 }) {
   const db = await database();
@@ -4715,20 +4747,26 @@ export async function bulkAddExistingAthletesToRoster(input: {
 
   const uniqueItems = (input.items ?? []).map((item) => ({
     playerId: String(item.playerId ?? "").trim(),
-    shirtNumber: item.shirtNumber ?? null,
+    shirtNumber: normalizeOptionalJerseyNumber(item.shirtNumber),
   })).filter((item) => Boolean(item.playerId));
 
   if (!uniqueItems.length) throw new Error("Δεν έχουν επιλεγεί αθλητές για προσθήκη.");
 
   const seen = new Set<string>();
+  const seenShirtNumbers = new Set<string>();
   for (const item of uniqueItems) {
     if (seen.has(item.playerId)) {
       throw new Error("Ο ίδιος αθλητής δεν μπορεί να προστεθεί δύο φορές στην ίδια μαζική προσθήκη.");
     }
     seen.add(item.playerId);
+    if (item.shirtNumber !== null) {
+      if (seenShirtNumbers.has(item.shirtNumber)) throw new Error(`Ο αριθμός φανέλας «${item.shirtNumber}» χρησιμοποιείται ήδη από άλλον ενεργό αθλητή της ομάδας.`);
+      seenShirtNumbers.add(item.shirtNumber);
+    }
   }
 
   await assertRosterTargetWritable(db, seasonId, competitionId);
+  for (const item of uniqueItems) await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, teamId, item.shirtNumber);
 
   const placeholders = uniqueItems.map(() => "?").join(",");
   const existingPlayers = await rows<{ id: string }>(
@@ -4790,7 +4828,7 @@ export async function createAthleteWithRoster(input: {
   seasonId: string;
   competitionId: string;
   teamId: string;
-  shirtNumber?: number | null;
+  shirtNumber?: string | null;
   organizationId: string;
 }) {
   const db = await database();
@@ -6920,7 +6958,9 @@ async function addRosterMembership(db: D1DatabaseBinding, id: string, input: Rec
   const competitionId = String(input.competitionId ?? "").trim();
   const playerId = String(input.playerId);
   const teamId = String(input.teamId);
+  const shirtNumber = normalizeOptionalJerseyNumber(input.shirtNumber);
   if (!competitionId) throw new Error("Η διοργάνωση είναι υποχρεωτική για την εγγραφή ρόστερ.");
+  await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, teamId, shirtNumber);
   const current = await db.prepare(`SELECT id,team_id FROM league_roster_memberships WHERE season_id=? AND player_id=? AND status='active' ORDER BY created_at DESC LIMIT 1`)
     .bind(seasonId, playerId).first<{ id: string; team_id: string }>();
   if (current && current.team_id !== teamId) {
@@ -6928,7 +6968,7 @@ async function addRosterMembership(db: D1DatabaseBinding, id: string, input: Rec
     await db.prepare(`UPDATE league_roster_memberships SET status='transferred',left_on=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(date, current.id).run();
   }
   await db.prepare(`INSERT INTO league_roster_memberships (id,season_id,competition_id,player_id,team_id,shirt_number,joined_on,status) VALUES (?,?,?,?,?,?,?,'active')`)
-    .bind(id, seasonId, competitionId, playerId, teamId, input.shirtNumber ?? null, input.joinedOn || null).run();
+    .bind(id, seasonId, competitionId, playerId, teamId, shirtNumber, input.joinedOn || null).run();
 }
 
 async function getCurrentActiveRosterMembership(
@@ -6942,7 +6982,7 @@ async function getCurrentActiveRosterMembership(
     WHERE season_id=? AND competition_id=? AND player_id=? AND status='active'
     ORDER BY created_at DESC
     LIMIT 1`)
-    .bind(seasonId, competitionId, playerId).first<{ id: string; team_id: string; shirt_number: number | null }>();
+    .bind(seasonId, competitionId, playerId).first<{ id: string; team_id: string; shirt_number: string | null }>();
 }
 
 async function getInactiveRosterMembershipForTeam(
@@ -6957,7 +6997,7 @@ async function getInactiveRosterMembershipForTeam(
     WHERE season_id=? AND competition_id=? AND player_id=? AND team_id=? AND status<> 'active'
     ORDER BY created_at DESC
     LIMIT 1`)
-    .bind(seasonId, competitionId, playerId, teamId).first<{ id: string; shirt_number: number | null; status: string }>();
+    .bind(seasonId, competitionId, playerId, teamId).first<{ id: string; shirt_number: string | null; status: string }>();
 }
 
 export async function transferAthleteBetweenTeams(input: {
@@ -6966,7 +7006,7 @@ export async function transferAthleteBetweenTeams(input: {
   competitionId: string;
   fromTeamId: string;
   toTeamId: string;
-  shirtNumber?: number | null;
+  shirtNumber?: string | null;
   effectiveOn?: string | null;
   note?: string | null;
 }) {
@@ -6991,6 +7031,7 @@ export async function transferAthleteBetweenTeams(input: {
   if (!player) throw new Error("Δεν βρέθηκε ο αθλητής.");
 
   await assertRosterTargetWritable(db, seasonId, competitionId);
+  const shirtNumber = normalizeOptionalJerseyNumber(input.shirtNumber);
 
   const competitionTeams = await rows<{ team_id: string }>(
     db,
@@ -7021,6 +7062,7 @@ export async function transferAthleteBetweenTeams(input: {
   }
 
   const destinationHistorical = await getInactiveRosterMembershipForTeam(db, seasonId, competitionId, playerId, toTeamId);
+  await assertActiveRosterShirtNumberAvailable(db, seasonId, competitionId, toTeamId, shirtNumber, destinationHistorical?.id ?? null);
   const movementId = createEntityId("movement");
   const destinationRosterId = destinationHistorical?.id ?? createEntityId("roster");
 
@@ -7033,11 +7075,11 @@ export async function transferAthleteBetweenTeams(input: {
       ? db.prepare(`UPDATE league_roster_memberships
           SET status='active', joined_on=COALESCE(joined_on, ?), left_on=NULL, shirt_number=COALESCE(?, shirt_number), updated_at=CURRENT_TIMESTAMP
           WHERE id=?`)
-          .bind(date, input.shirtNumber ?? null, destinationHistorical.id)
+          .bind(date, shirtNumber, destinationHistorical.id)
       : db.prepare(`INSERT INTO league_roster_memberships
           (id, season_id, competition_id, player_id, team_id, shirt_number, joined_on, left_on, status, created_at, updated_at)
           VALUES (?,?,?,?,?,?,?,NULL,'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
-          .bind(destinationRosterId, seasonId, competitionId, playerId, toTeamId, input.shirtNumber ?? null, date),
+          .bind(destinationRosterId, seasonId, competitionId, playerId, toTeamId, shirtNumber, date),
     db.prepare(`INSERT INTO league_player_movements
       (id, player_id, season_id, competition_id, from_team_id, to_team_id, movement_type, effective_on, note)
       VALUES (?, ?, ?, ?, ?, ?, 'transfer', ?, ?)`)

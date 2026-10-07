@@ -1,6 +1,7 @@
 "use client";
 
 import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } from "@/components/admin/platform/shared/platform-context";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 
 import type { FormEvent, MouseEvent } from "react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -270,11 +271,7 @@ export function CompetitionWorkspaceManager({
   const rosterPlayers = useMemo(() => (teamRoster?.athletes ?? []).map((athlete,index)=>({ ...athlete, rowIndex:index + 1 })), [teamRoster?.athletes]);
 
   const parseShirtNumber = (value: string) => {
-    const normalized = value.trim();
-    if (!normalized) return null;
-    const parsed = Number(normalized);
-    if (!Number.isInteger(parsed) || parsed < 0) throw new Error("Μη έγκυρος αριθμός φανέλας.");
-    return parsed;
+    return normalizeOptionalJerseyNumber(value);
   };
 
   const parsePhaseRuleSettings = (value: unknown) => {
@@ -1350,7 +1347,7 @@ export function CompetitionWorkspaceManager({
                         <Field label="Επώνυμο"><input value={editingAthleteLastName} onChange={(event)=>setEditingAthleteLastName(event.target.value)} className={inputClass} /></Field>
                       </div>
                       <Field label="Ημερομηνία γέννησης"><input type="date" value={editingAthleteBirthDate} onChange={(event)=>setEditingAthleteBirthDate(event.target.value)} className={inputClass} /></Field>
-                      <Field label="Νο. Φανέλας"><input value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} /></Field>
+                      <Field label="Νο. Φανέλας"><input type="text" inputMode="numeric" value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} /></Field>
                       <Field label="Φωτογραφία">
                         <div className="mt-1 flex items-center gap-3">
                           <div className="h-16 w-16 overflow-hidden rounded-full bg-zinc-100">

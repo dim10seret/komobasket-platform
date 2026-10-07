@@ -49,7 +49,7 @@ export interface LeagueRosterEntry {
   playerName?: string;
   teamId: string;
   teamName?: string;
-  shirtNumber: number | null;
+  shirtNumber: string | null;
   joinedOn: string | null;
   leftOn: string | null;
   status: RosterStatus;

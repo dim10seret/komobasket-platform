@@ -546,7 +546,7 @@ CREATE TABLE IF NOT EXISTS league_roster_memberships (
   id TEXT PRIMARY KEY, season_id TEXT NOT NULL REFERENCES league_seasons(id) ON DELETE CASCADE,
   competition_id TEXT REFERENCES league_competitions(id) ON DELETE SET NULL,
   player_id TEXT NOT NULL REFERENCES league_players(id), team_id TEXT NOT NULL REFERENCES league_teams(id),
-  shirt_number INTEGER, joined_on TEXT, left_on TEXT, status TEXT NOT NULL DEFAULT 'active'
+  shirt_number TEXT, joined_on TEXT, left_on TEXT, status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active','departed','transferred')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

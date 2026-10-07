@@ -175,7 +175,7 @@ describe("KC-5B9A durable pre-game configuration", () => {
 
     it("persists a Run-only override without mutating the pinned Package", () => {
         const f = fixture(); const before = f.localDatabase.readGamePackage("package-v2"); const current = f.manager.getOrCreate("game-1", owner).configuration; const saved = f.manager.saveDraft(select(draft(current), "HOME", "home-1", "55"), owner);
-        expect(saved.teams[0].players.find((player) => player.playerId === "home-1")).toMatchObject({ packageShirtNumber: 0, gameShirtNumber: "55", participating: true }); expect(f.localDatabase.readGamePackage("package-v2")).toEqual(before);
+        expect(saved.teams[0].players.find((player) => player.playerId === "home-1")).toMatchObject({ packageShirtNumber: "0", gameShirtNumber: "55", participating: true }); expect(f.localDatabase.readGamePackage("package-v2")).toEqual(before);
     });
 
     it("continues to derive from the Run-pinned historical Package after a newer download", () => {

@@ -47,6 +47,7 @@ import {
 } from "@/services/league-admin.service";
 
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import { platformOperationScope } from "@/lib/platform-operation-scope";
 
 export function platformLeagueActions(actor: CanonicalAppUser, scopeOrganizationId?: string) {
@@ -100,7 +101,7 @@ async function PATCH(request: Request) {
         seasonId: String(input.seasonId ?? ""),
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
-        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+        shirtNumber: normalizeOptionalJerseyNumber(input.shirtNumber),
         organizationId: relationship.organizationId,
       }));
     }
@@ -126,7 +127,7 @@ async function PATCH(request: Request) {
         seasonId: String(input.seasonId ?? ""),
         competitionId: String(input.competitionId ?? ""),
         teamId: String(input.teamId ?? ""),
-        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+        shirtNumber: normalizeOptionalJerseyNumber(input.shirtNumber),
       }));
     }
     if (action === "transferAthlete") {
@@ -142,7 +143,7 @@ async function PATCH(request: Request) {
         competitionId: String(input.competitionId ?? ""),
         fromTeamId: String(input.fromTeamId ?? ""),
         toTeamId: String(input.toTeamId ?? ""),
-        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+        shirtNumber: normalizeOptionalJerseyNumber(input.shirtNumber),
         effectiveOn: input.effectiveOn ? String(input.effectiveOn) : null,
         note: input.note ? String(input.note) : null,
       }));
@@ -178,7 +179,7 @@ async function PATCH(request: Request) {
         teamId: String(input.teamId ?? ""),
         items: Array.isArray(input.items) ? input.items.map((item) => ({
           playerId: String((item as Record<string, unknown>).playerId ?? ""),
-          shirtNumber: (item as Record<string, unknown>).shirtNumber ? Number((item as Record<string, unknown>).shirtNumber) : null,
+          shirtNumber: normalizeOptionalJerseyNumber((item as Record<string, unknown>).shirtNumber),
         })) : [],
       }));
     }
@@ -197,7 +198,7 @@ async function PATCH(request: Request) {
       await requireRosterMembershipAccess(await canonicalUser(), String(input.rosterId ?? ""), "manage");
       return Response.json(await updateRosterShirtNumber({
         rosterId: String(input.rosterId ?? ""),
-        shirtNumber: input.shirtNumber ? Number(input.shirtNumber) : null,
+        shirtNumber: normalizeOptionalJerseyNumber(input.shirtNumber),
       }));
     }
     if (action === "createStaffWithRoster") {

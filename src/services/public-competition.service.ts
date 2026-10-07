@@ -139,7 +139,7 @@ export type PublicSeason = {
 export type PublicTeamRosterPlayer = {
   id: string;
   displayName: string;
-  shirtNumber: number | null;
+  shirtNumber: string | null;
   photoUrl: string | null;
 };
 
@@ -817,11 +817,12 @@ export async function getPublicCompetitionContextForOrganizationWithDb(
        WHERE r.season_id=? AND r.competition_id=? AND r.team_id=? AND r.status='active'
          AND p.organization_id=?
        ORDER BY CASE WHEN r.shirt_number IS NULL THEN 1 ELSE 0 END,
-                r.shirt_number ASC, p.display_name COLLATE NOCASE, p.id
+                CASE WHEN r.shirt_number='0' THEN 0 WHEN r.shirt_number='00' THEN 1 ELSE CAST(r.shirt_number AS INTEGER)+1 END,
+                p.display_name COLLATE NOCASE, p.id
     `).bind(selectedSeason.id, selectedCompetition.id, selectedTeam.id, organizationId).all<{
       id: string;
       display_name: string;
-      shirt_number: number | null;
+      shirt_number: string | null;
       photo_url: string | null;
     }>(), readAuthoritativeTeamStatisticalGamesWithDb(
       db,

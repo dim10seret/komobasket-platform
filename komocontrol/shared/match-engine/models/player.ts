@@ -1,6 +1,9 @@
 import { PlayerFoulStatus } from "../types/foul.js";
-import type { Player, ShirtNumber } from "../types/player.js";
+import type { Player } from "../types/player.js";
 import type { TeamSide } from "../types/team-side.js";
+import { isShirtNumber } from "../jersey-number.js";
+
+export { isShirtNumber } from "../jersey-number.js";
 
 export interface CreatePlayerOptions {
   playerId: string;
@@ -8,10 +11,6 @@ export interface CreatePlayerOptions {
   shirtNumber: string;
   team: TeamSide;
   onCourt?: boolean;
-}
-
-export function isShirtNumber(value: string): value is ShirtNumber {
-  return /^(?:0|00|[1-9][0-9]?)$/.test(value);
 }
 
 export function createPlayer(options: CreatePlayerOptions): Player {

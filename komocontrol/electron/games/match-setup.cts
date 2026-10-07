@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import type { DesktopAuthState } from "../auth/auth-contracts.cjs";
 import type { StoredLocalGamePackage } from "../persistence/local-database.cjs";
 import { GamePackageFlowError, validateGamePackagePayload, type GamePackageErrorCode, type GamePackageV1Official, type GamePackageV1Officials, type GamePackageV1Player, type GamePackageV1StaffMember, type GamePackageV1Team } from "./game-package-download.cjs";
+import { comparePackageShirtNumbers } from "./jersey-number.cjs";
 
-export interface MatchSetupPlayer { playerId: string; displayName: string; photoUrl: string | null; shirtNumber: number | null; }
+export interface MatchSetupPlayer { playerId: string; displayName: string; photoUrl: string | null; shirtNumber: string | null; }
 export interface MatchSetupStaffMember { staffId: string; displayName: string; role: string; roleLabel: string | null; }
 export interface MatchSetupTeam { side: "HOME" | "AWAY"; teamId: string; teamName: string; logoUrl: string | null; players: MatchSetupPlayer[]; staff: MatchSetupStaffMember[]; }
 export interface MatchSetupOfficial { id: string; displayName: string; }
@@ -21,7 +22,7 @@ export interface VerifiedMatchSetupSource { setup: MatchSetup; packageHash: stri
 function comparePlayers(left: GamePackageV1Player, right: GamePackageV1Player): number {
     if (left.shirtNumber === null && right.shirtNumber !== null) return 1;
     if (left.shirtNumber !== null && right.shirtNumber === null) return -1;
-    if (left.shirtNumber !== null && right.shirtNumber !== null && left.shirtNumber !== right.shirtNumber) return left.shirtNumber - right.shirtNumber;
+    if (left.shirtNumber !== null && right.shirtNumber !== null && left.shirtNumber !== right.shirtNumber) return comparePackageShirtNumbers(left.shirtNumber, right.shirtNumber);
     return left.displayName.localeCompare(right.displayName, "el", { sensitivity: "base" }) || left.id.localeCompare(right.id);
 }
 function mapPlayer(player: GamePackageV1Player): MatchSetupPlayer { return { playerId: player.id, displayName: player.displayName, photoUrl: player.photoUrl, shirtNumber: player.shirtNumber }; }

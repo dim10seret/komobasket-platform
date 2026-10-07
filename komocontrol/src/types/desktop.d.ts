@@ -17,7 +17,7 @@ type KomoControlGameDiscoveryResult = { ok: true; games: KomoControlAvailableGam
 type KomoControlGamePackageErrorCode = KomoControlAuthErrorCode | "PACKAGE_UNAVAILABLE" | "PACKAGE_INVALID" | "PACKAGE_HASH_MISMATCH" | "PACKAGE_CONFLICT" | "PACKAGE_UNSUPPORTED";
 interface KomoControlOfflineGameStatus { gameId: string; availableOffline: boolean; currentVersion: number | null; downloadedAt: string | null; }
 type KomoControlGamePackageDownloadResult = { ok: true; status: KomoControlOfflineGameStatus; outcome: "stored" | "unchanged"; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlGamePackageErrorCode; state: KomoControlAuthState };
-interface KomoControlMatchSetupPlayer { playerId: string; displayName: string; photoUrl: string | null; shirtNumber: number | null; }
+interface KomoControlMatchSetupPlayer { playerId: string; displayName: string; photoUrl: string | null; shirtNumber: string | null; }
 interface KomoControlMatchSetupStaffMember { staffId: string; displayName: string; role: string; roleLabel: string | null; }
 interface KomoControlMatchSetupTeam { side: "HOME" | "AWAY"; teamId: string; teamName: string; logoUrl: string | null; players: KomoControlMatchSetupPlayer[]; staff: KomoControlMatchSetupStaffMember[]; }
 interface KomoControlOfficials { referees: { a: string | null; b: string | null; c: string | null }; table: { timer: string | null; shotClock: string | null; scoresheet: string | null; commissioner: string | null }; }
@@ -35,7 +35,7 @@ interface KomoControlMatchFinalizationInput { incidentReport: string | null; }
 type KomoControlMyGamesRunStateCatalogueResult = { ok: true; runs: KomoControlMyGamesRunState[]; state: KomoControlAuthState } | { ok: false; errorCode: KomoControlMatchRunErrorCode | "SESSION_INVALID"; state: KomoControlAuthState };
 type KomoControlPreGameConfigurationErrorCode = "CONFIGURATION_UNAVAILABLE" | "CONFIGURATION_INVALID" | "CONFIGURATION_CONFLICT" | "CONFIGURATION_OWNERSHIP_CONFLICT";
 type KomoControlTeamSide = "HOME" | "AWAY";
-interface KomoControlPreGameConfigurationPlayer { playerId: string; displayName: string; packageShirtNumber: number | null; gameShirtNumber: string | null; participating: boolean; }
+interface KomoControlPreGameConfigurationPlayer { playerId: string; displayName: string; packageShirtNumber: string | null; gameShirtNumber: string | null; participating: boolean; }
 interface KomoControlPreGameConfigurationStaff { staffId: string; displayName: string; role: string; roleLabel: string | null; participating: boolean; }
 type KomoControlExtraBenchRole = "coach" | "assistant_coach" | "team_manager" | "physiotherapist" | "doctor" | "other";
 interface KomoControlExtraBenchEntry { entryId: string; name: string; role: KomoControlExtraBenchRole; }

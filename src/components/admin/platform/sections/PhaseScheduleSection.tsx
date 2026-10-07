@@ -27,6 +27,7 @@ import {
   standingsTieBreakerLabel,
 } from "../shared/admin-core";
 import { calculateStandings } from "../../../../lib/standings-calculator";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import { PhaseParticipantsBuilder } from "../phases/PhaseParticipantsBuilder";
 
 export function PhaseFields({
@@ -645,11 +646,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
   };
 
   const parseShirtNumber = (value: string) => {
-    const normalized = value.trim();
-    if (!normalized) return null;
-    const parsed = Number(normalized);
-    if (!Number.isInteger(parsed) || parsed < 0) throw new Error("Μη έγκυρος αριθμός φανέλας.");
-    return parsed;
+    return normalizeOptionalJerseyNumber(value);
   };
 
   const showTeamRosterPopup = async (teamId:string, competitionId:string, seasonId:string) => {
@@ -1008,7 +1005,7 @@ export function Schedule({data,submit,updateEntity,busy}:{data:Snapshot;submit:(
               <input type="date" value={editingAthleteBirthDate} onChange={(event)=>setEditingAthleteBirthDate(event.target.value)} className={inputClass} />
             </Field>
             <Field label="Νο. Φανέλας">
-              <input value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} />
+              <input type="text" inputMode="numeric" value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} />
             </Field>
             <Field label="Φωτογραφία">
               <div className="mt-1 flex items-center gap-3">

@@ -56,7 +56,7 @@ export type TeamRosterAthlete = {
   display_name: string;
   photo_url: string | null;
   birth_date: string | null;
-  shirt_number: number | null;
+  shirt_number: string | null;
 };
 
 export type TeamRosterStaff = {

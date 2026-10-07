@@ -49,7 +49,7 @@ export type PublicTeamStatistics = {
 export type PublicTeamStatisticsRosterPlayer = {
   id: string;
   displayName: string;
-  shirtNumber: number | null;
+  shirtNumber: string | null;
 };
 
 export const ZERO_STATISTICS: PlatformMatchReportStatisticsLine = {

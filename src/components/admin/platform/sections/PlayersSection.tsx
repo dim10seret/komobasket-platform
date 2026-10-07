@@ -24,6 +24,7 @@ import {
   clearBlobPreviewUrl,
 } from "../shared/admin-core";
 import { normalizePlayerName } from "@/lib/player-matching";
+import { compareJerseyNumbers, normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 
 type AthleteEditSavePlan = {
   canonicalPatch: Record<string, unknown> | null;
@@ -40,14 +41,14 @@ export function buildAthleteEditSavePlan(
     lastName: unknown;
     birthDate: unknown;
     photoUrl: unknown;
-    shirtNumber: number | null;
+    shirtNumber: string | null;
   },
   edited: {
     firstName: unknown;
     lastName: unknown;
     birthDate: unknown;
     photoUrl: unknown;
-    shirtNumber: number | null;
+    shirtNumber: string | null;
   },
 ): AthleteEditSavePlan {
   const originalCanonical = {
@@ -310,7 +311,7 @@ export function Players({
         );
       }
       if (athleteSort.key === "birth_date") return compareNullable(left.birth_date, right.birth_date, athleteSort.direction);
-      return compareNullable(left.shirt_number, right.shirt_number, athleteSort.direction);
+      return compareJerseyNumbers(left.shirt_number, right.shirt_number, athleteSort.direction);
     });
     return list;
   }, [athletesWithIndex, athleteSort]);
@@ -407,11 +408,7 @@ export function Players({
   };
 
   const parseShirtNumber = (value:string) => {
-    const normalized = value.trim();
-    if (!normalized) return null;
-    const parsed = Number(normalized);
-    if (!Number.isInteger(parsed) || parsed < 0) throw new Error("Μη έγκυρος αριθμός φανέλας.");
-    return parsed;
+    return normalizeOptionalJerseyNumber(value);
   };
 
   const formatRegistryBirthDate = (value: unknown) => {
@@ -1660,6 +1657,8 @@ export function Players({
                   </div>
                   <Field label="No. Φανέλας (προαιρετικό)">
                     <input
+                      type="text"
+                      inputMode="numeric"
                       value={selectedRosterAthleteShirtNumber}
                       onChange={(event)=>setSelectedRosterAthleteShirtNumber(event.target.value)}
                       className={inputClass}
@@ -1766,6 +1765,8 @@ export function Players({
                   </div>
                   <Field label="No. Φανέλας (προαιρετικό)">
                     <input
+                      type="text"
+                      inputMode="numeric"
                       value={bulkRosterSelectedShirtNumber}
                       onChange={(event)=>setBulkRosterSelectedShirtNumber(event.target.value)}
                       className={inputClass}
@@ -1851,7 +1852,7 @@ export function Players({
                     <input type="date" value={newAthleteBirthDate} onChange={(event)=>setNewAthleteBirthDate(event.target.value)} className={inputClass} />
                   </Field>
                   <Field label="Αριθμός Φανέλας (προαιρετικό)">
-                    <input value={newAthleteShirtNumber} onChange={(event)=>setNewAthleteShirtNumber(event.target.value)} className={inputClass} />
+                    <input type="text" inputMode="numeric" value={newAthleteShirtNumber} onChange={(event)=>setNewAthleteShirtNumber(event.target.value)} className={inputClass} />
                   </Field>
                   {newAthleteDuplicateMatches.length > 0 && (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -2058,7 +2059,7 @@ export function Players({
                   <input type="date" value={editingAthleteBirthDate} onChange={(event)=>setEditingAthleteBirthDate(event.target.value)} className={inputClass} />
                 </Field>
                 <Field label="Αριθμός φανέλας">
-                  <input value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} />
+                  <input type="text" inputMode="numeric" value={editingAthleteShirtNumber} onChange={(event)=>setEditingAthleteShirtNumber(event.target.value)} className={inputClass} />
                 </Field>
                 <Field label="Φωτογραφία">
                   <div className="mt-1 flex items-center gap-3">

@@ -11,7 +11,8 @@ describe("MatchSetupManager", () => {
     it("builds a safe setup from the current local package", () => expect(manager(stored()).getMatchSetup(gameId).packageVersion).toBe(2));
     it("resolves HOME and AWAY by side rather than array order", () => expect(manager(stored()).getMatchSetup(gameId).home.teamId).toBe("home"));
     it("sorts numbered players before unnumbered players", () => expect(manager(stored()).getMatchSetup(gameId).away.players.map((player) => player.playerId)).toEqual(["a1", "a2"]));
-    it("sorts shirt numbers ascending", () => expect(manager(stored()).getMatchSetup(gameId).home.players.map((player) => player.shirtNumber)).toEqual([7, 10]));
+    it("sorts canonical shirt numbers ascending", () => expect(manager(stored()).getMatchSetup(gameId).home.players.map((player) => player.shirtNumber)).toEqual(["7", "10"]));
+    it("keeps 0 and 00 distinct and ordered", () => { const value = payload(); value.teams[1].players[0].shirtNumber = "00"; value.teams[1].players[1].shirtNumber = 0; expect(manager(stored(value)).getMatchSetup(gameId).home.players.map((player) => player.shirtNumber)).toEqual(["0", "00"]); });
     it("keeps an empty staff snapshot valid", () => expect(manager(stored()).getMatchSetup(gameId).away.staff).toEqual([]));
     it("keeps nullable media values", () => expect(manager(stored()).getMatchSetup(gameId).home.logoUrl).toBeNull());
     it("maps SIMPLE package settings to the safe Match Setup", () => { const value = payload(); value.settings.game_mode = "SIMPLE"; expect(manager(stored(value)).getMatchSetup(gameId).settings.gameMode).toBe("SIMPLE"); });

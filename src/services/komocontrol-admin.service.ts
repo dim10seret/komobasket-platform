@@ -177,7 +177,7 @@ export type GamePackageV1 = {
   game: { id: string; organizationId: string; competitionId: string; competitionName: string; seasonName: string; phaseName: string | null; roundLabel: string | null; scheduledDate: string | null; scheduledTime: string | null; scheduledAt: string | null; venue: string | null };
   settings: GamePackageSettings;
   officials: GameOfficials;
-  teams: Array<{ side: "HOME" | "AWAY"; id: string; name: string; logoUrl: string | null; players: Array<{ id: string; displayName: string; shirtNumber: number | null; photoUrl: string | null }>; staff: Array<{ id: string; displayName: string; role: string; roleLabel: string | null }> }>;
+  teams: Array<{ side: "HOME" | "AWAY"; id: string; name: string; logoUrl: string | null; players: Array<{ id: string; displayName: string; shirtNumber: string | null; photoUrl: string | null }>; staff: Array<{ id: string; displayName: string; role: string; roleLabel: string | null }> }>;
 };
 
 export type GameOfficialIdentity = { id: string; displayName: string };
@@ -300,7 +300,7 @@ async function teamSnapshot(database: Awaited<ReturnType<typeof db>>, game: Game
   const teamId = side === "HOME" ? game.home_team_id : game.away_team_id;
   const players = (await database.prepare(`SELECT r.player_id AS id, COALESCE(NULLIF(TRIM(p.display_name), ''), TRIM(p.first_name || ' ' || p.last_name)) AS display_name, r.shirt_number, p.photo_url
     FROM league_roster_memberships r JOIN league_players p ON p.id=r.player_id
-    WHERE r.competition_id=? AND r.team_id=? AND r.status='active' ORDER BY p.display_name COLLATE NOCASE, p.id`).bind(game.competition_id, teamId).all<{ id: string; display_name: string; shirt_number: number | null; photo_url: string | null }>()).results ?? [];
+    WHERE r.competition_id=? AND r.team_id=? AND r.status='active' ORDER BY p.display_name COLLATE NOCASE, p.id`).bind(game.competition_id, teamId).all<{ id: string; display_name: string; shirt_number: string | null; photo_url: string | null }>()).results ?? [];
   const staff = (await database.prepare(`SELECT m.staff_id AS id, COALESCE(NULLIF(TRIM(s.display_name), ''), TRIM(s.first_name || ' ' || s.last_name)) AS display_name, m.role, m.custom_role_label
     FROM league_staff_memberships m JOIN league_staff s ON s.id=m.staff_id
     WHERE m.competition_id=? AND m.team_id=? AND s.active=1 ORDER BY m.role, s.display_name COLLATE NOCASE, m.staff_id`).bind(game.competition_id, teamId).all<{ id: string; display_name: string; role: string; custom_role_label: string | null }>()).results ?? [];

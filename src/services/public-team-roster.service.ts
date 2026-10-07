@@ -14,7 +14,7 @@ export type PublicTeamRosterScope = {
 export type PublicRosterPlayer = {
   id: string;
   displayName: string;
-  shirtNumber: number | null;
+  shirtNumber: string | null;
 };
 
 export type PublicTeamRoster = {
@@ -28,7 +28,7 @@ type RosterRow = {
   first_name: string | null;
   last_name: string | null;
   display_name: string | null;
-  shirt_number: number | null;
+  shirt_number: string | null;
 };
 
 export async function getPublicTeamRosterWithDb(
@@ -53,7 +53,8 @@ export async function getPublicTeamRosterWithDb(
          CASE c.status WHEN 'active' THEN 'online' WHEN 'completed' THEN 'complete' ELSE 'under_construction' END
        ) IN ('online','complete')
      ORDER BY CASE WHEN r.shirt_number IS NULL THEN 1 ELSE 0 END,
-              r.shirt_number ASC, p.display_name COLLATE NOCASE, p.id
+              CASE WHEN r.shirt_number='0' THEN 0 WHEN r.shirt_number='00' THEN 1 ELSE CAST(r.shirt_number AS INTEGER)+1 END,
+              p.display_name COLLATE NOCASE, p.id
   `).bind(scope.organizationId, scope.seasonId, scope.competitionId, scope.teamId, CANONICAL_PUBLIC_SEASON_START).all<RosterRow>();
   const rows = result.results ?? [];
   if (rows.length === 0) return null;

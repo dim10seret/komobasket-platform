@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { AuthFlowError, type AuthErrorCode, type DesktopAuthState } from "../auth/auth-contracts.cjs";
 import type { LocalGamePackageStatus, LocalGamePackageStoreResult, VerifiedGamePackageInput } from "../persistence/local-database.cjs";
+import { normalizePackageShirtNumber } from "./jersey-number.cjs";
 
 export const GAME_PACKAGE_ERROR_CODES = ["PACKAGE_UNAVAILABLE", "PACKAGE_INVALID", "PACKAGE_HASH_MISMATCH", "PACKAGE_CONFLICT", "PACKAGE_UNSUPPORTED"] as const;
 export type GamePackageErrorCode = (typeof GAME_PACKAGE_ERROR_CODES)[number];
 export type GamePackageOperationErrorCode = AuthErrorCode | GamePackageErrorCode;
 export interface GamePackageEnvelope { packageId: string; gameId: string; packageVersion: number; packageSchemaVersion: 1; publishedAt: string; payloadJson: string; payloadHash: string; }
-export interface GamePackageV1Player { id: string; displayName: string; shirtNumber: number | null; photoUrl: string | null; }
+export interface GamePackageV1Player { id: string; displayName: string; shirtNumber: string | null; photoUrl: string | null; }
 export interface GamePackageV1StaffMember { id: string; displayName: string; role: string; roleLabel: string | null; }
 export interface GamePackageV1Team { side: "HOME" | "AWAY"; id: string; name: string; logoUrl: string | null; players: GamePackageV1Player[]; staff: GamePackageV1StaffMember[]; }
 export interface GamePackageV1Official { id: string; displayName: string; }
@@ -47,7 +48,12 @@ function validateSettings(value: unknown): void {
 function validateTeam(value: unknown, expectedSide: "HOME" | "AWAY"): void {
     const item = record(value);
     if (!item || item.side !== expectedSide || !text(item.id) || !text(item.name) || !nullableString(item.logoUrl) || !Array.isArray(item.players) || !Array.isArray(item.staff)) throw new GamePackageFlowError("PACKAGE_INVALID");
-    for (const value of item.players) { const player = record(value); if (!player || !text(player.id) || !text(player.displayName) || !(player.shirtNumber === null || nonNegativeInteger(player.shirtNumber)) || !nullableString(player.photoUrl)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
+    for (const value of item.players) {
+        const player = record(value);
+        if (!player || !text(player.id) || !text(player.displayName) || !nullableString(player.photoUrl)) throw new GamePackageFlowError("PACKAGE_INVALID");
+        try { player.shirtNumber = normalizePackageShirtNumber(player.shirtNumber); }
+        catch { throw new GamePackageFlowError("PACKAGE_INVALID"); }
+    }
     for (const value of item.staff) { const staff = record(value); if (!staff || !text(staff.id) || !text(staff.displayName) || !text(staff.role) || !nullableString(staff.roleLabel)) throw new GamePackageFlowError("PACKAGE_INVALID"); }
 }
 function validateOfficial(value: unknown): void { if (value === null) return; const item = record(value); if (!item || !text(item.id) || !text(item.displayName)) throw new GamePackageFlowError("PACKAGE_INVALID"); }

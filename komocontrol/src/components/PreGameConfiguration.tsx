@@ -48,7 +48,7 @@ function initialTeamExpansion(): TeamExpansion { return { HOME: false, AWAY: fal
 
 export function rosterNeedsFilter(playerCount: number): boolean { return playerCount > 20; }
 
-export function rosterView<T extends { playerId: string; displayName: string; packageShirtNumber: number | null }>(
+export function rosterView<T extends { playerId: string; displayName: string; packageShirtNumber: string | null }>(
     players: readonly T[],
     draftPlayers: readonly { playerId: string; participating: boolean; gameShirtNumber: string | null }[],
     filter: RosterViewFilter,
@@ -72,7 +72,7 @@ export function rosterView<T extends { playerId: string; displayName: string; pa
     return { players: visible, hiddenSelected };
 }
 
-export function compactRosterView<T extends { playerId: string; displayName: string; packageShirtNumber: number | null }>(
+export function compactRosterView<T extends { playerId: string; displayName: string; packageShirtNumber: string | null }>(
     players: readonly T[],
     draftPlayers: readonly { playerId: string; participating: boolean; gameShirtNumber: string | null }[],
     filter: RosterViewFilter,

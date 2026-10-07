@@ -4,6 +4,7 @@ import { usePlatformContext, PlatformButton, PlatformForm, PlatformFileInput } f
 import { useEffect, useMemo, useState } from "react";
 import { getCanonicalMovementCompetitionId, getCanonicalMovementCompetitionName, movementMatchesCompetition } from "@/lib/player-movement-lineage";
 import { selectEligibleAdditionPlayers } from "@/lib/player-movement-addition";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import { Field, Panel, Row, Snapshot, buttonClass, inputClass, parseDateForDisplay } from "../shared/admin-core";
 
 type MovementMode = "addition" | "departure" | "transfer";
@@ -336,7 +337,7 @@ export function Movements({
       competitionId: transferCompetitionId,
       fromTeamId: transferFromTeamId,
       toTeamId: transferToTeamId,
-      shirtNumber: transferShirtNumber ? Number(transferShirtNumber) : null,
+      shirtNumber: normalizeOptionalJerseyNumber(transferShirtNumber),
       effectiveOn: transferDate || null,
       note: transferNote || null,
     });
@@ -621,6 +622,7 @@ export function Movements({
               </Field>
               <Field label="No. Φανέλας στη νέα ομάδα (προαιρετικό)">
                 <input
+                  type="text"
                   value={transferShirtNumber}
                   onChange={(event) => setTransferShirtNumber(event.target.value)}
                   inputMode="numeric"
