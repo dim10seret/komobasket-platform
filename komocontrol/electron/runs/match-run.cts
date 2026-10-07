@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DesktopAuthState } from "../auth/auth-contracts.cjs";
 import type { MatchSetup, MatchSetupManager, VerifiedMatchSetupSource } from "../games/match-setup.cjs";
+import { normalizePackageShirtNumber } from "../games/jersey-number.cjs";
 import type { CreateLocalGameRunInput, LocalGameRunStoreResult, StoredLocalGameRun, StoredLocalGameplaySyncState, StoredLocalMatchEngineSnapshot, StoredLocalMatchFinalization } from "../persistence/local-database.cjs";
 import { parseDeterministicJson, sha256JsonBytes, type JsonValue } from "./match-engine-bootstrap.cjs";
 
@@ -51,6 +52,30 @@ function safeRun(run: StoredLocalGameRun): SafeMatchRun {
 
 function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
     return value !== null && !Array.isArray(value) && typeof value === "object" ? value : null;
+}
+
+function matchesLegacyNumericSetupSnapshot(snapshotJson: string, canonicalJson: string): boolean {
+    let snapshot: unknown;
+    try { snapshot = JSON.parse(snapshotJson); } catch { return false; }
+    if (JSON.stringify(snapshot) !== snapshotJson) return false;
+    if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+    const record = snapshot as Record<string, unknown>;
+    let normalized = false;
+    for (const side of ["home", "away"]) {
+        const team = record[side];
+        if (team === null || typeof team !== "object" || Array.isArray(team)) return false;
+        const players = (team as Record<string, unknown>).players;
+        if (!Array.isArray(players)) return false;
+        for (const value of players) {
+            if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+            const player = value as Record<string, unknown>;
+            if (typeof player.shirtNumber !== "number") continue;
+            try { player.shirtNumber = normalizePackageShirtNumber(player.shirtNumber); }
+            catch { return false; }
+            normalized = true;
+        }
+    }
+    return normalized && JSON.stringify(snapshot) === canonicalJson;
 }
 
 export function selectAuthoritativeMyGamesRuns(runs: StoredLocalGameRun[]): StoredLocalGameRun[] {
@@ -143,7 +168,8 @@ export class MatchRunManager {
     private verifiedSource(run: StoredLocalGameRun, owner: MatchRunOwner): VerifiedMatchSetupSource {
         if (run.organizationId !== owner.organizationId || run.scorerId !== owner.scorerId || run.deviceId !== this.deviceId) throw new MatchRunFlowError("RUN_OWNERSHIP_CONFLICT");
         const source = this.setup.getVerifiedPackageMatchSetup(run.packageId);
-        if (source.setup.gameId !== run.gameId || source.setup.packageVersion !== run.packageVersion || source.packageSchemaVersion !== run.packageSchemaVersion || source.packageHash !== run.packageHash || JSON.stringify(source.setup) !== run.setupSnapshotJson) throw new MatchRunFlowError("RUN_INVALID");
+        const canonicalSetupJson = JSON.stringify(source.setup);
+        if (source.setup.gameId !== run.gameId || source.setup.packageVersion !== run.packageVersion || source.packageSchemaVersion !== run.packageSchemaVersion || source.packageHash !== run.packageHash || (canonicalSetupJson !== run.setupSnapshotJson && !matchesLegacyNumericSetupSnapshot(run.setupSnapshotJson, canonicalSetupJson))) throw new MatchRunFlowError("RUN_INVALID");
         return source;
     }
 }
