@@ -6,6 +6,7 @@ import gr.komobasket.app.data.api.PublicPlayerProfileApi
 import gr.komobasket.app.data.mapper.toPlayerProfile
 import gr.komobasket.app.data.repository.HttpPlayerProfileRepository
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -78,6 +79,27 @@ class PlayerProfileContractTest {
         assertEquals("loss", profile.recentGames.last().outcome)
         assertEquals(9, profile.recentGames.last().points)
         assertEquals("19:30", profile.recentGames.first().scheduledTime)
+    }
+
+    @Test fun playerProfileAcceptsLegacyAndTextualJerseys() {
+        for ((raw, expected) in listOf(
+            "23" to "23", "0" to "0", "null" to null,
+            "\"23\"" to "23", "\"0\"" to "0", "\"00\"" to "00",
+        )) {
+            val profile = json.decodeFromString<PlayerProfileEnvelope>(fixture(jersey = raw)).data
+            assertEquals(expected, profile.jerseyNumber)
+        }
+    }
+
+    @Test fun playerProfileRejectsInvalidJerseyJson() {
+        for (raw in listOf(
+            "\"01\"", "\"000\"", "\"001\"", "\"100\"", "\"-1\"", "\"1.0\"",
+            "100", "-1", "1.5", "true", "{}", "[]",
+        )) {
+            assertThrows(SerializationException::class.java) {
+                json.decodeFromString<PlayerProfileEnvelope>(fixture(jersey = raw))
+            }
+        }
     }
 
     @Test fun rosteredZeroStatPlayerIsValidAndKeepsSemanticNulls() {

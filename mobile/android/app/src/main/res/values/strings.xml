@@ -118,7 +118,7 @@
     <string name="team_standing_record">Played %1$d · Won %2$d · Lost %3$d</string>
     <string name="team_no_standing">No standings overview is available for this phase.</string>
     <string name="team_no_roster">No public roster is available yet.</string>
-    <string name="team_jersey">#%1$d</string>
+    <string name="team_jersey">#%1$s</string>
     <string name="team_games_played">Statistical games played: %1$d</string>
     <string name="team_no_statistics">No finalized team statistics yet.</string>
     <string name="team_totals">Totals</string>

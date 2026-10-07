@@ -118,7 +118,7 @@
     <string name="team_standing_record">Αγώνες %1$d · Νίκες %2$d · Ήττες %3$d</string>
     <string name="team_no_standing">Δεν υπάρχει διαθέσιμη βαθμολογική εικόνα για αυτή τη φάση.</string>
     <string name="team_no_roster">Δεν υπάρχει ακόμη δημόσιο ρόστερ.</string>
-    <string name="team_jersey">#%1$d</string>
+    <string name="team_jersey">#%1$s</string>
     <string name="team_games_played">Αγώνες με στατιστικά: %1$d</string>
     <string name="team_no_statistics">Δεν υπάρχουν ακόμη οριστικοποιημένα στατιστικά ομάδας.</string>
     <string name="team_totals">Σύνολα</string>

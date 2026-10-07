@@ -7,6 +7,7 @@ import gr.komobasket.app.data.mapper.toTeamProfile
 import gr.komobasket.app.data.mapper.toTeamStatistics
 import gr.komobasket.app.data.repository.HttpTeamProfileRepository
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -52,9 +53,33 @@ class TeamProfileContractTest {
         assertEquals(3, model.standing?.gamesPlayed)
         assertEquals(listOf("player-z", "player-a"), model.roster.map { it.playerId })
         assertEquals("/z.png", model.roster.first().photoUrl)
-        assertEquals(12, model.roster.first().jerseyNumber)
+        assertEquals("12", model.roster.first().jerseyNumber)
         assertNull(model.roster.last().photoUrl)
         assertNull(model.roster.last().jerseyNumber)
+    }
+
+    private fun jerseyFromDetail(raw: String): String? =
+        json.decodeFromString<TeamDetailEnvelope>(
+            detail.replace("\"jerseyNumber\":12", "\"jerseyNumber\":$raw")
+        ).data.roster.first().jerseyNumber
+
+    @Test fun teamRosterAcceptsLegacyAndTextualJerseysWithoutCollapsingDoubleZero() {
+        for ((raw, expected) in listOf(
+            "23" to "23", "0" to "0", "null" to null,
+            "\"23\"" to "23", "\"0\"" to "0", "\"00\"" to "00",
+        )) {
+            assertEquals(expected, jerseyFromDetail(raw))
+        }
+        assertTrue(jerseyFromDetail("\"0\"") != jerseyFromDetail("\"00\""))
+    }
+
+    @Test fun teamRosterRejectsInvalidJerseyJson() {
+        for (raw in listOf(
+            "\"01\"", "\"000\"", "\"001\"", "\"100\"", "\"-1\"", "\"1.0\"", "\"letters\"",
+            "100", "-1", "1.5", "true", "{}", "[]",
+        )) {
+            assertThrows(SerializationException::class.java) { jerseyFromDetail(raw) }
+        }
     }
 
     @Test fun nullStandingAndEmptyRosterAreValid() {

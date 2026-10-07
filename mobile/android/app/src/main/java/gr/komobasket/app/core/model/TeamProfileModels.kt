@@ -22,7 +22,7 @@ data class TeamRosterPlayer(
     val playerId: String,
     val name: String,
     val photoUrl: String?,
-    val jerseyNumber: Int?,
+    val jerseyNumber: String?,
 )
 
 data class TeamStatistics(

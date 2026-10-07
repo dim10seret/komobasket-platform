@@ -37,7 +37,8 @@ data class RosterPlayerDto(
     val playerId: String,
     val playerName: String,
     val photoUrl: String?,
-    val jerseyNumber: Int?,
+    @Serializable(with = JerseyNumberCompatSerializer::class)
+    val jerseyNumber: String?,
 )
 
 @Serializable

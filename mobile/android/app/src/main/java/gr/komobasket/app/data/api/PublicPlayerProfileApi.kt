@@ -16,6 +16,7 @@ data class PlayerProfileDto(
     val competitionId: String,
     val seasonId: String,
     val currentTeam: PlayerTeamDto?,
+    @Serializable(with = JerseyNumberCompatSerializer::class)
     val jerseyNumber: String?,
     val phaseIds: List<String>,
     val gamesPlayed: Int,
