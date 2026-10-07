@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
+import { normalizeOptionalJerseyNumber } from "@/lib/jersey-number";
 import { createScorerPasswordHash, normalizeScorerUsername } from "@/services/komocontrol-scorer-credentials";
 import { isCoherentKomoControlResultPolicy } from "@/services/komocontrol-result-policy";
 
@@ -300,13 +301,13 @@ async function teamSnapshot(database: Awaited<ReturnType<typeof db>>, game: Game
   const teamId = side === "HOME" ? game.home_team_id : game.away_team_id;
   const players = (await database.prepare(`SELECT r.player_id AS id, COALESCE(NULLIF(TRIM(p.display_name), ''), TRIM(p.first_name || ' ' || p.last_name)) AS display_name, r.shirt_number, p.photo_url
     FROM league_roster_memberships r JOIN league_players p ON p.id=r.player_id
-    WHERE r.competition_id=? AND r.team_id=? AND r.status='active' ORDER BY p.display_name COLLATE NOCASE, p.id`).bind(game.competition_id, teamId).all<{ id: string; display_name: string; shirt_number: string | null; photo_url: string | null }>()).results ?? [];
+    WHERE r.competition_id=? AND r.team_id=? AND r.status='active' ORDER BY p.display_name COLLATE NOCASE, p.id`).bind(game.competition_id, teamId).all<{ id: string; display_name: string; shirt_number: unknown; photo_url: string | null }>()).results ?? [];
   const staff = (await database.prepare(`SELECT m.staff_id AS id, COALESCE(NULLIF(TRIM(s.display_name), ''), TRIM(s.first_name || ' ' || s.last_name)) AS display_name, m.role, m.custom_role_label
     FROM league_staff_memberships m JOIN league_staff s ON s.id=m.staff_id
     WHERE m.competition_id=? AND m.team_id=? AND s.active=1 ORDER BY m.role, s.display_name COLLATE NOCASE, m.staff_id`).bind(game.competition_id, teamId).all<{ id: string; display_name: string; role: string; custom_role_label: string | null }>()).results ?? [];
   const isHome = side === "HOME";
   return { side, id: teamId, name: isHome ? game.home_team_name : game.away_team_name, logoUrl: isHome ? game.home_team_logo_url : game.away_team_logo_url,
-    players: players.map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: player.shirt_number, photoUrl: player.photo_url })),
+    players: players.map((player) => ({ id: player.id, displayName: player.display_name, shirtNumber: normalizeOptionalJerseyNumber(player.shirt_number), photoUrl: player.photo_url })),
     staff: staff.map((member) => ({ id: member.id, displayName: member.display_name, role: member.role, roleLabel: member.custom_role_label })) };
 }
 
