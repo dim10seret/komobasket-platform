@@ -1,0 +1,30 @@
+.gradle/
+.kotlin/
+.idea/
+*.iml
+local.properties
+**/build/
+*.apk
+*.aab
+*.apks
+captures/
+
+# Signing and private key material
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+keystore.properties
+signing.properties
+
+# Local diagnostics and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.hprof
+*.db
+*.sqlite
+*.sqlite3
