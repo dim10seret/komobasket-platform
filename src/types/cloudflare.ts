@@ -44,6 +44,7 @@ export type KomoBasketCloudflareEnv = {
     limit: (input: { key: string }) => Promise<{ success: boolean }>;
   };
   MVP_GUEST_VOTING_ENABLED?: string;
+  MVP_PUBLIC_READ_ENABLED?: string;
   MVP_GOOGLE_SERVICE_ACCOUNT_EMAIL?: string;
   MVP_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
   MVP_ANDROID_CERT_SHA256?: string;
