@@ -77,6 +77,16 @@ const COMPETITION_VISIBLE_SQL = `
 const seasonBindings = [CANONICAL_PUBLIC_SEASON_START];
 const organizationBindings = [PUBLIC_KOMOBASKET_ORGANIZATION_ID, ...reservedSlugs];
 
+// Shared with the final MVP ballot write. Aliases must be s, o, c, and cp.
+export const MOBILE_COMPETITION_VISIBLE_SQL = `
+  ${SEASON_VISIBLE_SQL}
+  AND ${ORGANIZATION_VISIBLE_SQL}
+  AND ${COMPETITION_VISIBLE_SQL}
+`;
+export const MOBILE_COMPETITION_VISIBLE_BINDINGS = [
+  ...seasonBindings, ...organizationBindings,
+];
+
 async function getCatalogueDb(): Promise<D1DatabaseBinding> {
   const db = (await getKomoBasketCloudflareEnv())?.NEWS_DB;
   if (!db) throw new Error("Public catalogue database unavailable");
@@ -177,11 +187,9 @@ export async function readMobileCompetitionWithDb(
       JOIN league_organizations o ON o.id = c.organization_id
       LEFT JOIN league_competition_publication cp ON cp.competition_id = c.id
      WHERE c.id = ?
-       AND ${SEASON_VISIBLE_SQL}
-       AND ${ORGANIZATION_VISIBLE_SQL}
-       AND ${COMPETITION_VISIBLE_SQL}
+       AND ${MOBILE_COMPETITION_VISIBLE_SQL}
      LIMIT 1
-  `).bind(competitionId, ...seasonBindings, ...organizationBindings).first<CompetitionRow>();
+  `).bind(competitionId, ...MOBILE_COMPETITION_VISIBLE_BINDINGS).first<CompetitionRow>();
   return row ? {
     id: row.id,
     organizationId: row.organization_id,

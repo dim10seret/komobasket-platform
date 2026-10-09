@@ -43,6 +43,10 @@ export type KomoBasketCloudflareEnv = {
   USER_LOGIN_RATE_LIMITER?: {
     limit: (input: { key: string }) => Promise<{ success: boolean }>;
   };
+  MVP_GUEST_VOTING_ENABLED?: string;
+  MVP_GOOGLE_SERVICE_ACCOUNT_EMAIL?: string;
+  MVP_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?: string;
+  MVP_ANDROID_CERT_SHA256?: string;
   NEWS_DB?: D1DatabaseBinding;
   NEWS_IMAGES?: R2BucketBinding;
   ADMIN_EMAIL?: string;
