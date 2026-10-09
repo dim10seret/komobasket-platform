@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-// Use the same installed Vitest package as the repository's site-test command.
-import { describe, expect, it } from "../../../komocontrol/node_modules/vitest/dist/index.js";
+import { describe, expect, it } from "vitest";
 import HostedOrganizationHero, { HOSTED_ORGANIZATION_BACKGROUND } from "./HostedOrganizationHero";
 import OrganizationSiteCoverControl from "../admin/platform/OrganizationSiteCoverControl";
 

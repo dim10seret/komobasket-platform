@@ -177,10 +177,10 @@ function seed(sqlite) {
   }
 
   const players = [
-    ["player_komobasket_home", KOMOBASKET, "KomoBasket Player Home", "komobasket-player-home", "team_komobasket_home", "competition_komobasket", 4],
-    ["player_komobasket_away", KOMOBASKET, "KomoBasket Player Away", "komobasket-player-away", "team_komobasket_away", "competition_komobasket", 5],
-    ["player_runbasket_home", RUNBASKET, "RunBasket Player Home", "runbasket-player-home", "team_runbasket_home", "competition_runbasket", 6],
-    ["player_runbasket_away", RUNBASKET, "RunBasket Player Away", "runbasket-player-away", "team_runbasket_away", "competition_runbasket", 7],
+    ["player_komobasket_home", KOMOBASKET, "KomoBasket Player Home", "komobasket-player-home", "team_komobasket_home", "competition_komobasket", "4"],
+    ["player_komobasket_away", KOMOBASKET, "KomoBasket Player Away", "komobasket-player-away", "team_komobasket_away", "competition_komobasket", "5"],
+    ["player_runbasket_home", RUNBASKET, "RunBasket Player Home", "runbasket-player-home", "team_runbasket_home", "competition_runbasket", "6"],
+    ["player_runbasket_away", RUNBASKET, "RunBasket Player Away", "runbasket-player-away", "team_runbasket_away", "competition_runbasket", "7"],
   ];
   for (const [id, organizationId, name, slug, teamId, competitionId, shirt] of players) {
     insert(sqlite, "INSERT INTO league_players (id, organization_id, slug, display_name, normalized_name) VALUES (?, ?, ?, ?, ?)", id, organizationId, slug, name, name.toLowerCase());
