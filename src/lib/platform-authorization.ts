@@ -339,6 +339,15 @@ export async function requirePhaseAccess(
   mode: PlatformPermissionMode,
 ): Promise<PhaseAccessContext> {
   const db = await requireDatabase();
+  return requirePhaseAccessWithDb(db, identity, phaseId, mode);
+}
+
+export async function requirePhaseAccessWithDb(
+  db: D1DatabaseBinding,
+  identity: CanonicalAppUser | null,
+  phaseId: string,
+  mode: PlatformPermissionMode,
+): Promise<PhaseAccessContext> {
   const resource = await db
     .prepare(
       `SELECT p.id, p.competition_id, c.organization_id

@@ -141,14 +141,24 @@ export async function saveMatchdayMvpWithDb(
   if (!current.eligible) throw new MatchdayMvpError("MATCHDAY_INCOMPLETE", "Η αγωνιστική πρέπει να ολοκληρωθεί πριν επιλεγεί MVP.", 409);
   const selected = [...current.candidates, ...current.otherPerformances].find((entry) => entry.gameId === gameId && entry.playerId === playerId);
   if (!selected) throw new MatchdayMvpError("PLAYER_NOT_ELIGIBLE", "Ο παίκτης δεν ανήκει στις επιλέξιμες εμφανίσεις της αγωνιστικής.", 400);
+  const managed = await database.prepare(`SELECT id FROM mvp_contests
+    WHERE phase_id=? AND scope_type='round' AND round_number=? LIMIT 1`)
+    .bind(input.phaseId, current.roundNumber).first<{ id: string }>();
+  if (managed) throw new MatchdayMvpError("MATCHDAY_INCOMPLETE", "Η αγωνιστική διαχειρίζεται από MVP contest.", 409);
   const now = new Date().toISOString();
-  await database.prepare(`INSERT INTO league_matchday_mvp_selections
+  const saved = await database.prepare(`INSERT INTO league_matchday_mvp_selections
       (id, organization_id, competition_id, phase_id, round_number, game_id, player_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM mvp_contests WHERE phase_id=? AND scope_type='round' AND round_number=?)
     ON CONFLICT(competition_id, phase_id, round_number) DO UPDATE SET
       organization_id=excluded.organization_id, game_id=excluded.game_id,
-      player_id=excluded.player_id, updated_at=excluded.updated_at`)
-    .bind(`matchday_mvp_${crypto.randomUUID()}`, input.organizationId, input.competitionId, input.phaseId, current.roundNumber, gameId, playerId, now, now).run();
+      player_id=excluded.player_id, updated_at=excluded.updated_at
+    WHERE NOT EXISTS (SELECT 1 FROM mvp_contests WHERE phase_id=? AND scope_type='round' AND round_number=?)`)
+    .bind(`matchday_mvp_${crypto.randomUUID()}`, input.organizationId, input.competitionId, input.phaseId, current.roundNumber, gameId, playerId, now, now,
+      input.phaseId, current.roundNumber, input.phaseId, current.roundNumber).run();
+  if (Number((saved as { meta?: { changes?: number } })?.meta?.changes) === 0) {
+    throw new MatchdayMvpError("MATCHDAY_INCOMPLETE", "Η αγωνιστική διαχειρίζεται από MVP contest.", 409);
+  }
   return { ...current, selection: { ...selected, selectedAt: now } };
 }
 

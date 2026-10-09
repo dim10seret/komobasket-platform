@@ -8,11 +8,12 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/services/platform-match-report.service", () => ({ readAuthoritativeCompetitionStatisticalGamesWithDb: reports.read }));
 
 import { buildPublicCompetitionStatistics } from "@/lib/public-competition-statistics";
-import { MatchdayMvpError, readMatchdayMvpWithDb, readPublicMatchdayMvpSelectionsWithDb, saveMatchdayMvpWithDb } from "./matchday-mvp.service";
+import { readMatchdayMvpWithDb, readPublicMatchdayMvpSelectionsWithDb, saveMatchdayMvpWithDb } from "./matchday-mvp.service";
 
 type LocalDatabase = { exec(sql: string): void; prepare(sql: string): { get(...args: unknown[]): unknown; all(...args: unknown[]): unknown[]; run(...args: unknown[]): { changes: number | bigint } }; close(): void };
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as { DatabaseSync: new(path: string) => LocalDatabase };
 const migration = readFileSync(new URL("../../cloudflare/migrations/0035_matchday_mvp_selections.sql", import.meta.url), "utf8");
+const contestMigration = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
 
 const statistics = (points: number, rebounds: number, assists: number, efficiency: number) => ({ points, twoPointMade: 0, twoPointAttempts: 0, threePointMade: 0, threePointAttempts: 0, freeThrowMade: 0, freeThrowAttempts: 0, offensiveRebounds: 0, defensiveRebounds: rebounds, rebounds, assists, steals: 0, blocks: 0, turnovers: 0, fouls: 0, efficiency });
 const player = (id: string, name: string, efficiency: number, points: number, rebounds = 0, assists = 0) => ({ canonicalPlayerId: id, displayName: name, shirtNumber: id.slice(-1), statistics: statistics(points, rebounds, assists, efficiency) });
@@ -28,7 +29,7 @@ function statement(sql: string, values: unknown[] = []): D1PreparedStatement {
     bind: (...args) => statement(sql, args),
     all: async <T,>() => ({ results: local.prepare(sql).all(...values) as T[] }),
     first: async <T,>() => (local.prepare(sql).get(...values) ?? null) as T | null,
-    run: async () => { local.prepare(sql).run(...values); return {}; },
+    run: async () => ({ meta: { changes: Number(local.prepare(sql).run(...values).changes) } }),
   };
 }
 
@@ -36,14 +37,17 @@ beforeEach(() => {
   local = new DatabaseSync(":memory:");
   local.exec(`PRAGMA foreign_keys=ON;
     CREATE TABLE league_organizations (id TEXT PRIMARY KEY);
+    CREATE TABLE league_app_users (id TEXT PRIMARY KEY);
     CREATE TABLE league_competitions (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL REFERENCES league_organizations(id));
     CREATE TABLE league_phases (id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id), format TEXT NOT NULL, name TEXT);
     CREATE TABLE league_games (id TEXT PRIMARY KEY, competition_id TEXT NOT NULL REFERENCES league_competitions(id), phase_id TEXT NOT NULL REFERENCES league_phases(id), round_number INTEGER, round_label TEXT, status TEXT, game_order INTEGER);
+    CREATE TABLE league_teams (id TEXT PRIMARY KEY);
     CREATE TABLE league_players (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL REFERENCES league_organizations(id));
     ${migration}
+    ${contestMigration}
     INSERT INTO league_organizations VALUES ('org-a'),('org-b');
     INSERT INTO league_competitions VALUES ('competition-a','org-a'),('competition-b','org-b');
-    INSERT INTO league_phases VALUES ('phase-a','competition-a','standings','League'),('phase-b','competition-b','standings','Foreign');
+    INSERT INTO league_phases (id,competition_id,format,name) VALUES ('phase-a','competition-a','standings','League'),('phase-b','competition-b','standings','Foreign');
     INSERT INTO league_games VALUES ('game-a','competition-a','phase-a',1,'1η Αγωνιστική','completed',1),('game-b','competition-a','phase-a',1,'1η Αγωνιστική','completed',2),('game-foreign','competition-b','phase-b',1,'1η Αγωνιστική','completed',1);
     INSERT INTO league_players VALUES ('player-1','org-a'),('player-2','org-a'),('player-3','org-a'),('player-4','org-a'),('player-5','org-a'),('player-6','org-a'),('player-foreign','org-b');`);
   database = { prepare: (sql) => statement(sql), batch: async () => [] };
