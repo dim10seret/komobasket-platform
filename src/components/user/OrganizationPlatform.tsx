@@ -10,11 +10,12 @@ import { Players } from "@/components/admin/platform/sections/PlayersSection";
 import { Movements } from "@/components/admin/platform/sections/MovementsSection";
 import OrganizationPublicPageManagement from "@/components/admin/platform/OrganizationPublicPageManagement";
 import { PlatformKomoControlManagement } from "@/components/admin/platform/PlatformKomoControlManagement";
+import PlatformMvpManagement from "@/components/admin/platform/PlatformMvpManagement";
 
 const tabs=[
   ["overview","Επισκόπηση"],["seasons","Σεζόν"],["competitions","Προγραμματισμός Διοργανώσεων"],
   ["teams","Ομάδες & Συμμετοχές"],["players","Παίκτες & Ρόστερ"],["movements","Μεταγραφές & Αποχωρήσεις"],
-  ["public-page","Δημόσια Σελίδα"],["komocontrol","KomoControl"],
+  ["public-page","Δημόσια Σελίδα"],["mvp","MVP"],["komocontrol","KomoControl"],
 ] as const;
 type Tab=typeof tabs[number][0];
 const button="rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-black text-zinc-800 hover:border-orange-500 disabled:opacity-50";
@@ -37,7 +38,7 @@ export default function OrganizationPlatform({identity,membership,csrf,onLogout,
   const readSequence=useRef(0);
   const api=useMemo(()=>createUserPlatformApi(membership.organizationId,membership.role,csrf),[membership.organizationId,membership.role,csrf]);
   const load=useCallback(async()=>{
-    if(tab==="public-page" || tab==="komocontrol"){setLoading(false);return;}
+    if(tab==="public-page" || tab==="komocontrol" || tab==="mvp"){setLoading(false);return;}
     const sequence=++readSequence.current;
     setLoading(true);setError("");
     try {
@@ -108,6 +109,7 @@ export default function OrganizationPlatform({identity,membership,csrf,onLogout,
           {data && tab==="players" && <Players data={data} onRefreshSnapshot={load}/>}
           {data && tab==="movements" && <Movements data={data} add={(input)=>action("addAthleteMovement",input)} depart={(input)=>action("departure",input)} transfer={(input)=>action("transferAthlete",input)} busy={busy}/>}
           {tab==="public-page" && <OrganizationPublicPageManagement organizationId={membership.organizationId} role={membership.role}/>}
+          {tab==="mvp" && <PlatformMvpManagement organizationId={membership.organizationId}/>}
           {tab==="komocontrol" && <PlatformKomoControlManagement organizationId={membership.organizationId} isSuperAdmin={false}/>}
         </section>
       </div>

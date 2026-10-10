@@ -17,6 +17,7 @@ import { readPlatformMatchReport } from "@/services/platform-match-report.servic
 import { readPlatformGameSheet, renderPlatformGameSheetHtml } from "@/services/platform-game-sheet.service";
 import { generateStatisticsPdf, statisticsPdfFilename } from "@/services/platform-statistics-pdf.service";
 import { matchdayMvpErrorResponse, readMatchdayMvp, saveMatchdayMvp } from "@/services/matchday-mvp.service";
+import { platformMvpErrorResponse, platformMvpOperation } from "@/services/platform-mvp-operation";
 
 const sections = new Set(["overview", "seasons", "competitions", "teams", "players", "movements"]);
 const resources = new Set(["competitions", "teams", "participations", "competition-venues", "players", "rosters", "phases", "phase-schedules", "games"]);
@@ -162,6 +163,12 @@ async function dispatch(request: Request, path: string[]) {
       ...scopedInput, gameId:String(source.gameId ?? "").trim(), playerId:String(source.playerId ?? "").trim(),
     }));
   }
+  if(area==="mvp" && path.length===1 && ["GET","POST","PATCH"].includes(request.method)) {
+    const db=(await getKomoBasketCloudflareEnv())?.NEWS_DB;
+    if(!db)throw new Error("DATABASE_UNAVAILABLE");
+    const source=mutation?input:Object.fromEntries(url.searchParams.entries());
+    return platformMvpOperation(db,actor,organizationId,request.method as "GET"|"POST"|"PATCH",source);
+  }
   if(area==="match-reports" && !mutation && resource)return report(resource,format,actor,organizationId);
   return deny();
 }
@@ -171,7 +178,7 @@ export async function handleOrganizationPlatform(request: Request, path: string[
   catch(error) {
     if(error instanceof OrganizationUserAuthError)response=Response.json({error:"Απαιτείται σύνδεση."},{status:401});
     else if(error instanceof UserLoginError)response=Response.json({error:error.message},{status:error.status});
-    else response=matchdayMvpErrorResponse(error) ?? platformAuthorizationErrorResponse(error) ?? komo.komoControlAdminErrorResponse(error) ?? Response.json({error:error instanceof Error && error.message==="REQUEST_TOO_LARGE" ? "Το αίτημα είναι πολύ μεγάλο." : "Η ενέργεια δεν ολοκληρώθηκε."},{status:400});
+    else response=platformMvpErrorResponse(error) ?? matchdayMvpErrorResponse(error) ?? platformAuthorizationErrorResponse(error) ?? komo.komoControlAdminErrorResponse(error) ?? Response.json({error:error instanceof Error && error.message==="REQUEST_TOO_LARGE" ? "Το αίτημα είναι πολύ μεγάλο." : "Η ενέργεια δεν ολοκληρώθηκε."},{status:400});
   }
   response.headers.set("Cache-Control","private, no-store");
   response.headers.set("Vary","Cookie");

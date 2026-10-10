@@ -169,7 +169,15 @@ export async function previewMvpCandidatesWithDb(db: D1DatabaseBinding, actor: C
 export async function setPhaseMvpEnabledWithDb(db: D1DatabaseBinding, actor: CanonicalAppUser | null, phaseId: string, enabled: boolean) {
   if (typeof enabled !== "boolean") fail("INVALID_INPUT");
   await requirePhaseAccessWithDb(db, actor, phaseId, "manage");
-  await db.prepare("UPDATE league_phases SET mvp_enabled=? WHERE id=?").bind(enabled ? 1 : 0, phaseId).run();
+  if (!enabled) {
+    const open = await db.prepare("SELECT id FROM mvp_contests WHERE phase_id=? AND status='open' LIMIT 1")
+      .bind(phaseId).first<{ id: string }>();
+    if (open) fail("CONTEST_CONFLICT", 409);
+  }
+  const result = await db.prepare(`UPDATE league_phases SET mvp_enabled=? WHERE id=?
+    AND (?=1 OR NOT EXISTS (SELECT 1 FROM mvp_contests WHERE phase_id=? AND status='open'))`)
+    .bind(enabled ? 1 : 0, phaseId, enabled ? 1 : 0, phaseId).run() as { meta?: { changes?: number } };
+  if (result.meta?.changes !== 1) fail("CONTEST_CONFLICT", 409);
   return { phaseId, enabled };
 }
 
@@ -203,7 +211,9 @@ export async function startMvpContestWithDb(db: D1DatabaseBinding, actor: Canoni
     : await db.prepare("SELECT id FROM mvp_contests WHERE phase_id=? AND scope_type='series' AND matchup_id=?")
       .bind(input.phaseId, input.matchupId).first<{ id: string }>();
   if (scopeConflict) fail("CONTEST_CONFLICT", 409);
-  const opensAt = Math.floor(Date.now() / 1000);
+  const clock = await db.prepare("SELECT unixepoch('now') AS now").first<{ now: number }>();
+  if (!Number.isSafeInteger(clock?.now)) fail("INVALID_INPUT");
+  const opensAt = clock!.now;
   const closesAt = mvpClosesAt(input, opensAt);
   const contestId = `mvp_contest_${crypto.randomUUID()}`;
   const suggestedRanks = new Map(eligible.slice(0, 5).map((candidate, index) => [candidate.playerId, index + 1]));
@@ -242,5 +252,5 @@ export async function startMvpContestWithDb(db: D1DatabaseBinding, actor: Canoni
   return { id: contestId, phaseId: input.phaseId, scopeType: input.scopeType,
     roundNumber: input.scopeType === "round" ? input.roundNumber : null,
     matchupId: input.scopeType === "series" ? input.matchupId : null,
-    status: "open" as const, resultsVisibility: visibility, opensAt, closesAt, serverTime: Math.floor(Date.now() / 1000) };
+    status: "open" as const, resultsVisibility: visibility, opensAt, closesAt, serverTime: opensAt };
 }

@@ -175,7 +175,7 @@ async function requireDatabase() {
   return db;
 }
 
-async function requireOrganizationAccessWithDb(
+export async function requireOrganizationAccessWithDb(
   db: D1DatabaseBinding,
   identity: CanonicalAppUser | null,
   organizationId: string,

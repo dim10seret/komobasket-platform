@@ -16,6 +16,7 @@ vi.mock("@/services/public-mobile-competition.service", () => ({
 }));
 
 import { MvpFinalizationError, reconcileMvpContestIfDue, resolveMvpContestWithDb } from "./mvp-finalization.service";
+import { resolvePlatformMvpWithDb } from "./platform-mvp-management.service";
 import { PublicMvpContestError, readPublicMvpContestsWithDb } from "./public-mvp-contests.service";
 
 const foundation = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
@@ -192,7 +193,8 @@ describe("MVP2C lazy finalization", () => {
     await expect(resolveMvpContestWithDb(db, outsider, { contestId: "tie", candidateId: "tie-c1", reason: "review" })).rejects.toThrow();
     await expect(resolveMvpContestWithDb(db, actor, { contestId: "tie", candidateId: "tie-c3", reason: "review" }))
       .rejects.toThrow(MvpFinalizationError);
-    const resolved = await resolveMvpContestWithDb(db, actor, { contestId: "tie", candidateId: "tie-c2", reason: "operator review" });
+    await expect(resolvePlatformMvpWithDb(db, actor, "org-b", { contestId: "tie", candidateId: "tie-c2", reason: "review" })).rejects.toThrow();
+    const resolved = await resolvePlatformMvpWithDb(db, actor, "org-a", { contestId: "tie", candidateId: "tie-c2", reason: "operator review" });
     expect(resolved.winner_player_id).toBe("p2");
     expect(sqlite.prepare("SELECT actor_email,action,details_json FROM league_audit_log").get())
       .toMatchObject({ actor_email: actor.email, action: "mvp_operator_resolved" });
@@ -207,7 +209,7 @@ describe("MVP2C lazy finalization", () => {
       .rejects.toThrow(MvpFinalizationError);
     await expect(resolveMvpContestWithDb(db, actor, { contestId: "zero", candidateId: "zero-c1", reason: " " }))
       .rejects.toThrow(MvpFinalizationError);
-    expect((await resolveMvpContestWithDb(db, actor, { contestId: "zero", candidateId: "zero-c3", reason: "no votes" })).status)
+    expect((await resolvePlatformMvpWithDb(db, actor, "org-a", { contestId: "zero", candidateId: "zero-c3", reason: "no votes" })).status)
       .toBe("finalized");
   });
 
@@ -312,6 +314,16 @@ describe("MVP2C lazy finalization", () => {
       .rejects.toThrow(PublicMvpContestError);
     published = false;
     await expect(readPublicMvpContestsWithDb(db, { organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root" }))
+      .rejects.toThrow(PublicMvpContestError);
+  });
+
+  it("derives the public organization from competition detail without trusting a path ID", async () => {
+    makeContest("derived", "round", now + 3600);
+    const read = await readPublicMvpContestsWithDb(db, { competitionId: "competition-a", rootPhaseId: "league-root" });
+    expect(read.organizationId).toBe("org-a");
+    expect(read.active[0].id).toBe("derived");
+    published = false;
+    await expect(readPublicMvpContestsWithDb(db, { competitionId: "competition-a", rootPhaseId: "league-root" }))
       .rejects.toThrow(PublicMvpContestError);
   });
 

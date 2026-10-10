@@ -34,6 +34,7 @@ import { PlatformOrganizationManagement } from "./platform/PlatformOrganizationM
 import { PlatformKomoControlManagement } from "./platform/PlatformKomoControlManagement";
 import SupportersManager from "@/components/admin/SupportersManager";
 import OrganizationPublicPageManagement from "./platform/OrganizationPublicPageManagement";
+import PlatformMvpManagement from "./platform/PlatformMvpManagement";
 
 type AccessibleOrganization = {
   organizationId: string;
@@ -58,6 +59,7 @@ const tabs = [
   ["players", "Παίκτες & Ρόστερ", UsersRound],
   ["movements", "Μεταγραφές & Αποχωρήσεις", UserRoundCog],
   ["public-page", "Δημόσια Σελίδα", Globe2],
+  ["mvp", "MVP", Trophy],
   ["komocontrol", "KomoControl", Trophy],
 ] as const;
 
@@ -617,6 +619,7 @@ export default function AdminDashboard({ view }: { view: AdminView }) {
             {tab === "komocontrol" && <PlatformKomoControlManagement organizationId={selectedOrganizationId} isSuperAdmin={canManagePlatform} />}
             {tab === "movements" && <Movements data={data} add={addMovement} depart={depart} transfer={transfer} busy={busy} />}
             {tab === "public-page" && <OrganizationPublicPageManagement organizationId={selectedOrganizationId} role={selectedOrganization.role} />}
+            {tab === "mvp" && <PlatformMvpManagement organizationId={selectedOrganizationId} readOnly={selectedOrganization.role === "viewer"} />}
           </>
         )}
       </main>

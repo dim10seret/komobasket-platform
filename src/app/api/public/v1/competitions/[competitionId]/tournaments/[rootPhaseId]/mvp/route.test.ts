@@ -11,8 +11,8 @@ vi.mock("@/services/public-mvp-contests.service", () => ({
 
 import { GET } from "./route";
 
-const request = new Request("https://example.test/api/public/v1/organizations/org-a/competitions/competition-a/tournaments/league-root/mvp");
-const context = { params: Promise.resolve({ organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root" }) };
+const request = new Request("https://example.test/api/public/v1/competitions/competition-a/tournaments/league-root/mvp");
+const context = { params: Promise.resolve({ competitionId: "competition-a", rootPhaseId: "league-root" }) };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -35,8 +35,17 @@ describe("public MVP read route", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(mocks.read).toHaveBeenCalledWith(db, {
-      organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root",
+      competitionId: "competition-a", rootPhaseId: "league-root",
     });
+  });
+
+  it("rejects malformed competition or tournament IDs before the public read", async () => {
+    const db = {};
+    mocks.env.mockResolvedValue({ MVP_PUBLIC_READ_ENABLED: "enabled", NEWS_DB: db });
+    const response = await GET(request, { params: Promise.resolve({ competitionId: "bad/id", rootPhaseId: "league-root" }) });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(mocks.read).not.toHaveBeenCalled();
   });
 
   it("fails closed when D1 is unavailable", async () => {

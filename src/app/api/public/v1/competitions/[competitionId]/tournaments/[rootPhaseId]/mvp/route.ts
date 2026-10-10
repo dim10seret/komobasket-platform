@@ -4,7 +4,7 @@ import { PublicMvpContestError, readPublicMvpContestsWithDb } from "@/services/p
 const NO_STORE = { "Cache-Control": "no-store" };
 
 export async function GET(_request: Request, context: { params: Promise<{
-  organizationId: string; competitionId: string; rootPhaseId: string;
+  competitionId: string; rootPhaseId: string;
 }> }): Promise<Response> {
   const env = await getKomoBasketCloudflareEnv();
   if (env?.MVP_PUBLIC_READ_ENABLED !== "enabled") {
@@ -14,7 +14,7 @@ export async function GET(_request: Request, context: { params: Promise<{
     return Response.json({ error: { code: "DATABASE_UNAVAILABLE" } }, { status: 503, headers: NO_STORE });
   }
   const params = await context.params;
-  if ([params.organizationId, params.competitionId, params.rootPhaseId]
+  if ([params.competitionId, params.rootPhaseId]
     .some((id) => !/^[A-Za-z0-9_-]{1,160}$/.test(id))) {
     return Response.json({ error: { code: "INVALID_CONTEXT" } }, { status: 400, headers: NO_STORE });
   }

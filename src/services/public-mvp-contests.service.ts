@@ -34,12 +34,13 @@ export class PublicMvpContestError extends Error {
 
 /** Public, tournament-scoped MVP feed. This is the only new read that triggers reconciliation. */
 export async function readPublicMvpContestsWithDb(db: D1DatabaseBinding, input: {
-  organizationId: string; competitionId: string; rootPhaseId: string;
+  organizationId?: string; competitionId: string; rootPhaseId: string;
 }) {
   let competition;
   try { competition = await readCompetitionDetailWithDb(db, input.competitionId); }
   catch { throw new PublicMvpContestError("CONTEXT_NOT_FOUND"); }
-  if (competition.organizationId !== input.organizationId) throw new PublicMvpContestError("CONTEXT_NOT_FOUND");
+  if (input.organizationId && competition.organizationId !== input.organizationId) throw new PublicMvpContestError("CONTEXT_NOT_FOUND");
+  const organizationId = competition.organizationId;
   const tournament = competition.tournamentGroups.find((group) => group.id === input.rootPhaseId);
   if (!tournament?.phaseIds.length) throw new PublicMvpContestError("CONTEXT_NOT_FOUND");
   const placeholders = tournament.phaseIds.map(() => "?").join(",");
@@ -94,7 +95,7 @@ export async function readPublicMvpContestsWithDb(db: D1DatabaseBinding, input: 
     GROUP BY contest.id, candidate.id
     ORDER BY contest.opens_at DESC, contest.id DESC, candidate.created_at, candidate.id`)
     .bind(input.rootPhaseId, input.competitionId, input.rootPhaseId, input.competitionId,
-      input.organizationId, ...MOBILE_COMPETITION_VISIBLE_BINDINGS, ...selectedIds)
+      organizationId, ...MOBILE_COMPETITION_VISIBLE_BINDINGS, ...selectedIds)
     .all<ProjectionRow>()).results ?? [];
   if (!rows.length) throw new PublicMvpContestError("CONTEXT_NOT_FOUND");
   const contestsById = new Map<string, ContestRow>();
@@ -148,7 +149,7 @@ export async function readPublicMvpContestsWithDb(db: D1DatabaseBinding, input: 
       } : null,
     };
   });
-  return { organizationId: input.organizationId, competitionId: input.competitionId,
+  return { organizationId, competitionId: input.competitionId,
     rootPhaseId: input.rootPhaseId, serverTime: rows[0].server_time,
     active: feed.filter((contest) => contest.status === "open"),
     history: feed.filter((contest) => contest.status !== "open") };
