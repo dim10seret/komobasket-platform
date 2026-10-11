@@ -126,6 +126,19 @@ export function requireMvpVoterMutationOrigin(request: Request): void {
   }
 }
 
+/** Server-only voter identity. The cookie value and its hash must never enter a public DTO. */
+export async function resolveMvpGoogleVoterSession(db: D1DatabaseBinding,
+  env: KomoBasketCloudflareEnv, request: Request): Promise<{ voterId: string; tokenHash: string } | null> {
+  configured(env, request);
+  const token = cookie(request, names(request).session);
+  if (!token || !TOKEN.test(token)) return null;
+  const tokenHash = await sha256Hex(token);
+  const row = await db.prepare(`SELECT voter_id FROM mvp_google_sessions
+    WHERE kind='voter' AND token_hash=? AND revoked_at IS NULL
+      AND expires_at>unixepoch('now')`).bind(tokenHash).first<SessionRow>();
+  return row ? { voterId: row.voter_id, tokenHash } : null;
+}
+
 export class MvpGoogleAuthService {
   constructor(private readonly db: D1DatabaseBinding, private readonly env: KomoBasketCloudflareEnv,
     private readonly fetchImpl: typeof fetch = fetch, private readonly jwks: JWTVerifyGetKey = GOOGLE_JWKS) {}

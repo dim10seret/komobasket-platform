@@ -46,6 +46,7 @@ export type KomoBasketCloudflareEnv = {
   MVP_GUEST_VOTING_ENABLED?: string;
   MVP_PUBLIC_READ_ENABLED?: string;
   MVP_GOOGLE_AUTH_ENABLED?: string;
+  MVP_GOOGLE_VOTING_ENABLED?: string;
   MVP_GOOGLE_CLIENT_ID?: string;
   MVP_GOOGLE_CLIENT_SECRET?: string;
   MVP_GOOGLE_REDIRECT_URI?: string;
