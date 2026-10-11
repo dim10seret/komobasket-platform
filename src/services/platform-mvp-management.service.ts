@@ -4,13 +4,17 @@ import type { CanonicalAppUser } from "@/lib/app-user-identity";
 import { requireOrganizationAccessWithDb, requirePhaseAccessWithDb } from "@/lib/platform-authorization";
 import { mvpClosesAt, previewMvpCandidatesWithDb, setPhaseMvpEnabledWithDb, startMvpContestWithDb, type StartMvpContestInput } from "@/services/mvp-contest.service";
 import { reconcileMvpContestIfDue, resolveMvpContestWithDb } from "@/services/mvp-finalization.service";
+import { mvpPhotoUrl, mvpPresentationRevision } from "@/services/mvp-publication.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
 type Phase = { id: string; competition_id: string; name: string; format: string; previous_phase_id: string | null; tournament_name: string | null; mvp_enabled: number };
 type Contest = { id: string; phase_id: string; scope_type: "round" | "series"; round_number: number | null; matchup_id: string | null;
   status: string; selection_method: string; results_visibility: "live" | "after_close"; opens_at: number; closes_at: number;
-  finalized_at: number | null; winner_player_id: string | null; competition_name: string; phase_name: string };
-type CandidateRow = { id: string; contest_id: string; player_id: string; player_name: string; team_name: string; votes: number };
+  finalized_at: number | null; winner_player_id: string | null; competition_name: string; phase_name: string;
+  photo_asset_key: string | null; photo_caption: string | null; body_text: string | null;
+  sponsor_name: string | null; gift_description: string | null; updated_at: number };
+type CandidateRow = { id: string; contest_id: string; player_id: string; player_name: string; team_name: string;
+  points: number; rebounds: number; assists: number; efficiency: number; votes: number };
 type OccupiedScope = { phase_id: string; scope_type: "round" | "series"; round_number: number | null; matchup_id: string | null };
 
 export class PlatformMvpError extends Error {
@@ -78,6 +82,7 @@ export async function readPlatformMvpWithDb(db: D1DatabaseBinding, actor: Canoni
     WHERE c.organization_id=?`).bind(organizationId).all<OccupiedScope>()).results ?? [];
   const contests = (await db.prepare(`SELECT m.id,m.phase_id,m.scope_type,m.round_number,m.matchup_id,m.status,m.selection_method,
       m.results_visibility,m.opens_at,m.closes_at,m.finalized_at,m.winner_player_id,
+      m.photo_asset_key,m.photo_caption,m.body_text,m.sponsor_name,m.gift_description,m.updated_at,
       c.name AS competition_name,p.name AS phase_name
     FROM mvp_contests m JOIN league_phases p ON p.id=m.phase_id JOIN league_competitions c ON c.id=p.competition_id
     WHERE c.organization_id=? ORDER BY m.created_at DESC,m.id DESC LIMIT 100`).bind(organizationId).all<Contest>()).results ?? [];
@@ -86,22 +91,25 @@ export async function readPlatformMvpWithDb(db: D1DatabaseBinding, actor: Canoni
   for (const contest of contests) if (contest.status === "open" && contest.closes_at <= Number(clock?.now)) {
     const current = await reconcileMvpContestIfDue(db, contest.id);
     if (current.status !== "open") {
-      const refreshed = await db.prepare("SELECT status,finalized_at,winner_player_id FROM mvp_contests WHERE id=?")
-        .bind(contest.id).first<Pick<Contest, "status" | "finalized_at" | "winner_player_id">>();
+      const refreshed = await db.prepare("SELECT status,finalized_at,winner_player_id,updated_at FROM mvp_contests WHERE id=?")
+        .bind(contest.id).first<Pick<Contest, "status" | "finalized_at" | "winner_player_id" | "updated_at">>();
       if (refreshed) Object.assign(contest, refreshed);
     }
   }
-  const candidates = (await db.prepare(`SELECT a.id,a.contest_id,a.player_id,a.player_name,a.team_name,COUNT(v.id) AS votes
+  const candidates = (await db.prepare(`SELECT a.id,a.contest_id,a.player_id,a.player_name,a.team_name,
+    a.points,a.rebounds,a.assists,a.efficiency,COUNT(v.id) AS votes
     FROM mvp_candidates a JOIN mvp_contests m ON m.id=a.contest_id
     JOIN league_phases p ON p.id=m.phase_id JOIN league_competitions c ON c.id=p.competition_id
     LEFT JOIN mvp_votes v ON v.contest_id=a.contest_id AND v.candidate_id=a.id
     WHERE c.organization_id=? GROUP BY a.id ORDER BY a.created_at,a.id`).bind(organizationId).all<CandidateRow>()).results ?? [];
   const byContest = new Map<string, CandidateRow[]>();
   for (const candidate of candidates) byContest.set(candidate.contest_id, [...(byContest.get(candidate.contest_id) ?? []), candidate]);
-  return { competitions, phases: phaseViews, scopes, occupiedScopes, contests: contests.map((contest) => ({ ...contest,
+  return { competitions, phases: phaseViews, scopes, occupiedScopes, contests: await Promise.all(contests.map(async (contest) => ({ ...contest,
+    presentationRevision: await mvpPresentationRevision(contest),
+    photoUrl: mvpPhotoUrl(contest.id, contest.photo_asset_key),
     candidates: (byContest.get(contest.id) ?? []).map((candidate) => ({ ...candidate,
       votes: access.role === "viewer" ? null : Number(candidate.votes) })),
-    totalVotes: access.role === "viewer" ? null : (byContest.get(contest.id) ?? []).reduce((sum, candidate) => sum + Number(candidate.votes), 0) })) };
+    totalVotes: access.role === "viewer" ? null : (byContest.get(contest.id) ?? []).reduce((sum, candidate) => sum + Number(candidate.votes), 0) }))) };
 }
 
 export async function previewPlatformMvpWithDb(db: D1DatabaseBinding, actor: CanonicalAppUser | null, organizationId: string,

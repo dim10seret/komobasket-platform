@@ -298,6 +298,24 @@ describe("MVP2C lazy finalization", () => {
     expect(officials()).toHaveLength(1);
   });
 
+  it("shares optional presentation fields with app and website readers without exposing the R2 key", async () => {
+    makeContest("presentation", "round", now - 1);
+    vote("presentation", 1, 1);
+    await reconcileMvpContestIfDue(db, "presentation");
+    const key = "mvp/org-a/presentation/00000000-0000-4000-8000-000000000001.png";
+    sqlite.prepare(`UPDATE mvp_contests SET photo_asset_key=?,photo_caption='Synthetic MVP',
+      body_text='A plain text description',sponsor_name='Synthetic sponsor',gift_description='Synthetic gift'
+      WHERE id='presentation'`).run(key);
+    const read = await readPublicMvpContestsWithDb(db, {
+      competitionId: "competition-a", rootPhaseId: "league-root",
+    });
+    expect(read.history[0].official).toMatchObject({ winnerPlayerId: "p1",
+      photoUrl: "/api/public/v1/mvp-media/presentation/00000000-0000-4000-8000-000000000001.png",
+      photoAssetKey: null, photoCaption: "Synthetic MVP", bodyText: "A plain text description",
+      sponsorName: "Synthetic sponsor", giftDescription: "Synthetic gift" });
+    expect(read.history[0].official?.winner).toMatchObject({ playerId: "p1", performanceScope: "supporting_game" });
+  });
+
   it("hides after-close counts until finalized and scopes organization and tournament", async () => {
     makeContest("hidden", "round", now + 3600);
     vote("hidden", 1, 1);

@@ -1,6 +1,6 @@
 import { requireAdmin } from "@/lib/admin-auth";
 import { getKomoBasketCloudflareEnv } from "@/lib/cloudflare";
-import { platformMvpErrorResponse, platformMvpOperation } from "@/services/platform-mvp-operation";
+import { platformMvpErrorResponse, platformMvpOperation, platformMvpPresentationOperation } from "@/services/platform-mvp-operation";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,22 @@ async function handle(request: Request, method: "GET" | "POST" | "PATCH") {
     if (request.headers.get("sec-fetch-site") === "cross-site" ||
       (method !== "GET" && request.headers.get("origin") !== origin))
       return Response.json({ error: "FORBIDDEN" }, { status: 403 });
+    if (method === "POST" && (request.headers.get("content-type") ?? "").startsWith("multipart/form-data;")) {
+      if (Number(request.headers.get("content-length")) > 6 * 1024 * 1024)
+        return Response.json({ error: "REQUEST_TOO_LARGE" }, { status: 413 });
+      const bytes = await request.arrayBuffer();
+      if (bytes.byteLength > 6 * 1024 * 1024)
+        return Response.json({ error: "REQUEST_TOO_LARGE" }, { status: 413 });
+      const form = await new Request(request.url, { method: "POST", headers: request.headers, body: bytes }).formData();
+      const organizationId = String(form.get("organizationId") ?? "").trim();
+      if (!organizationId) return Response.json({ error: "INVALID_INPUT" }, { status: 400 });
+      const env = await getKomoBasketCloudflareEnv();
+      if (!env?.NEWS_DB) return Response.json({ error: "DATABASE_UNAVAILABLE" }, { status: 503 });
+      const response = await platformMvpPresentationOperation(env.NEWS_DB, env.NEWS_IMAGES,
+        authorization.user, organizationId, form);
+      response.headers.set("Cache-Control", "private, no-store");
+      return response;
+    }
     const body = method === "GET" ? "" : await request.text();
     if (body.length > 131072) return Response.json({ error: "REQUEST_TOO_LARGE" }, { status: 413 });
     const input: Record<string, unknown> = method === "GET"

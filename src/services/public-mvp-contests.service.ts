@@ -3,6 +3,7 @@ import "server-only";
 import { MOBILE_COMPETITION_VISIBLE_BINDINGS, MOBILE_COMPETITION_VISIBLE_SQL } from "@/services/public-mobile-catalogue.service";
 import { readCompetitionDetailWithDb } from "@/services/public-mobile-competition.service";
 import { reconcileMvpContestIfDue } from "@/services/mvp-finalization.service";
+import { mvpPhotoUrl } from "@/services/mvp-publication.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
 type ContestRow = {
@@ -143,7 +144,8 @@ export async function readPublicMvpContestsWithDb(db: D1DatabaseBinding, input: 
                 assists: winner.assists, efficiency: winner.efficiency },
               performanceScope: "supporting_game" as const };
           })() : null,
-        bodyText: contest.body_text, photoAssetKey: contest.photo_asset_key,
+        bodyText: contest.body_text, photoAssetKey: null,
+        photoUrl: mvpPhotoUrl(contest.id, contest.photo_asset_key),
         photoCaption: contest.photo_caption, sponsorName: contest.sponsor_name,
         giftDescription: contest.gift_description,
       } : null,

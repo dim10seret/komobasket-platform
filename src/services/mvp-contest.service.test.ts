@@ -15,6 +15,7 @@ import { mvpClosesAt, MvpContestError, previewMvpCandidatesWithDb, setPhaseMvpEn
 import { addPlatformMvpCandidateWithDb, readPlatformMvpWithDb, setPlatformPhaseMvpWithDb,
   startPlatformMvpWithDb, updatePlatformMvpContestWithDb } from "./platform-mvp-management.service";
 import { saveMatchdayMvpWithDb } from "./matchday-mvp.service";
+import { mvpPresentationRevision, updateMvpPresentationWithDb } from "./mvp-publication.service";
 
 const oldMigration = readFileSync(new URL("../../cloudflare/migrations/0035_matchday_mvp_selections.sql", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
@@ -249,6 +250,27 @@ describe("MVP1 contest foundation", () => {
     expect(view.occupiedScopes).toEqual([]);
     expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE name='mvp_votes'").get()).toEqual({ name: "mvp_votes" });
     await expect(readPlatformMvpWithDb(db, actor, "org-b")).rejects.toThrow();
+  });
+
+  it("lets only the canonical organization manager enrich a finalized contest", async () => {
+    const started = await startMvpContestWithDb(db, actor, { ...round, candidatePlayerIds: ["p1"], durationHours: 48 });
+    sqlite.prepare(`UPDATE mvp_contests SET status='finalized',winner_player_id='p1',finalized_at=unixepoch('now') WHERE id=?`)
+      .run(started.id);
+    const input = { photoCaption: "Synthetic caption", bodyText: "Synthetic description",
+      sponsorName: "", giftDescription: "",
+      presentationRevision: await mvpPresentationRevision(sqlite.prepare("SELECT * FROM mvp_contests WHERE id=?")
+        .get(started.id) as Parameters<typeof mvpPresentationRevision>[0]) };
+    const platform = await readPlatformMvpWithDb(db, actor, "org-a");
+    expect(platform.contests.find((contest) => contest.id === started.id)?.presentationRevision)
+      .toBe(input.presentationRevision);
+    await expect(updateMvpPresentationWithDb(db, undefined, { ...actor, userId: "viewer-a" },
+      "org-a", started.id, input)).rejects.toThrow();
+    await expect(updateMvpPresentationWithDb(db, undefined, actor,
+      "org-b", started.id, input)).rejects.toMatchObject({ code: "CONTEST_NOT_FOUND" });
+    await updateMvpPresentationWithDb(db, undefined, actor, "org-a", started.id, input);
+    expect(sqlite.prepare("SELECT winner_player_id,photo_caption,body_text FROM mvp_contests WHERE id=?").get(started.id))
+      .toEqual({ winner_player_id: "p1", photo_caption: "Synthetic caption", body_text: "Synthetic description" });
+    expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
   it("guards phase disablement during an open poll and enforces organization roles", async () => {

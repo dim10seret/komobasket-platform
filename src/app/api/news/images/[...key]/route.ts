@@ -45,6 +45,8 @@ export async function GET(
   const { key } = await context.params;
 
   const storageKey = key.join("/");
+  // MVP photos have a separate publication-gated reader, even though they share this R2 bucket.
+  if (storageKey.startsWith("mvp/")) return new Response("Not found", { status: 404 });
 
   const object = await env.NEWS_IMAGES.get(storageKey);
 

@@ -2,15 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PlatformButton, usePlatformContext } from "./shared/platform-context";
+import PlatformMvpPresentationEditor from "./PlatformMvpPresentationEditor";
 
 type Phase = { id: string; competition_id: string; name: string; format: "standings" | "series"; mvp_enabled: number; tournamentId: string; tournamentName: string };
 type Scope = { phase_id: string; round_number: number | null; series_matchup_id: string | null; round_label: string | null;
   home_team_name: string | null; away_team_name: string | null };
 type OccupiedScope = { phase_id: string; scope_type: "round" | "series"; round_number: number | null; matchup_id: string | null };
-type Candidate = { id: string; contest_id: string; player_id: string; player_name: string; team_name: string; votes: number | null };
+type Candidate = { id: string; contest_id: string; player_id: string; player_name: string; team_name: string;
+  points: number; rebounds: number; assists: number; efficiency: number; votes: number | null };
 type Contest = { id: string; phase_id: string; scope_type: "round" | "series"; round_number: number | null; matchup_id: string | null;
   status: string; selection_method: string; results_visibility: "live" | "after_close"; opens_at: number; closes_at: number; finalized_at: number | null;
-  winner_player_id: string | null; competition_name: string; phase_name: string; totalVotes: number | null; candidates: Candidate[] };
+  winner_player_id: string | null; competition_name: string; phase_name: string; totalVotes: number | null; candidates: Candidate[];
+  photoUrl: string | null; photo_caption: string | null; body_text: string | null;
+  sponsor_name: string | null; gift_description: string | null; presentationRevision: string };
 type Snapshot = { competitions: { id: string; name: string; season_name: string }[]; phases: Phase[]; scopes: Scope[];
   occupiedScopes: OccupiedScope[]; contests: Contest[] };
 type Eligible = { playerId: string; player: { displayName: string }; teamName: string; statistics: { efficiency: number } };
@@ -82,7 +86,8 @@ export default function PlatformMvpManagement({ organizationId, readOnly = false
       const value = await response.json();
       if (!response.ok) throw new Error(value.error || "Η φόρτωση MVP απέτυχε.");
       setSnapshot(value as Snapshot);
-    } catch (caught) { setError(asError(caught)); }
+      return true;
+    } catch (caught) { setError(asError(caught)); return false; }
     finally { setLoading(false); }
   }, [api, organizationId]);
   useEffect(() => { const timer = window.setTimeout(() => void read(), 0); return () => window.clearTimeout(timer); }, [read]);
@@ -175,7 +180,9 @@ export default function PlatformMvpManagement({ organizationId, readOnly = false
     </>}
     {view === "active" && <section className={panel}><h3 className="text-lg font-black">Ενεργές και προς επίλυση</h3>{active.length === 0 && <p className="mt-3 text-sm text-zinc-600">Δεν υπάρχουν ψηφοφορίες.</p>}{active.map((contest) =>
       <ContestCard key={contest.id} contest={contest} scopes={snapshot?.scopes ?? []} now={now} canManage={canManage} busy={busy} organizationId={organizationId} request={api.request} mutate={mutate}/>)}</section>}
-    {view === "history" && <section className={panel}><h3 className="text-lg font-black">Ιστορικό MVP</h3>{history.length === 0 && <p className="mt-3 text-sm text-zinc-600">Δεν υπάρχουν ολοκληρωμένες ψηφοφορίες.</p>}{history.map((contest) => <article key={contest.id} className="mt-3 rounded-xl border border-zinc-200 p-4"><p className="font-black">{contest.competition_name} · {contest.phase_name} · {contestScopeLabel(contest, snapshot?.scopes ?? [])}</p><p className="mt-1 text-sm">Νικητής: {contest.candidates.find((candidate) => candidate.player_id === contest.winner_player_id)?.player_name ?? "—"} · {contest.candidates.find((candidate) => candidate.player_id === contest.winner_player_id)?.team_name ?? "—"}</p><p className="text-sm text-zinc-600">Μέθοδος: {contest.selection_method === "manual" ? "χειροκίνητη" : "ψηφοφορία εφαρμογής"} · Κατάσταση: {statusLabel(contest.status)} · Κλείσιμο: {date(contest.closes_at)} · Οριστικοποίηση: {date(contest.finalized_at)}</p></article>)}</section>}
+    {view === "history" && <section className={panel}><h3 className="text-lg font-black">Ιστορικό MVP</h3>{history.length === 0 && <p className="mt-3 text-sm text-zinc-600">Δεν υπάρχουν ολοκληρωμένες ψηφοφορίες.</p>}{history.map((contest) =>
+      <PlatformMvpPresentationEditor key={`${contest.id}:${contest.presentationRevision}`} contest={contest} organizationId={organizationId}
+        scopeLabel={contestScopeLabel(contest, snapshot?.scopes ?? [])} canManage={canManage} onSaved={read}/>)}</section>}
   </div>;
 }
 

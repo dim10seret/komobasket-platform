@@ -17,7 +17,7 @@ import { readPlatformMatchReport } from "@/services/platform-match-report.servic
 import { readPlatformGameSheet, renderPlatformGameSheetHtml } from "@/services/platform-game-sheet.service";
 import { generateStatisticsPdf, statisticsPdfFilename } from "@/services/platform-statistics-pdf.service";
 import { matchdayMvpErrorResponse, readMatchdayMvp, saveMatchdayMvp } from "@/services/matchday-mvp.service";
-import { platformMvpErrorResponse, platformMvpOperation } from "@/services/platform-mvp-operation";
+import { platformMvpErrorResponse, platformMvpOperation, platformMvpPresentationOperation } from "@/services/platform-mvp-operation";
 
 const sections = new Set(["overview", "seasons", "competitions", "teams", "players", "movements"]);
 const resources = new Set(["competitions", "teams", "participations", "competition-venues", "players", "rosters", "phases", "phase-schedules", "games"]);
@@ -124,12 +124,17 @@ async function dispatch(request: Request, path: string[]) {
   const actor:CanonicalAppUser={userId:identity.user.id,email:identity.user.email,displayName:identity.user.displayName,isSuperAdmin:false,isLocal:false};
   const [area,resource,format]=path;
   if (multipart) {
-    if(request.method!=="POST" || path.length!==1 || !["team-logo-route","organization-public-header-logo","organization-site-cover"].includes(area))return deny();
+    if(request.method!=="POST" || path.length!==1 || !["team-logo-route","organization-public-header-logo","organization-site-cover","mvp"].includes(area))return deny();
     const bytes=await request.arrayBuffer();if(bytes.byteLength>6*1024*1024)return Response.json({error:"REQUEST_TOO_LARGE"},{status:413});
     const copy=new Request(request.url,{method:"POST",headers:request.headers,body:bytes});
     const form=await copy.formData();
     if(form.has("organizationId") && String(form.get("organizationId"))!==organizationId)return deny();
     form.set("organizationId",organizationId);
+    if(area==="mvp") {
+      const env=await getKomoBasketCloudflareEnv();
+      if(!env?.NEWS_DB)throw new Error("DATABASE_UNAVAILABLE");
+      return platformMvpPresentationOperation(env.NEWS_DB,env.NEWS_IMAGES,actor,organizationId,form);
+    }
     const upload=new Request(request.url,{method:"POST",body:form});
     return area==="team-logo-route" ? platformTeamLogo(actor,organizationId)(upload) : area === "organization-site-cover" ? platformSiteCover(actor, organizationId).POST(upload) : platformPublicHeaderLogo(actor, organizationId)(upload);
   }

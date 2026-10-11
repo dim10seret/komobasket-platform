@@ -6,7 +6,8 @@ import { MvpContestError, type StartMvpContestInput } from "@/services/mvp-conte
 import { MvpFinalizationError } from "@/services/mvp-finalization.service";
 import { PlatformMvpError, addPlatformMvpCandidateWithDb, previewPlatformMvpWithDb, readPlatformMvpWithDb,
   resolvePlatformMvpWithDb, setPlatformPhaseMvpWithDb, startPlatformMvpWithDb, updatePlatformMvpContestWithDb } from "@/services/platform-mvp-management.service";
-import type { D1DatabaseBinding } from "@/types/cloudflare";
+import { MvpPublicationError, updateMvpPresentationWithDb } from "@/services/mvp-publication.service";
+import type { D1DatabaseBinding, R2BucketBinding } from "@/types/cloudflare";
 
 function scope(input: Record<string, unknown>): StartMvpContestInput {
   const phaseId = typeof input.phaseId === "string" ? input.phaseId.trim() : "";
@@ -47,8 +48,25 @@ export async function platformMvpOperation(db: D1DatabaseBinding, actor: Canonic
   return Response.json(result);
 }
 
+export async function platformMvpPresentationOperation(db: D1DatabaseBinding, bucket: R2BucketBinding | undefined,
+  actor: CanonicalAppUser | null, organizationId: string, form: FormData) {
+  const photo = form.get("photo");
+  if (photo !== null && !(photo instanceof File)) throw new MvpPublicationError("INVALID_IMAGE", 400);
+  if (form.get("removePhoto") !== null && form.get("removePhoto") !== "true")
+    throw new MvpPublicationError("INVALID_INPUT", 400);
+  const result = await updateMvpPresentationWithDb(db, bucket, actor, organizationId,
+    String(form.get("contestId") ?? ""), {
+      presentationRevision: form.get("presentationRevision"),
+      photoCaption: form.get("photoCaption"), bodyText: form.get("bodyText"),
+      sponsorName: form.get("sponsorName"), giftDescription: form.get("giftDescription"),
+      photo: photo as File | null, removePhoto: form.get("removePhoto") === "true",
+    });
+  return Response.json(result);
+}
+
 export function platformMvpErrorResponse(error: unknown): Response | null {
-  if (error instanceof PlatformMvpError || error instanceof MvpContestError || error instanceof MvpFinalizationError)
+  if (error instanceof PlatformMvpError || error instanceof MvpContestError || error instanceof MvpFinalizationError ||
+      error instanceof MvpPublicationError)
     return Response.json({ error: error.code }, { status: error.status });
   return platformAuthorizationErrorResponse(error);
 }
