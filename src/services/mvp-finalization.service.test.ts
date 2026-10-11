@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
@@ -18,9 +19,11 @@ vi.mock("@/services/public-mobile-competition.service", () => ({
 import { MvpFinalizationError, reconcileMvpContestIfDue, resolveMvpContestWithDb } from "./mvp-finalization.service";
 import { resolvePlatformMvpWithDb } from "./platform-mvp-management.service";
 import { PublicMvpContestError, readPublicMvpContestsWithDb } from "./public-mvp-contests.service";
+import { readMvpVoteResultsWithDb } from "./mvp-vote.service";
 
 const foundation = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
 const voting = readFileSync(new URL("../../cloudflare/migrations/0042_mvp_guest_voting_foundation.sql", import.meta.url), "utf8");
+const googleVoting = readFileSync(new URL("../../cloudflare/migrations/0043_mvp_google_voting_foundation.sql", import.meta.url), "utf8");
 const actor: CanonicalAppUser = { userId: "admin-a", email: "admin@example.test", displayName: "Admin", isSuperAdmin: false, isLocal: false };
 const otherOperator: CanonicalAppUser = { userId: "admin-c", email: "second@example.test", displayName: "Second", isSuperAdmin: false, isLocal: false };
 const outsider: CanonicalAppUser = { userId: "admin-b", email: "other@example.test", displayName: "Other", isSuperAdmin: false, isLocal: false };
@@ -71,6 +74,7 @@ beforeEach(() => {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     ${foundation}
     ${voting}
+    ${googleVoting}
     INSERT INTO league_seasons VALUES ('season-a','2026-09-01','active');
     INSERT INTO league_organizations VALUES
       ('org-a','hosted-a','Organization A','active','published'),
@@ -142,6 +146,16 @@ function vote(contestId: string, candidateNumber: number, count: number) {
   }
 }
 
+function googleVote(contestId: string, candidateNumber: number, count: number) {
+  for (let i = 0; i < count; i++) {
+    const voterId = `google-${contestId}-${candidateNumber}-${i}`;
+    const subjectHash = createHash("sha256").update(voterId).digest("hex");
+    sqlite.prepare("INSERT INTO mvp_google_voters VALUES (?,?,?)").run(voterId, subjectHash, now);
+    sqlite.prepare("INSERT INTO mvp_google_votes VALUES (?,?,?,?,?)")
+      .run(`vote-${voterId}`, contestId, `${contestId}-c${candidateNumber}`, voterId, now);
+  }
+}
+
 const status = (id: string) => sqlite.prepare("SELECT status,winner_player_id,official_matchday_selection_id FROM mvp_contests WHERE id=?").get(id);
 const officials = () => sqlite.prepare("SELECT id,player_id FROM league_matchday_mvp_selections").all();
 
@@ -171,6 +185,72 @@ describe("MVP2C lazy finalization", () => {
     expect(officials()[0]).toMatchObject({ player_id: "p2" });
     expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(sqlite.prepare("SELECT action FROM league_audit_log").get()).toEqual({ action: "mvp_auto_finalized" });
+  });
+
+  it("counts native and Google ballots once per candidate across public and internal results", async () => {
+    makeContest("mixed-live", "round", now + 3600, "live");
+    vote("mixed-live", 1, 3); googleVote("mixed-live", 1, 12);
+    vote("mixed-live", 2, 1); googleVote("mixed-live", 2, 7);
+    makeContest("other-tournament", "series", now + 3600, "live");
+    googleVote("other-tournament", 1, 2);
+    const publicRound = await readPublicMvpContestsWithDb(db, {
+      organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root",
+    });
+    expect(publicRound.active[0].totalVotes).toBe(23);
+    expect(publicRound.active[0].candidates.map((candidate) => candidate.votes)).toEqual([15, 8, 0]);
+    expect(await readMvpVoteResultsWithDb(db, "mixed-live")).toEqual({
+      contestId: "mixed-live", visibility: "visible", totalVotes: 23,
+      candidates: [
+        { candidateId: "mixed-live-c1", votes: 15 },
+        { candidateId: "mixed-live-c2", votes: 8 },
+        { candidateId: "mixed-live-c3", votes: 0 },
+      ],
+    });
+    const publicSeries = await readPublicMvpContestsWithDb(db, {
+      organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "cup-root",
+    });
+    expect(publicSeries.active[0].totalVotes).toBe(2);
+    expect(sqlite.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+    expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("finalizes a Google-only round leader through the existing Official MVP path", async () => {
+    makeContest("google-round", "round", now - 1, "live");
+    googleVote("google-round", 2, 3);
+    const first = await readPublicMvpContestsWithDb(db, {
+      organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root",
+    });
+    expect(first.history[0]).toMatchObject({ status: "finalized", totalVotes: 3,
+      official: { winnerPlayerId: "p2" } });
+    expect(status("google-round")).toMatchObject({ status: "finalized", winner_player_id: "p2" });
+    await Promise.all(Array.from({ length: 20 }, () => reconcileMvpContestIfDue(db, "google-round")));
+    expect(officials()).toEqual([expect.objectContaining({ player_id: "p2" })]);
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM league_audit_log").get()).toEqual({ n: 1 });
+  });
+
+  it("publishes a mixed-source series leader without creating a round Official MVP", async () => {
+    makeContest("mixed-series", "series", now - 1, "live");
+    vote("mixed-series", 1, 3); googleVote("mixed-series", 1, 12);
+    vote("mixed-series", 2, 1); googleVote("mixed-series", 2, 7);
+    expect((await reconcileMvpContestIfDue(db, "mixed-series")).status).toBe("finalized");
+    expect(status("mixed-series")).toMatchObject({ winner_player_id: "p1", official_matchday_selection_id: null });
+    expect(officials()).toHaveLength(0);
+    const read = await readPublicMvpContestsWithDb(db, {
+      organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "cup-root",
+    });
+    expect(read.history[0]).toMatchObject({ totalVotes: 23, official: { winnerPlayerId: "p1" } });
+    expect(read.history[0].candidates.map((candidate) => candidate.votes)).toEqual([15, 8, 0]);
+  });
+
+  it("routes a mixed-source first-place tie through operator resolution", async () => {
+    makeContest("mixed-tie", "round", now - 1);
+    vote("mixed-tie", 1, 2); googleVote("mixed-tie", 2, 2);
+    expect((await reconcileMvpContestIfDue(db, "mixed-tie")).status).toBe("tie_requires_resolution");
+    expect((await resolvePlatformMvpWithDb(db, actor, "org-a", {
+      contestId: "mixed-tie", candidateId: "mixed-tie-c2", reason: "mixed ballot tie",
+    })).status).toBe("finalized");
+    expect(status("mixed-tie")).toMatchObject({ winner_player_id: "p2" });
+    expect(officials()).toEqual([expect.objectContaining({ player_id: "p2" })]);
   });
 
   it("uses immutable ballot counts and publishes a series winner without a round selection", async () => {
@@ -319,15 +399,17 @@ describe("MVP2C lazy finalization", () => {
   it("hides after-close counts until finalized and scopes organization and tournament", async () => {
     makeContest("hidden", "round", now + 3600);
     vote("hidden", 1, 1);
+    googleVote("hidden", 2, 3);
     makeContest("live", "series", now + 3600, "live");
     vote("live", 2, 2);
+    googleVote("live", 2, 4);
     const read = await readPublicMvpContestsWithDb(db, { organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root" });
     expect(read.active[0]).toMatchObject({ resultsVisibility: "hidden", totalVotes: null });
     expect(read.active[0].candidates[0].votes).toBeNull();
     expect(read.serverTime).toEqual(expect.any(Number));
     const cup = await readPublicMvpContestsWithDb(db, { organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "cup-root" });
-    expect(cup.active[0]).toMatchObject({ resultsVisibility: "visible", totalVotes: 2 });
-    expect(cup.active[0].candidates[1].votes).toBe(2);
+    expect(cup.active[0]).toMatchObject({ resultsVisibility: "visible", totalVotes: 6 });
+    expect(cup.active[0].candidates[1].votes).toBe(6);
     await expect(readPublicMvpContestsWithDb(db, { organizationId: "org-b", competitionId: "competition-a", rootPhaseId: "league-root" }))
       .rejects.toThrow(PublicMvpContestError);
     published = false;
@@ -347,7 +429,7 @@ describe("MVP2C lazy finalization", () => {
 
   it("keeps first-place tie counts hidden under after-close visibility", async () => {
     makeContest("hidden-tie", "round", now - 1);
-    vote("hidden-tie", 1, 1); vote("hidden-tie", 2, 1);
+    vote("hidden-tie", 1, 1); googleVote("hidden-tie", 2, 1);
     const read = await readPublicMvpContestsWithDb(db, {
       organizationId: "org-a", competitionId: "competition-a", rootPhaseId: "league-root",
     });

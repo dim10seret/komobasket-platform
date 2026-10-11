@@ -20,6 +20,7 @@ import { mvpPresentationRevision, updateMvpPresentationWithDb } from "./mvp-publ
 const oldMigration = readFileSync(new URL("../../cloudflare/migrations/0035_matchday_mvp_selections.sql", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
 const votingMigration = readFileSync(new URL("../../cloudflare/migrations/0042_mvp_guest_voting_foundation.sql", import.meta.url), "utf8");
+const googleVotingMigration = readFileSync(new URL("../../cloudflare/migrations/0043_mvp_google_voting_foundation.sql", import.meta.url), "utf8");
 const actor: CanonicalAppUser = { userId: "admin-a", email: "admin@example.test", displayName: "Admin", isSuperAdmin: false, isLocal: false };
 const stats = (efficiency: number) => ({ points: efficiency, rebounds: 5, assists: 3, efficiency });
 const line = (id: string, efficiency: number) => ({ canonicalPlayerId: id, displayName: id, shirtNumber: "1", statistics: stats(efficiency) });
@@ -68,6 +69,7 @@ beforeEach(() => {
     ${oldMigration}
     ${migration}
     ${votingMigration}
+    ${googleVotingMigration}
     CREATE TABLE league_audit_log (id TEXT PRIMARY KEY, actor_email TEXT, action TEXT NOT NULL, entity_type TEXT,
       entity_id TEXT, details_json TEXT, created_at TEXT);
     INSERT INTO league_organizations VALUES ('org-a','a','Organization A','active'),('org-b','b','Organization B','active');
@@ -309,6 +311,33 @@ describe("MVP1 contest foundation", () => {
     expect(viewer.contests[0].totalVotes).toBeNull();
     expect(viewer.contests[0].candidates.every((candidate) => candidate.votes === null)).toBe(true);
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM league_audit_log").get()).toEqual({ n: 3 });
+  });
+
+  it("shows unified native and Google totals to managers while hiding them from viewers", async () => {
+    const started = await startPlatformMvpWithDb(db, actor, "org-a", {
+      ...round, candidatePlayerIds: ["p1", "p2"], durationHours: 48,
+    });
+    const candidate = sqlite.prepare("SELECT id FROM mvp_candidates WHERE contest_id=? AND player_id='p1'")
+      .get(started.id) as { id: string };
+    sqlite.prepare(`INSERT INTO anonymous_voter_credentials
+      (id,platform,public_key_spki,public_key_sha256,attestation_provider,verification_status,
+       created_at,verified_at,updated_at)
+      VALUES ('native-a','android','synthetic',?,'play_integrity','verified',
+        unixepoch('now'),unixepoch('now'),unixepoch('now'))`).run("a".repeat(64));
+    sqlite.prepare("INSERT INTO mvp_votes VALUES ('native-ballot',?,?, 'native-a',unixepoch('now'))")
+      .run(started.id, candidate.id);
+    sqlite.prepare("INSERT INTO mvp_google_voters VALUES ('google-a',?,unixepoch('now'))").run("b".repeat(64));
+    sqlite.prepare("INSERT INTO mvp_google_votes VALUES ('google-ballot',?,?, 'google-a',unixepoch('now'))")
+      .run(started.id, candidate.id);
+    const manager = await readPlatformMvpWithDb(db, actor, "org-a");
+    expect(manager.contests[0].totalVotes).toBe(2);
+    expect(Object.fromEntries(manager.contests[0].candidates.map((row) => [row.player_id, row.votes])))
+      .toEqual({ p1: 2, p2: 0 });
+    const viewer = await readPlatformMvpWithDb(db, { ...actor, userId: "viewer-a" }, "org-a");
+    expect(viewer.contests[0].totalVotes).toBeNull();
+    expect(viewer.contests[0].candidates.every((row) => row.votes === null)).toBe(true);
+    await expect(readPlatformMvpWithDb(db, actor, "org-b")).rejects.toThrow();
+    expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
   it("rejects updates after closing and permits canonical series starts", async () => {

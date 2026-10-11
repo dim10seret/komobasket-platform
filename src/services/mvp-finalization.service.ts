@@ -2,6 +2,7 @@ import "server-only";
 
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
 import { requirePhaseAccessWithDb } from "@/lib/platform-authorization";
+import { MVP_BALLOT_TOTALS_SQL } from "@/services/mvp-ballot-totals.sql";
 import type { D1DatabaseBinding, D1PreparedStatement } from "@/types/cloudflare";
 
 type Status = "open" | "tie_requires_resolution" | "needs_operator_decision" | "finalized";
@@ -36,10 +37,10 @@ async function serverTime(db: D1DatabaseBinding): Promise<number> {
 }
 
 async function tally(db: D1DatabaseBinding, id: string): Promise<Tally[]> {
-  return (await db.prepare(`SELECT candidate.id, candidate.player_id, COUNT(vote.id) AS votes
-    FROM mvp_candidates candidate LEFT JOIN mvp_votes vote
-      ON vote.contest_id=candidate.contest_id AND vote.candidate_id=candidate.id
-    WHERE candidate.contest_id=? GROUP BY candidate.id, candidate.player_id
+  return (await db.prepare(`SELECT candidate.id, candidate.player_id, COALESCE(tally.votes,0) AS votes
+    FROM mvp_candidates candidate LEFT JOIN (${MVP_BALLOT_TOTALS_SQL}) tally
+      ON tally.contest_id=candidate.contest_id AND tally.candidate_id=candidate.id
+    WHERE candidate.contest_id=?
     ORDER BY votes DESC, candidate.id`).bind(id).all<Tally>()).results ?? [];
 }
 

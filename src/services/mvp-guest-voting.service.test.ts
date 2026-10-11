@@ -9,6 +9,7 @@ import { readMvpVoteResultsWithDb } from "./mvp-vote.service";
 
 const foundation = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../cloudflare/migrations/0042_mvp_guest_voting_foundation.sql", import.meta.url), "utf8");
+const googleVoting = readFileSync(new URL("../../cloudflare/migrations/0043_mvp_google_voting_foundation.sql", import.meta.url), "utf8");
 let sqlite: DatabaseSync;
 let db: D1DatabaseBinding;
 let service: MvpGuestVotingService;
@@ -69,6 +70,7 @@ beforeEach(async () => {
     CREATE TABLE league_matchday_mvp_selections(id TEXT PRIMARY KEY);
     ${foundation}
     ${migration}
+    ${googleVoting}
     INSERT INTO league_seasons VALUES ('season-a','Season 2026–27','season-2026','2026-09-01',NULL,'active');
     INSERT INTO league_organizations VALUES ('organization-a','hosted-a','Hosted A',NULL,'active','published'),
       ('organization-b','hosted-b','Hosted B',NULL,'active','unpublished');

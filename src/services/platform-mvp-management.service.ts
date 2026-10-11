@@ -2,6 +2,7 @@ import "server-only";
 
 import type { CanonicalAppUser } from "@/lib/app-user-identity";
 import { requireOrganizationAccessWithDb, requirePhaseAccessWithDb } from "@/lib/platform-authorization";
+import { MVP_BALLOT_TOTALS_SQL } from "@/services/mvp-ballot-totals.sql";
 import { mvpClosesAt, previewMvpCandidatesWithDb, setPhaseMvpEnabledWithDb, startMvpContestWithDb, type StartMvpContestInput } from "@/services/mvp-contest.service";
 import { reconcileMvpContestIfDue, resolveMvpContestWithDb } from "@/services/mvp-finalization.service";
 import { mvpPhotoUrl, mvpPresentationRevision } from "@/services/mvp-publication.service";
@@ -97,11 +98,11 @@ export async function readPlatformMvpWithDb(db: D1DatabaseBinding, actor: Canoni
     }
   }
   const candidates = (await db.prepare(`SELECT a.id,a.contest_id,a.player_id,a.player_name,a.team_name,
-    a.points,a.rebounds,a.assists,a.efficiency,COUNT(v.id) AS votes
+    a.points,a.rebounds,a.assists,a.efficiency,COALESCE(tally.votes,0) AS votes
     FROM mvp_candidates a JOIN mvp_contests m ON m.id=a.contest_id
     JOIN league_phases p ON p.id=m.phase_id JOIN league_competitions c ON c.id=p.competition_id
-    LEFT JOIN mvp_votes v ON v.contest_id=a.contest_id AND v.candidate_id=a.id
-    WHERE c.organization_id=? GROUP BY a.id ORDER BY a.created_at,a.id`).bind(organizationId).all<CandidateRow>()).results ?? [];
+    LEFT JOIN (${MVP_BALLOT_TOTALS_SQL}) tally ON tally.contest_id=a.contest_id AND tally.candidate_id=a.id
+    WHERE c.organization_id=? ORDER BY a.created_at,a.id`).bind(organizationId).all<CandidateRow>()).results ?? [];
   const byContest = new Map<string, CandidateRow[]>();
   for (const candidate of candidates) byContest.set(candidate.contest_id, [...(byContest.get(candidate.contest_id) ?? []), candidate]);
   return { competitions, phases: phaseViews, scopes, occupiedScopes, contests: await Promise.all(contests.map(async (contest) => ({ ...contest,

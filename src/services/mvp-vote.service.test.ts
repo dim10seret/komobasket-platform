@@ -6,6 +6,7 @@ import { castMvpVoteWithDb, readMvpVoteResultsWithDb, type MvpVoteVerifier } fro
 
 const foundation = readFileSync(new URL("../../cloudflare/migrations/0041_mvp_contest_foundation.sql", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../../cloudflare/migrations/0042_mvp_guest_voting_foundation.sql", import.meta.url), "utf8");
+const googleVoting = readFileSync(new URL("../../cloudflare/migrations/0043_mvp_google_voting_foundation.sql", import.meta.url), "utf8");
 const keyA = "a".repeat(64);
 const keyB = "b".repeat(64);
 const challengeA = "c".repeat(64);
@@ -60,6 +61,7 @@ beforeEach(() => {
     CREATE TABLE league_matchday_mvp_selections(id TEXT PRIMARY KEY);
     ${foundation}
     ${migration}
+    ${googleVoting}
     INSERT INTO league_seasons VALUES ('season-a','2026-09-01','active');
     INSERT INTO league_organizations VALUES ('organization-a','hosted-a','active','published');
     INSERT INTO league_competitions VALUES ('competition-a','organization-a','season-a','active');
@@ -220,11 +222,14 @@ describe("MVP2A guest vote foundation", () => {
 
   it("groups live counts while hiding all totals and candidate rankings until finalization", async () => {
     await vote();
+    sqlite.prepare("INSERT INTO mvp_google_voters VALUES ('google-a',?,unixepoch('now'))")
+      .run("e".repeat(64));
+    sqlite.prepare("INSERT INTO mvp_google_votes VALUES ('google-vote-a','contest-a','candidate-a','google-a',unixepoch('now'))").run();
     expect(await readMvpVoteResultsWithDb(db, "contest-a")).toEqual({ contestId: "contest-a", visibility: "hidden" });
     sqlite.prepare("UPDATE mvp_contests SET results_visibility='live' WHERE id='contest-a'").run();
     expect(await readMvpVoteResultsWithDb(db, "contest-a")).toEqual({ contestId: "contest-a",
-      visibility: "visible", totalVotes: 1, candidates: [
-        { candidateId: "candidate-a", votes: 1 }, { candidateId: "candidate-b", votes: 0 },
+      visibility: "visible", totalVotes: 2, candidates: [
+        { candidateId: "candidate-a", votes: 2 }, { candidateId: "candidate-b", votes: 0 },
       ] });
     sqlite.prepare("UPDATE mvp_contests SET results_visibility='after_close' WHERE id='contest-a'").run();
     expect(await readMvpVoteResultsWithDb(db, "contest-a")).toEqual({ contestId: "contest-a", visibility: "hidden" });

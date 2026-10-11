@@ -4,6 +4,7 @@ import {
   MOBILE_COMPETITION_VISIBLE_BINDINGS,
   MOBILE_COMPETITION_VISIBLE_SQL,
 } from "@/services/public-mobile-catalogue.service";
+import { MVP_BALLOT_TOTALS_SQL } from "@/services/mvp-ballot-totals.sql";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
 export type VerifiedApplicationCredential = Readonly<{
@@ -137,10 +138,10 @@ export async function readMvpVoteResultsWithDb(db: D1DatabaseBinding, contestId:
   if (contest.results_visibility === "after_close" && contest.status !== "finalized") {
     return { contestId, visibility: "hidden" as const };
   }
-  const rows = (await db.prepare(`SELECT candidate.id AS candidate_id, COUNT(vote.id) AS votes
-    FROM mvp_candidates candidate LEFT JOIN mvp_votes vote
-      ON vote.contest_id=candidate.contest_id AND vote.candidate_id=candidate.id
-    WHERE candidate.contest_id=? GROUP BY candidate.id ORDER BY candidate.id`)
+  const rows = (await db.prepare(`SELECT candidate.id AS candidate_id, COALESCE(tally.votes,0) AS votes
+    FROM mvp_candidates candidate LEFT JOIN (${MVP_BALLOT_TOTALS_SQL}) tally
+      ON tally.contest_id=candidate.contest_id AND tally.candidate_id=candidate.id
+    WHERE candidate.contest_id=? ORDER BY candidate.id`)
     .bind(contestId).all<{ candidate_id: string; votes: number }>()).results ?? [];
   return { contestId, visibility: "visible" as const,
     totalVotes: rows.reduce((total, row) => total + row.votes, 0),

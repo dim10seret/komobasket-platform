@@ -3,6 +3,7 @@ import "server-only";
 import { MOBILE_COMPETITION_VISIBLE_BINDINGS, MOBILE_COMPETITION_VISIBLE_SQL } from "@/services/public-mobile-catalogue.service";
 import { readCompetitionDetailWithDb } from "@/services/public-mobile-competition.service";
 import { reconcileMvpContestIfDue } from "@/services/mvp-finalization.service";
+import { MVP_BALLOT_TOTALS_SQL } from "@/services/mvp-ballot-totals.sql";
 import { mvpPhotoUrl } from "@/services/mvp-publication.service";
 import type { D1DatabaseBinding } from "@/types/cloudflare";
 
@@ -85,15 +86,14 @@ export async function readPublicMvpContestsWithDb(db: D1DatabaseBinding, input: 
       candidate.player_name AS candidate_player_name, candidate.team_id AS candidate_team_id,
       candidate.team_name AS candidate_team_name, candidate.points AS candidate_points,
       candidate.rebounds AS candidate_rebounds, candidate.assists AS candidate_assists,
-      candidate.efficiency AS candidate_efficiency, COUNT(vote.id) AS candidate_votes
+      candidate.efficiency AS candidate_efficiency, COALESCE(tally.votes,0) AS candidate_votes
     FROM authorized
     JOIN tournament_phase phase ON phase.competition_id=authorized.competition_id
     LEFT JOIN mvp_contests contest ON contest.phase_id=phase.id
       AND contest.id IN (${idSlots}) AND contest.selection_method='app_poll'
     LEFT JOIN mvp_candidates candidate ON candidate.contest_id=contest.id
-    LEFT JOIN mvp_votes vote ON vote.contest_id=candidate.contest_id
-      AND vote.candidate_id=candidate.id
-    GROUP BY contest.id, candidate.id
+    LEFT JOIN (${MVP_BALLOT_TOTALS_SQL}) tally ON tally.contest_id=candidate.contest_id
+      AND tally.candidate_id=candidate.id
     ORDER BY contest.opens_at DESC, contest.id DESC, candidate.created_at, candidate.id`)
     .bind(input.rootPhaseId, input.competitionId, input.rootPhaseId, input.competitionId,
       organizationId, ...MOBILE_COMPETITION_VISIBLE_BINDINGS, ...selectedIds)
