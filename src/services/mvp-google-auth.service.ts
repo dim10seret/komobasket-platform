@@ -162,7 +162,7 @@ export class MvpGoogleAuthService {
       .bind(`mvp_login_${crypto.randomUUID()}`, await sha256Hex(state), nonce, verifier, returnPath, LOGIN_TTL).run();
     const url = new URL(GOOGLE_AUTHORIZATION);
     for (const [key, value] of Object.entries({ client_id: config.clientId,
-      redirect_uri: config.redirectUri, response_type: "code", scope: "openid",
+      redirect_uri: config.redirectUri, response_type: "code", scope: "openid profile",
       state, nonce, code_challenge: challenge, code_challenge_method: "S256" })) url.searchParams.set(key, value);
     return redirect(url.toString(), [setCookie(n.state, state, LOGIN_TTL, n.secure)]);
   }

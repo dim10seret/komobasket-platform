@@ -89,12 +89,14 @@ beforeEach(() => {
 afterEach(() => sqlite.close());
 
 describe("MVP4A.1 Google OIDC and sessions", () => {
-  it("creates an OIDC redirect with state, nonce, S256 PKCE and minimal scope", async () => {
+  it("creates an OIDC redirect with state, nonce, S256 PKCE and only identity scopes", async () => {
     const { response, authorization, stateCookie } = await start();
     expect(response.status).toBe(302);
     expect(authorization.origin).toBe("https://accounts.google.com");
     expect(authorization.searchParams.get("redirect_uri")).toBe(callbackUrl);
-    expect(authorization.searchParams.get("scope")).toBe("openid");
+    expect(authorization.searchParams.get("scope")).toBe("openid profile");
+    expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(["openid", "profile"]);
+    expect(authorization.searchParams.get("scope")).not.toContain("email");
     expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
     expect(authorization.searchParams.get("state")).toBe(stateCookie.split("=")[1]);
     expect(authorization.searchParams.get("nonce")).toHaveLength(43);
@@ -157,6 +159,8 @@ describe("MVP4A.1 Google OIDC and sessions", () => {
   });
 
   it("deduplicates Google sub without persisting email or profile", async () => {
+    tokenClaims = { ...tokenClaims, email: "synthetic@example.invalid", name: "Synthetic Voter",
+      picture: "https://example.invalid/synthetic.png" };
     for (let i = 0; i < 2; i++) {
       const login = await start();
       await callback(login.authorization.searchParams.get("state")!, login.stateCookie);
@@ -164,6 +168,10 @@ describe("MVP4A.1 Google OIDC and sessions", () => {
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM mvp_google_voters").get()).toEqual({ n: 1 });
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM mvp_google_sessions WHERE kind='voter'").get()).toEqual({ n: 2 });
     expect(migration43).not.toMatch(/\bemail\b|\bprofile\b/i);
+    const stored = JSON.stringify(sqlite.prepare("SELECT * FROM mvp_google_voters").all());
+    expect(stored).not.toContain("synthetic@example.invalid");
+    expect(stored).not.toContain("Synthetic Voter");
+    expect(stored).not.toContain("synthetic.png");
   });
 
   it.each([

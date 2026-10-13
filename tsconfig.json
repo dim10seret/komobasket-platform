@@ -43,5 +43,5 @@
     ".next/dev/types/**/*.ts"
   ],
 
-  "exclude": ["node_modules", "komocontrol", "coming-soon", "**/*.test.ts"]
+  "exclude": ["node_modules", "komocontrol", "coming-soon", "**/*.test.ts", "tmp/mvp4e1-runtime-20261012"]
 }
